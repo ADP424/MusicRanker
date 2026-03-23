@@ -1,0 +1,14 @@
+# Environment
+.env
+
+# VS Code
+.vscode
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Claude
+CLAUDE.md
