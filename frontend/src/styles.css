@@ -1,0 +1,85 @@
+:root { font-family: system-ui, sans-serif; color-scheme: light dark; }
+body  { margin: 0; }
+nav   { display: flex; gap: 1rem; padding: 1rem; border-bottom: 1px solid #8884; }
+nav a { text-decoration: none; color: inherit; }
+nav a.active { font-weight: 600; }
+main  { max-width: 48rem; margin: 0 auto; padding: 1.5rem; }
+
+.page-head { display: flex; justify-content: space-between; align-items: center; }
+section { position: relative; }
+
+.sortable { list-style: none; padding: 0; margin: 0; }
+.row {
+  display: grid;
+  grid-template-columns: 1.5rem 3rem 1fr auto auto;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.6rem 0.75rem;
+  border-bottom: 1px solid #8882;
+  background: Canvas;
+}
+.handle { cursor: grab; opacity: 0.5; user-select: none; }
+.handle:active { cursor: grabbing; }
+.pos    { opacity: 0.6; font-variant-numeric: tabular-nums; }
+.name   { font-weight: 500; text-decoration: none; color: inherit; }
+.meta   { opacity: 0.6; font-size: 0.875rem; }
+.icon   { border: none; background: none; cursor: pointer; opacity: 0.5; }
+.icon:hover { opacity: 1; }
+
+.modal {
+  border: none; border-radius: 8px; padding: 1.5rem;
+  box-shadow: 0 8px 32px #0004; min-width: 24rem;
+}
+.modal form   { display: flex; flex-direction: column; gap: 0.75rem; }
+.modal label  { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.875rem; }
+.modal input, .modal select { padding: 0.5rem; font: inherit; }
+.modal footer { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 0.5rem; }
+.err { color: #c33; }
+
+.grid-2  { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
+.inline  { display: flex; align-items: center; gap: 0.5rem; }
+.modal   { min-width: 28rem; max-width: 36rem; }
+.modal textarea { padding: 0.5rem; font: inherit; resize: vertical; }
+.modal small    { opacity: 0.6; font-weight: normal; }
+
+fieldset { border: 1px solid #8884; border-radius: 6px; padding: 0.75rem; }
+legend   { padding: 0 0.5rem; font-size: 0.875rem; opacity: 0.7; }
+.chips   { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.chip    { display: inline-flex; align-items: center; gap: 0.35rem;
+           padding: 0.25rem 0.6rem; border: 1px solid #8884;
+           border-radius: 999px; font-size: 0.875rem; cursor: pointer; }
+.chip input { margin: 0; }
+
+.plain-list { list-style: none; padding: 0; }
+.plain-list .row { grid-template-columns: 1fr auto auto auto; }
+
+/* Inline modal — positioned relative to the list */
+.inline-modal {
+  position: absolute;
+  left: 0; right: 0;
+  margin: 0 auto;
+  z-index: 10;
+}
+
+/* Confirm dialog */
+.confirm-dialog { min-width: 20rem; max-width: 28rem; }
+.confirm-dialog p { margin: 0 0 1rem; }
+button.danger { background: #c33; color: #fff; border: none; border-radius: 4px;
+                padding: 0.4rem 0.9rem; cursor: pointer; font: inherit; }
+button.danger:hover { background: #a22; }
+
+/* Listens ± controls */
+.listens-ctrl { display: inline-flex; align-items: center; gap: 0.25rem; font-size: 0.875rem; }
+.listens-count { font-variant-numeric: tabular-nums; min-width: 2.5rem; text-align: center;
+                 opacity: 0.7; }
+
+/* Genre chooser */
+.genre-chooser { display: flex; flex-direction: column; gap: 0.5rem; }
+.genre-chooser-controls { display: flex; flex-direction: column; gap: 0.4rem; }
+.genre-search { padding: 0.35rem 0.6rem; font: inherit; border: 1px solid #8884;
+                border-radius: 4px; width: 100%; box-sizing: border-box; }
+.genre-filters { flex-wrap: wrap; }
+.chip-active { background: Canvas; border-color: currentColor; font-weight: 600; }
+
+/* Album rows have an extra listens-ctrl column */
+.sortable .row.album-row { grid-template-columns: 1.5rem 3rem 1fr auto auto auto auto; }

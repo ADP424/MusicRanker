@@ -1,8 +1,8 @@
-from server import database
+from server.database import init_engine, drop_all, create_all, dispose_engine
 
 if __name__ == "__main__":
-    database.init_engine()
-    database.drop_all()
-    database.create_all()
-    database.dispose_engine()
+    init_engine()
+    drop_all()
+    create_all()
+    dispose_engine()
     print("✓ schema created from ORM models")

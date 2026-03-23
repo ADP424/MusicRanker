@@ -1,12 +1,14 @@
 import os
 
+from pathlib import Path
+
 from dotenv import load_dotenv
 from sqlalchemy import URL, create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from .database_models import Base
 
-load_dotenv()
+load_dotenv(Path(__file__).parent / ".env")
 
 _engine = None
 SessionLocal: sessionmaker[Session] | None = None

@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from ..api_models import GenreIn, GenreOut, GenrePatch
 from ..database import get_database
 from ..database_models import Genre
+from ..database_models.genre_parent import genre_parents
 
 router = APIRouter(prefix="/genres", tags=["genres"])
 
@@ -18,6 +19,15 @@ def _get(db: Session, gid: int) -> Genre:
 @router.get("", response_model=list[GenreOut])
 def list_genres(db: Session = Depends(get_database)):
     return db.scalars(select(Genre).order_by(Genre.name)).all()
+
+
+@router.get("/roots", response_model=list[GenreOut])
+def list_root_genres(db: Session = Depends(get_database)):
+    """Genres that have no parent genres (top-level categories)."""
+    has_parent = select(genre_parents.c.genre_id)
+    return db.scalars(
+        select(Genre).where(Genre.id.not_in(has_parent)).order_by(Genre.name)
+    ).all()
 
 
 @router.get("/{gid}", response_model=GenreOut)
@@ -54,6 +64,22 @@ def get_parents(gid: int, db: Session = Depends(get_database)):
 @router.get("/{gid}/children", response_model=list[GenreOut])
 def get_children(gid: int, db: Session = Depends(get_database)):
     return sorted(_get(db, gid).children, key=lambda g: g.name)
+
+
+@router.get("/{gid}/descendants", response_model=list[GenreOut])
+def get_descendants(gid: int, db: Session = Depends(get_database)):
+    """All genres reachable downward from this one (breadth-first, deduplicated)."""
+    visited: set[int] = set()
+    queue = list(_get(db, gid).children)
+    result: list[Genre] = []
+    while queue:
+        g = queue.pop(0)
+        if g.id in visited:
+            continue
+        visited.add(g.id)
+        result.append(g)
+        queue.extend(g.children)
+    return sorted(result, key=lambda g: g.name)
 
 
 @router.put("/{gid}/parents/{pid}", status_code=204)

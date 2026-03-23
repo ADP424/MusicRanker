@@ -5,9 +5,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ..api_models import AlbumIn, AlbumOut, AlbumPatch, GenreOut, LinkBody, PositionBody
+from ..api_models import AlbumIn, AlbumOut, AlbumPatch, ArtistOut, GenreOut, LinkBody, PositionBody
 from ..database import get_database
-from ..database_models import Album, AlbumArtist, Genre
+from ..database_models import Album, AlbumArtist, Artist, Genre
 from ..ranking import rank_between
 
 router = APIRouter(prefix="/albums", tags=["albums"])
@@ -43,6 +43,12 @@ def update_album(aid: int, body: AlbumPatch, db: Session = Depends(get_database)
     for k, v in data.items():
         setattr(album, k, v)
     return album
+
+
+@router.get("/{aid}/artists", response_model=list[ArtistOut])
+def album_artists(aid: int, db: Session = Depends(get_database)):
+    album = _get(db, aid)
+    return [link.artist for link in album.artist_links]
 
 
 @router.delete("/{aid}", status_code=204)
