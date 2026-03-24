@@ -28,12 +28,5 @@ include = ["server*"]
 line-length = 120
 target-version = ["py310"]
 
-[tool.flake8]
-max-line-length = 120
-extend-ignore = """
-    E203
-    E402
-"""
-
 [tool.isort]
 profile = "black"

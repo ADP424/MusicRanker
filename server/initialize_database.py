@@ -1,4 +1,4 @@
-from server.database import init_engine, drop_all, create_all, dispose_engine
+from server.database import create_all, dispose_engine, drop_all, init_engine
 
 if __name__ == "__main__":
     init_engine()

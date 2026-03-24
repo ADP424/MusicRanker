@@ -7,7 +7,7 @@ from sqlalchemy.exc import IntegrityError
 
 from . import database
 from .database_models import NATIONALITIES
-from .routers import albums, artists, genres
+from .routers import albums, artists, genres, stats
 
 
 @asynccontextmanager
@@ -29,6 +29,7 @@ app.add_middleware(
 app.include_router(genres.router)
 app.include_router(artists.router)
 app.include_router(albums.router)
+app.include_router(stats.router)
 
 
 @app.exception_handler(IntegrityError)

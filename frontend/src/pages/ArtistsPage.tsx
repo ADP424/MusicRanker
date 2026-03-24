@@ -4,6 +4,7 @@ import { Link } from "react-router-dom";
 
 import { api } from "../api/client";
 import type { Artist } from "../api/types";
+import { ArtistDetailDropdown } from "../components/ArtistDetailDropdown";
 import { ArtistForm } from "../components/ArtistForm";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { SortableList } from "../components/SortableList";
@@ -12,6 +13,7 @@ export function ArtistsPage() {
   const qc = useQueryClient();
   const [editing, setEditing] = useState<{ artist: Artist; top: number } | "new" | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<Artist | null>(null);
+  const [expandedId, setExpandedId] = useState<number | null>(null);
 
   const { data: artists = [] } = useQuery({
     queryKey: ["artists"],
@@ -40,14 +42,27 @@ export function ArtistsPage() {
         items={artists}
         onReorder={(next) => qc.setQueryData(["artists"], next)}
         onMove={(id, position) => move.mutate({ id, position })}
+        renderDetail={(a) =>
+          expandedId === a.id ? <ArtistDetailDropdown artistId={a.id} /> : null
+        }
         render={(a) => (
           <>
             <Link className="name" to={`/artists/${a.id}`}>{a.name}</Link>
-            <span className="meta">{a.core_nationality}</span>
+            <span className="meta">
+              {a.core_nationality}
+              {a.birth_nationality !== a.core_nationality && (
+                <> ({a.birth_nationality})</>
+              )}
+            </span>
+            <button
+              className="icon"
+              title="Show details"
+              onClick={() => setExpandedId(expandedId === a.id ? null : a.id)}
+            >{expandedId === a.id ? "▲" : "▼"}</button>
             <button
               className="icon"
               onClick={(e) => {
-                const top = (e.currentTarget.closest("li") as HTMLElement).offsetTop;
+                const top = (e.currentTarget.closest(".row") as HTMLElement).offsetTop;
                 setEditing({ artist: a, top });
               }}
             >✎</button>

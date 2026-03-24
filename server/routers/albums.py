@@ -5,9 +5,17 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ..api_models import AlbumIn, AlbumOut, AlbumPatch, ArtistOut, GenreOut, LinkBody, PositionBody
+from ..api_models import (
+    AlbumIn,
+    AlbumOut,
+    AlbumPatch,
+    ArtistOut,
+    GenreOut,
+    LinkBody,
+    PositionBody,
+)
 from ..database import get_database
-from ..database_models import Album, AlbumArtist, Artist, Genre
+from ..database_models import Album, AlbumArtist, Genre
 from ..ranking import rank_between
 
 router = APIRouter(prefix="/albums", tags=["albums"])
@@ -57,7 +65,12 @@ def delete_album(aid: int, db: Session = Depends(get_database)):
 
 
 @router.put("/{aid}/artists/{artist_id}", status_code=204)
-def link_artist(aid: int, artist_id: int, body: LinkBody | None = None, db: Session = Depends(get_database)):
+def link_artist(
+    aid: int,
+    artist_id: int,
+    body: LinkBody | None = None,
+    db: Session = Depends(get_database),
+):
     pos = body.position if body else None
     rank = _rank_at(db, artist_id, pos, exclude=aid)
     if link := db.get(AlbumArtist, (aid, artist_id)):

@@ -96,7 +96,7 @@ export function ArtistDetailPage() {
             <button
               className="icon"
               onClick={(e) => {
-                const top = (e.currentTarget.closest("li") as HTMLElement).offsetTop;
+                const top = (e.currentTarget.closest(".row") as HTMLElement).offsetTop;
                 setEditing({ album: a, top });
               }}
             >✎</button>

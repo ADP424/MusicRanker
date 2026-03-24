@@ -25,9 +25,7 @@ def list_genres(db: Session = Depends(get_database)):
 def list_root_genres(db: Session = Depends(get_database)):
     """Genres that have no parent genres (top-level categories)."""
     has_parent = select(genre_parents.c.genre_id)
-    return db.scalars(
-        select(Genre).where(Genre.id.not_in(has_parent)).order_by(Genre.name)
-    ).all()
+    return db.scalars(select(Genre).where(Genre.id.not_in(has_parent)).order_by(Genre.name)).all()
 
 
 @router.get("/{gid}", response_model=GenreOut)

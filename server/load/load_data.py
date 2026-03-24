@@ -9,15 +9,16 @@ import csv
 from datetime import timedelta
 from pathlib import Path
 
-from server.database import dispose_engine, init_engine
 import server.database as _db
-from server.database_models import Base  # noqa: F401 – ensures all models are registered
-from server.database_models.genre import Genre
-from server.database_models.genre_parent import genre_parents
-from server.database_models.artist import Artist
+from server.database import dispose_engine, init_engine
+from server.database_models import (  # noqa: F401 – ensures all models are registered
+    Base,
+)
 from server.database_models.album import Album
 from server.database_models.album_artist import AlbumArtist
 from server.database_models.album_genre import album_genres
+from server.database_models.artist import Artist
+from server.database_models.genre import Genre
 
 HERE = Path(__file__).parent
 GENRES_CSV = HERE / "genres.csv"
@@ -27,6 +28,7 @@ RANKING_CSV = HERE / "ranking.csv"
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _parse_runtime(s: str) -> timedelta:
     """Parse 'H:MM:SS' or 'M:SS' into a timedelta."""
@@ -57,11 +59,10 @@ def _synonyms(raw: str) -> list[str] | None:
     return [s.strip() for s in raw.split(",") if s.strip()]
 
 
-
-
 # ---------------------------------------------------------------------------
 # Load genres
 # ---------------------------------------------------------------------------
+
 
 def load_genres(db) -> dict[str, Genre]:
     """
@@ -84,7 +85,15 @@ def load_genres(db) -> dict[str, Genre]:
     # Collect every name that needs to exist as a Genre row
     all_names: dict[str, dict] = {}  # name -> {synonyms, notes}
     for r in rows:
-        subgenre, genre, parent, _, synonyms, _, notes = r[0], r[1], r[2], r[3], r[4], r[5], r[6]
+        subgenre, genre, parent, _, synonyms, _, notes = (
+            r[0],
+            r[1],
+            r[2],
+            r[3],
+            r[4],
+            r[5],
+            r[6],
+        )
         for name in (subgenre, genre, parent):
             if name and name not in all_names:
                 all_names[name] = {"synonyms": None, "notes": None}
@@ -138,6 +147,7 @@ def load_genres(db) -> dict[str, Genre]:
 # ---------------------------------------------------------------------------
 # Load ranking (artists + albums)
 # ---------------------------------------------------------------------------
+
 
 def load_ranking(db, genre_objs: dict[str, Genre]) -> None:
     """
@@ -222,9 +232,7 @@ def load_ranking(db, genre_objs: dict[str, Genre]) -> None:
 
         # Album genre
         if album_genre_id:
-            db.execute(
-                album_genres.insert().values(album_id=album.id, genre_id=album_genre_id)
-            )
+            db.execute(album_genres.insert().values(album_id=album.id, genre_id=album_genre_id))
 
         albums_inserted += 1
 
@@ -236,6 +244,7 @@ def load_ranking(db, genre_objs: dict[str, Genre]) -> None:
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
+
 
 def main() -> None:
     init_engine()
