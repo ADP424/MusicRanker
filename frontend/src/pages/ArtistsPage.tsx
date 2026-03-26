@@ -13,7 +13,7 @@ export function ArtistsPage() {
   const qc = useQueryClient();
   const [editing, setEditing] = useState<{ artist: Artist; top: number } | "new" | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<Artist | null>(null);
-  const [expandedId, setExpandedId] = useState<number | null>(null);
+  const [expandedIds, setExpandedIds] = useState<Set<number>>(new Set());
 
   const { data: artists = [] } = useQuery({
     queryKey: ["artists"],
@@ -35,7 +35,19 @@ export function ArtistsPage() {
     <section>
       <header className="page-head">
         <h1>Artists</h1>
-        <button onClick={() => setEditing("new")}>+ Add</button>
+        <div style={{ display: "flex", gap: "0.5rem" }}>
+          <button onClick={() => {
+            const allExpanded = artists.length > 0 && expandedIds.size === artists.length;
+            if (allExpanded) {
+              setExpandedIds(new Set());
+            } else {
+              setExpandedIds(new Set(artists.map((a) => a.id)));
+            }
+          }}>
+            {artists.length > 0 && expandedIds.size === artists.length ? "Collapse all" : "Expand all"}
+          </button>
+          <button onClick={() => setEditing("new")}>+ Add</button>
+        </div>
       </header>
 
       <SortableList
@@ -43,7 +55,7 @@ export function ArtistsPage() {
         onReorder={(next) => qc.setQueryData(["artists"], next)}
         onMove={(id, position) => move.mutate({ id, position })}
         renderDetail={(a) =>
-          expandedId === a.id ? <ArtistDetailDropdown artistId={a.id} /> : null
+          expandedIds.has(a.id) ? <ArtistDetailDropdown artistId={a.id} /> : null
         }
         render={(a) => (
           <>
@@ -57,8 +69,14 @@ export function ArtistsPage() {
             <button
               className="icon"
               title="Show details"
-              onClick={() => setExpandedId(expandedId === a.id ? null : a.id)}
-            >{expandedId === a.id ? "▲" : "▼"}</button>
+              onClick={() => {
+                setExpandedIds((prev) => {
+                  const next = new Set(prev);
+                  next.has(a.id) ? next.delete(a.id) : next.add(a.id);
+                  return next;
+                });
+              }}
+            >{expandedIds.has(a.id) ? "▲" : "▼"}</button>
             <button
               className="icon"
               onClick={(e) => {

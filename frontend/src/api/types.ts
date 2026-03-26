@@ -23,17 +23,25 @@ export interface Artist {
   notes: string | null;
 }
 
+export interface AlbumArtistRef {
+  id: number;
+  name: string;
+  discography_link: string;
+}
+
 export interface Album {
   id: number;
   name: string;
   runtime_seconds: number;
   release_year: number;
   alias: string | null;
+  alias_link: string | null;
   listens: number;
   listen_link: string | null;
   notes: string | null;
   album_rank: string | null;
   position: number | null;
+  artists: AlbumArtistRef[];
 }
 
 export type ArtistIn = Omit<Artist, "id" | "global_rank" | "position"> & {
@@ -138,6 +146,7 @@ export interface AlbumBody {
   runtime_seconds: number;
   release_year: number;
   alias: string | null;
+  alias_link: string | null;
   listens: number;
   listen_link: string | null;
   notes: string | null;

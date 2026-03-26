@@ -23,6 +23,7 @@ class Album(Base):
     runtime: Mapped[timedelta] = mapped_column(Interval)
     release_year: Mapped[int]
     alias: Mapped[str | None] = mapped_column(Text)
+    alias_link: Mapped[str | None] = mapped_column(Text)
     listens: Mapped[int] = mapped_column(server_default="1")
     listen_link: Mapped[str | None] = mapped_column(Text)
     notes: Mapped[str | None] = mapped_column(Text)

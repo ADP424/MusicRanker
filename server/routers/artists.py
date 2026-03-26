@@ -5,6 +5,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..api_models import AlbumOut, ArtistIn, ArtistOut, ArtistPatch, PositionBody
+from ..api_models.album import AlbumArtistRef
 from ..database import get_database
 from ..database_models import Album, AlbumArtist, Artist
 from ..ranking import rank_between
@@ -79,6 +80,10 @@ def artist_albums(aid: int, db: Session = Depends(get_database)):
     out = []
     for i, (album, rank) in enumerate(db.execute(stmt), start=1):
         album.album_rank, album.position = rank, i
+        album.artists = [
+            AlbumArtistRef(id=link.artist.id, name=link.artist.name, discography_link=link.artist.discography_link)
+            for link in album.artist_links
+        ]
         out.append(album)
     return out
 

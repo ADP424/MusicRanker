@@ -29,6 +29,7 @@ export function AlbumForm(props: {
     sec:          initSec,
     release_year: initial?.release_year ?? new Date().getFullYear(),
     alias:        initial?.alias        ?? "",
+    alias_link:   initial?.alias_link   ?? "",
     listens:      initial?.listens      ?? 1,
     listen_link:  initial?.listen_link  ?? "",
     notes:        initial?.notes        ?? "",
@@ -73,6 +74,7 @@ export function AlbumForm(props: {
         runtime_seconds: f.min * 60 + f.sec,
         release_year: f.release_year,
         alias: orNull(f.alias),
+        alias_link: orNull(f.alias_link),
         listens: f.listens,
         listen_link: orNull(f.listen_link),
         notes: orNull(f.notes),
@@ -119,7 +121,7 @@ export function AlbumForm(props: {
     (e: React.ChangeEvent<HTMLInputElement>) =>
       setF({ ...f, [k]: Number(e.target.value) });
   const txt =
-    (k: "name" | "alias" | "listen_link" | "notes") =>
+    (k: "name" | "alias" | "alias_link" | "listen_link" | "notes") =>
     (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>
       setF({ ...f, [k]: e.target.value });
 
@@ -149,9 +151,14 @@ export function AlbumForm(props: {
           </label>
         </div>
 
-        <label>Alias <small>(if released under a different name)</small>
-          <input value={f.alias} onChange={txt("alias")} />
-        </label>
+        <div className="grid-2">
+          <label>Alias <small>(if released under a different name)</small>
+            <input value={f.alias} onChange={txt("alias")} />
+          </label>
+          <label>Alias link
+            <input type="url" value={f.alias_link} onChange={txt("alias_link")} />
+          </label>
+        </div>
 
         <div className="grid-2">
           <label>Listens
