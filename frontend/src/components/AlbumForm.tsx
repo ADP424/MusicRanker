@@ -42,8 +42,8 @@ export function AlbumForm(props: {
   });
   const [genreIds, setGenreIds] = useState<Set<number>>(new Set());
   useEffect(() => {
-    if (currentGenres.length) setGenreIds(new Set(currentGenres.map((g) => g.id)));
-  }, [currentGenres]);
+    if (editing) setGenreIds(new Set(currentGenres.map((g) => g.id)));
+  }, [currentGenres]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const { data: currentArtists = [] } = useQuery({
     queryKey: ["albums", initial?.id, "artists"],
@@ -106,6 +106,10 @@ export function AlbumForm(props: {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["artists", artistId, "albums"] });
       qc.invalidateQueries({ queryKey: ["albums", "index"] });
+      if (editing) {
+        qc.invalidateQueries({ queryKey: ["albums", initial.id, "genres"] });
+        qc.invalidateQueries({ queryKey: ["albums", initial.id, "artists"] });
+      }
       onClose();
     },
   });

@@ -43,7 +43,10 @@ export function ArtistDetailPage() {
       const album = albums.find((a) => a.id === albumId)!;
       return api.patch<Album>(`/albums/${albumId}`, { listens: album.listens + delta });
     },
-    onSuccess: () => qc.invalidateQueries({ queryKey: key }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: key });
+      qc.invalidateQueries({ queryKey: ["albums", "index"] });
+    },
   });
 
   async function handleDelete(album: Album) {
