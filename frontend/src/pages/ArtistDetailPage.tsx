@@ -5,6 +5,7 @@ import { useParams } from "react-router-dom";
 import { AlbumForm } from "../components/AlbumForm";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { api } from "../api/client";
+import { useGenres } from "../api/hooks";
 import type { Album, Artist, ArtistRef } from "../api/types";
 import { SortableList } from "../components/SortableList";
 
@@ -14,9 +15,12 @@ export function ArtistDetailPage() {
   const qc = useQueryClient();
   const key = ["artists", aid, "albums"];
 
-  const [editing, setEditing] = useState<{ album: Album; top: number } | "new" | null>(null);
+  const [editing, setEditing] = useState<{ album: Album } | "new" | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<Album | null>(null);
   const [expandedIds, setExpandedIds] = useState<Set<number>>(new Set());
+
+  const { data: genres = [] } = useGenres();
+  const genreMap = Object.fromEntries(genres.map((g) => [g.id, g.name]));
 
   const { data: artist } = useQuery({
     queryKey: ["artists", aid],
@@ -50,6 +54,7 @@ export function ArtistDetailPage() {
       await api.delete(`/albums/${album.id}`);
     }
     qc.invalidateQueries({ queryKey: key });
+    qc.invalidateQueries({ queryKey: ["albums", "index"] });
   }
 
   const remove = useMutation({ mutationFn: handleDelete });
@@ -110,6 +115,12 @@ export function ArtistDetailPage() {
                   </span>
                 </div>
               )}
+              {a.genre_ids.length > 0 && (
+                <div className="album-detail-row">
+                  <span className="detail-label">Genres</span>
+                  <span>{a.genre_ids.map((id) => genreMap[id]).filter(Boolean).sort().join(", ")}</span>
+                </div>
+              )}
               {a.artists.length > 1 && (
                 <div className="album-detail-row">
                   <span className="detail-label">Artists</span>
@@ -137,7 +148,7 @@ export function ArtistDetailPage() {
                   <span>{a.notes}</span>
                 </div>
               )}
-              {!a.alias && a.artists.length <= 1 && !a.listen_link && !a.notes && (
+              {!a.alias && a.artists.length <= 1 && !a.listen_link && !a.notes && a.genre_ids.length === 0 && (
                 <span style={{ opacity: 0.5 }}>No extra info.</span>
               )}
             </div>
@@ -175,10 +186,7 @@ export function ArtistDetailPage() {
             >{expandedIds.has(a.id) ? "▲" : "▼"}</button>
             <button
               className="icon"
-              onClick={(e) => {
-                const top = (e.currentTarget.closest(".row") as HTMLElement).offsetTop;
-                setEditing({ album: a, top });
-              }}
+              onClick={() => setEditing({ album: a })}
             >✎</button>
             <button className="icon" onClick={() => setConfirmDelete(a)}>✕</button>
           </>
@@ -197,12 +205,15 @@ export function ArtistDetailPage() {
       )}
 
       {editing && (
-        <AlbumForm
-          artistId={aid}
-          initial={editing === "new" ? undefined : editing.album}
-          anchorTop={editing === "new" ? undefined : editing.top}
-          onClose={() => setEditing(null)}
-        />
+        <div className="modal-backdrop" onClick={() => setEditing(null)}>
+          <div onClick={(e) => e.stopPropagation()}>
+            <AlbumForm
+              artistId={aid}
+              initial={editing === "new" ? undefined : editing.album}
+              onClose={() => setEditing(null)}
+            />
+          </div>
+        </div>
       )}
     </section>
   );

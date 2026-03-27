@@ -18,7 +18,10 @@ def _get(db: Session, gid: int) -> Genre:
 
 @router.get("", response_model=list[GenreOut])
 def list_genres(db: Session = Depends(get_database)):
-    return db.scalars(select(Genre).order_by(Genre.name)).all()
+    genres = db.scalars(select(Genre).order_by(Genre.name)).all()
+    for g in genres:
+        g.parent_ids = [p.id for p in g.parents]
+    return genres
 
 
 @router.get("/roots", response_model=list[GenreOut])

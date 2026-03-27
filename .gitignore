@@ -13,9 +13,13 @@ __pycache__/
 
 # Claude
 CLAUDE.md
+.claude
 
 # Node
 node_modules
 
 # Input
 *.csv
+
+# Snapshots
+snapshots/

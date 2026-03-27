@@ -6,11 +6,15 @@ import { useGenres } from "../api/hooks";
 import type { Genre } from "../api/types";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { GenreForm } from "../components/GenreForm";
+import { GenreTree } from "../components/GenreTree";
+
+type View = "list" | "tree";
 
 export function GenresPage() {
   const qc = useQueryClient();
   const { data: genres = [] } = useGenres();
-  const [editing, setEditing] = useState<{ genre: Genre; top: number } | "new" | null>(null);
+  const [view, setView] = useState<View>("list");
+  const [editing, setEditing] = useState<Genre | "new" | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<Genre | null>(null);
 
   const remove = useMutation({
@@ -22,27 +26,39 @@ export function GenresPage() {
     <section>
       <header className="page-head">
         <h1>Genres</h1>
-        <button onClick={() => setEditing("new")}>+ Add</button>
+        <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+          <div className="view-toggle">
+            <button
+              className={view === "list" ? "view-toggle-active" : ""}
+              onClick={() => setView("list")}
+            >List</button>
+            <button
+              className={view === "tree" ? "view-toggle-active" : ""}
+              onClick={() => setView("tree")}
+            >Tree</button>
+          </div>
+          <button onClick={() => setEditing("new")}>+ Add</button>
+        </div>
       </header>
 
-      <ul className="plain-list">
-        {genres.map((g) => (
-          <li key={g.id} className="row">
-            <span className="name">{g.name}</span>
-            <span className="meta">
-              {g.synonyms?.length ? `aka ${g.synonyms.join(", ")}` : ""}
-            </span>
-            <button
-              className="icon"
-              onClick={(e) => {
-                const top = (e.currentTarget.closest("li") as HTMLElement).offsetTop;
-                setEditing({ genre: g, top });
-              }}
-            >✎</button>
-            <button className="icon" onClick={() => setConfirmDelete(g)}>✕</button>
-          </li>
-        ))}
-      </ul>
+      {view === "list" && (
+        <ul className="plain-list">
+          {genres.map((g) => (
+            <li key={g.id} className="row">
+              <span className="name">{g.name}</span>
+              <span className="meta">
+                {g.synonyms?.length ? `aka ${g.synonyms.join(", ")}` : ""}
+              </span>
+              <button className="icon" onClick={() => setEditing(g)}>✎</button>
+              <button className="icon" onClick={() => setConfirmDelete(g)}>✕</button>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {view === "tree" && (
+        <GenreTree genres={genres} onEdit={(g) => setEditing(g)} />
+      )}
 
       {confirmDelete && (
         <ConfirmDialog
@@ -56,11 +72,14 @@ export function GenresPage() {
       )}
 
       {editing && (
-        <GenreForm
-          initial={editing === "new" ? undefined : editing.genre}
-          anchorTop={editing === "new" ? undefined : editing.top}
-          onClose={() => setEditing(null)}
-        />
+        <div className="modal-backdrop" onClick={() => setEditing(null)}>
+          <div onClick={(e) => e.stopPropagation()}>
+            <GenreForm
+              initial={editing === "new" ? undefined : editing}
+              onClose={() => setEditing(null)}
+            />
+          </div>
+        </div>
       )}
     </section>
   );

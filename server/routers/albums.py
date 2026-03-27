@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from ..api_models import (
     AlbumIn,
+    AlbumIndex,
     AlbumOut,
     AlbumPatch,
     ArtistOut,
@@ -19,6 +20,23 @@ from ..database_models import Album, AlbumArtist, Genre
 from ..ranking import rank_between
 
 router = APIRouter(prefix="/albums", tags=["albums"])
+
+
+@router.get("", response_model=list[AlbumIndex])
+def list_albums(db: Session = Depends(get_database)):
+    """Return all albums with their artist_ids and genre_ids for client-side search/cache."""
+    albums = db.scalars(select(Album)).all()
+    result = []
+    for album in albums:
+        result.append(
+            AlbumIndex(
+                id=album.id,
+                name=album.name,
+                artist_ids=[link.artist_id for link in album.artist_links],
+                genre_ids=[g.id for g in album.genres],
+            )
+        )
+    return result
 
 
 def _get(db: Session, aid: int) -> Album:

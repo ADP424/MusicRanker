@@ -9,6 +9,7 @@ export interface Genre {
   name: string;
   synonyms: string[] | null;
   notes: string | null;
+  parent_ids: number[];
 }
 
 export interface Artist {
@@ -42,6 +43,7 @@ export interface Album {
   album_rank: string | null;
   position: number | null;
   artists: AlbumArtistRef[];
+  genre_ids: number[];
 }
 
 export type ArtistIn = Omit<Artist, "id" | "global_rank" | "position"> & {
@@ -140,6 +142,13 @@ export interface GenreRow {
 }
 
 export interface ScatterPoint { [key: string]: number | string }
+
+export interface AlbumIndex {
+  id: number;
+  name: string;
+  artist_ids: number[];
+  genre_ids: number[];
+}
 
 export interface AlbumBody {
   name: string;

@@ -8,14 +8,15 @@ import { ReactNode } from "react";
 type Item = { id: number; position?: number | null };
 
 function Row<T extends Item>({
-  item, rowClassName, detail, children,
+  item, rowClassName, detail, disableDrag, children,
 }: {
   item: T;
   rowClassName?: string;
   detail?: ReactNode;
+  disableDrag?: boolean;
   children: ReactNode;
 }) {
-  const s = useSortable({ id: item.id });
+  const s = useSortable({ id: item.id, disabled: disableDrag });
   return (
     <li
       ref={s.setNodeRef}
@@ -28,7 +29,8 @@ function Row<T extends Item>({
       {...s.attributes}
     >
       <div className={`row${rowClassName ? ` ${rowClassName}` : ""}`}>
-        <span className="handle" {...s.listeners}>⠿</span>
+        <span className="handle" {...(disableDrag ? {} : s.listeners)}
+              style={disableDrag ? { opacity: 0.2, cursor: "default" } : undefined}>⠿</span>
         <span className="pos">#{item.position}</span>
         {children}
       </div>
@@ -44,8 +46,9 @@ export function SortableList<T extends Item>(props: {
   render: (item: T) => ReactNode;
   rowClassName?: string;
   renderDetail?: (item: T) => ReactNode;
+  disableDrag?: boolean;
 }) {
-  const { items, onReorder, onMove, render, rowClassName, renderDetail } = props;
+  const { items, onReorder, onMove, render, rowClassName, renderDetail, disableDrag } = props;
 
   function onDragEnd(e: DragEndEvent) {
     const { active, over } = e;
@@ -68,6 +71,7 @@ export function SortableList<T extends Item>(props: {
               item={it}
               rowClassName={rowClassName}
               detail={renderDetail?.(it)}
+              disableDrag={disableDrag}
             >
               {render(it)}
             </Row>

@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../api/client";
+import { useGenres } from "../api/hooks";
 import type { Album, ArtistDetail } from "../api/types";
 
 function fmtRuntime(seconds: number) {
@@ -10,7 +11,10 @@ function fmtRuntime(seconds: number) {
   return `${m}:${String(s).padStart(2, "0")}`;
 }
 
-export function ArtistDetailDropdown({ artistId }: { artistId: number }) {
+export function ArtistDetailDropdown({ artistId, primaryGenreId }: { artistId: number; primaryGenreId: number | null }) {
+  const { data: genreList = [] } = useGenres();
+  const primaryGenreName = primaryGenreId != null ? genreList.find((g) => g.id === primaryGenreId)?.name : undefined;
+
   const { data, isLoading } = useQuery({
     queryKey: ["stats", "artist-detail", artistId],
     queryFn: () => api.get<ArtistDetail>(`/stats/artist-detail/${artistId}`),
@@ -33,6 +37,12 @@ export function ArtistDetailDropdown({ artistId }: { artistId: number }) {
         <div><span className="detail-label">Avg Runtime</span><span>{data.avg_runtime}</span></div>
         <div><span className="detail-label">Avg Album Score</span><span>{data.avg_album_score?.toFixed(4) ?? "—"}</span></div>
       </div>
+      {primaryGenreName && (
+        <div className="detail-tags">
+          <span className="detail-label">Primary Genre</span>
+          <span>{primaryGenreName}</span>
+        </div>
+      )}
       {data.genres.length > 0 && (
         <div className="detail-tags">
           <span className="detail-label">Genres</span>

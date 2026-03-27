@@ -1,10 +1,12 @@
 import { NavLink, Route, Routes } from "react-router-dom";
+import { usePrefetchAll } from "./api/hooks";
 import { ArtistsPage } from "./pages/ArtistsPage";
 import { ArtistDetailPage } from "./pages/ArtistDetailPage";
 import { GenresPage } from "./pages/GenresPage";
 import { StatsPage } from "./pages/StatsPage";
 
 export function App() {
+  usePrefetchAll();
   return (
     <>
       <nav>

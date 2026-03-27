@@ -8,11 +8,11 @@ import { GenreChooser } from "./GenreChooser";
 export function GenreForm(props: {
   initial?: Genre;
   onClose: () => void;
-  anchorTop?: number;
 }) {
-  const { initial, onClose, anchorTop } = props;
+  const { initial, onClose } = props;
   const editing = initial !== undefined;
   const qc = useQueryClient();
+  const [parentsOpen, setParentsOpen] = useState(false);
 
   const [f, setF] = useState({
     name:     initial?.name ?? "",
@@ -20,15 +20,14 @@ export function GenreForm(props: {
     notes:    initial?.notes ?? "",
   });
 
-  // Parent genres (edit mode only)
-  const { data: parents = [] } = useQuery({
+  const { data: parents } = useQuery({
     queryKey: ["genres", initial?.id, "parents"],
     queryFn: () => api.get<Genre[]>(`/genres/${initial!.id}/parents`),
     enabled: editing,
   });
   const [parentIds, setParentIds] = useState<Set<number>>(new Set());
   useEffect(() => {
-    setParentIds(new Set(parents.map((p) => p.id)));
+    if (parents) setParentIds(new Set(parents.map((p) => p.id)));
   }, [parents]);
 
   const save = useMutation({
@@ -45,8 +44,7 @@ export function GenreForm(props: {
         ? await api.patch<Genre>(`/genres/${initial.id}`, body)
         : await api.post<Genre>("/genres", body);
 
-      // Sync parents
-      const before = new Set(parents.map((p) => p.id));
+      const before = new Set((parents ?? []).map((p) => p.id));
       for (const id of parentIds)
         if (!before.has(id)) await api.put(`/genres/${genre.id}/parents/${id}`);
       for (const id of before)
@@ -60,10 +58,8 @@ export function GenreForm(props: {
     },
   });
 
-  const style = anchorTop !== undefined ? { top: anchorTop } : undefined;
-
   return (
-    <dialog open className="modal inline-modal" style={style}>
+    <dialog open className="modal">
       <form onSubmit={(e) => { e.preventDefault(); save.mutate(); }}>
         <h2>{editing ? "Edit" : "New"} Genre</h2>
 
@@ -84,12 +80,25 @@ export function GenreForm(props: {
         </label>
 
         <fieldset>
-          <legend>Parent genres</legend>
-          <GenreChooser
-            selected={parentIds}
-            onChange={setParentIds}
-            excludeId={initial?.id}
-          />
+          <legend
+            className="collapsible-legend"
+            onClick={() => setParentsOpen((o) => !o)}
+          >
+            Parent genres
+            <span className="collapse-arrow">{parentsOpen ? "▲" : "▼"}</span>
+          </legend>
+          {parentsOpen && (
+            <GenreChooser
+              selected={parentIds}
+              onChange={setParentIds}
+              excludeId={initial?.id}
+            />
+          )}
+          {!parentsOpen && (
+            <span className="collapsed-summary" onClick={() => setParentsOpen(true)}>
+              {parentIds.size > 0 ? `${parentIds.size} selected` : "None selected"}
+            </span>
+          )}
         </fieldset>
 
         <footer>

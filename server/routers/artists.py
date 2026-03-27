@@ -1,6 +1,7 @@
 from decimal import Decimal
+from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -8,6 +9,7 @@ from ..api_models import AlbumOut, ArtistIn, ArtistOut, ArtistPatch, PositionBod
 from ..api_models.album import AlbumArtistRef
 from ..database import get_database
 from ..database_models import Album, AlbumArtist, Artist
+from ..database_models.genre import Genre
 from ..ranking import rank_between
 
 router = APIRouter(prefix="/artists", tags=["artists"])
@@ -24,6 +26,61 @@ def _attach_position(db: Session, artist: Artist) -> Artist:
         select(func.count()).select_from(Artist).where(Artist.global_rank < artist.global_rank)
     )
     return artist
+
+
+@router.get("/search", response_model=list[int])
+def search_artists(
+    q: str = Query(..., min_length=1),
+    by: Literal["artist", "genre", "album", "all"] = Query("all"),
+    db: Session = Depends(get_database),
+):
+    """Return artist IDs (in rank order) whose name/genre/albums match the query."""
+    needle = q.strip().lower()
+    matching_ids: set[int] = set()
+
+    if by in ("artist", "all"):
+        rows = db.scalars(select(Artist.id).where(Artist.name.ilike(f"%{needle}%"))).all()
+        matching_ids.update(rows)
+
+    if by in ("genre", "all"):
+        from ..database_models.album_genre import album_genres as album_genres_table
+
+        genre_ids = db.scalars(select(Genre.id).where(Genre.name.ilike(f"%{needle}%"))).all()
+        if genre_ids:
+            # Artists whose primary genre matches
+            rows = db.scalars(select(Artist.id).where(Artist.primary_genre.in_(genre_ids))).all()
+            matching_ids.update(rows)
+            # Artists whose albums have a matching genre
+            rows = (
+                db.execute(
+                    select(AlbumArtist.artist_id)
+                    .join(album_genres_table, album_genres_table.c.album_id == AlbumArtist.album_id)
+                    .where(album_genres_table.c.genre_id.in_(genre_ids))
+                )
+                .scalars()
+                .all()
+            )
+            matching_ids.update(rows)
+
+    if by in ("album", "all"):
+        # Match artists linked to albums whose name contains the needle
+        rows = (
+            db.execute(
+                select(AlbumArtist.artist_id)
+                .join(Album, Album.id == AlbumArtist.album_id)
+                .where(Album.name.ilike(f"%{needle}%"))
+            )
+            .scalars()
+            .all()
+        )
+        matching_ids.update(rows)
+
+    if not matching_ids:
+        return []
+
+    # Return IDs in global rank order
+    ordered = db.scalars(select(Artist.id).where(Artist.id.in_(matching_ids)).order_by(Artist.global_rank)).all()
+    return list(ordered)
 
 
 @router.get("", response_model=list[ArtistOut])
@@ -84,6 +141,7 @@ def artist_albums(aid: int, db: Session = Depends(get_database)):
             AlbumArtistRef(id=link.artist.id, name=link.artist.name, discography_link=link.artist.discography_link)
             for link in album.artist_links
         ]
+        album.genre_ids = [g.id for g in album.genres]
         out.append(album)
     return out
 

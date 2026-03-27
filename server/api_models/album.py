@@ -46,3 +46,13 @@ class AlbumOut(ORMSchema):
     album_rank: Decimal | None = None
     position: int | None = None
     artists: list[AlbumArtistRef] = []
+    genre_ids: list[int] = []
+
+
+class AlbumIndex(ORMSchema):
+    """Slim album shape for global cache / search — no rank or position."""
+
+    id: int
+    name: str
+    artist_ids: list[int] = []
+    genre_ids: list[int] = []

@@ -12,12 +12,12 @@ const orNull = (s: string) => (s.trim() === "" ? null : s);
 export function ArtistForm(props: {
   initial?: Artist;
   onClose: () => void;
-  anchorTop?: number;
 }) {
-  const { initial, onClose, anchorTop } = props;
+  const { initial, onClose } = props;
   const editing = initial !== undefined;
   const qc = useQueryClient();
   const { data: nats = [] } = useNationalities();
+  const [genreOpen, setGenreOpen] = useState(false);
 
   const [f, setF] = useState({
     name:              initial?.name              ?? "",
@@ -27,7 +27,6 @@ export function ArtistForm(props: {
     notes:             initial?.notes             ?? "",
   });
 
-  // primary_genre as a Set<number> of 0 or 1 element for GenreChooser
   const [primaryGenreSet, setPrimaryGenreSet] = useState<Set<number>>(
     initial?.primary_genre != null ? new Set([initial.primary_genre]) : new Set()
   );
@@ -58,10 +57,8 @@ export function ArtistForm(props: {
     (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) =>
       setF({ ...f, [k]: e.target.value });
 
-  const style = anchorTop !== undefined ? { top: anchorTop } : undefined;
-
   return (
-    <dialog open className="modal inline-modal" style={style}>
+    <dialog open className="modal">
       <form onSubmit={(e) => { e.preventDefault(); save.mutate(); }}>
         <h2>{editing ? "Edit" : "New"} Artist</h2>
 
@@ -92,12 +89,25 @@ export function ArtistForm(props: {
         </div>
 
         <fieldset>
-          <legend>Primary genre <small>(pick one)</small></legend>
-          <GenreChooser
-            selected={primaryGenreSet}
-            onChange={setPrimaryGenreSet}
-            single
-          />
+          <legend
+            className="collapsible-legend"
+            onClick={() => setGenreOpen((o) => !o)}
+          >
+            Primary genre <small>(pick one)</small>
+            <span className="collapse-arrow">{genreOpen ? "▲" : "▼"}</span>
+          </legend>
+          {genreOpen && (
+            <GenreChooser
+              selected={primaryGenreSet}
+              onChange={setPrimaryGenreSet}
+              single
+            />
+          )}
+          {!genreOpen && primaryGenreSet.size > 0 && (
+            <span className="collapsed-summary" onClick={() => setGenreOpen(true)}>
+              {primaryGenreSet.size} selected
+            </span>
+          )}
         </fieldset>
 
         <label>Notes

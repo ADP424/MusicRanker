@@ -20,3 +20,4 @@ class GenreOut(ORMSchema):
     name: str
     synonyms: list[str] | None
     notes: str | None
+    parent_ids: list[int] = []

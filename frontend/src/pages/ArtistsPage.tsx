@@ -1,24 +1,76 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { api } from "../api/client";
+import { useAlbumIndex, useArtists, useGenres } from "../api/hooks";
 import type { Artist } from "../api/types";
 import { ArtistDetailDropdown } from "../components/ArtistDetailDropdown";
 import { ArtistForm } from "../components/ArtistForm";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { SortableList } from "../components/SortableList";
 
+type SearchBy = "all" | "artist" | "genre" | "album";
+
 export function ArtistsPage() {
   const qc = useQueryClient();
-  const [editing, setEditing] = useState<{ artist: Artist; top: number } | "new" | null>(null);
+  const [editing, setEditing] = useState<{ artist: Artist } | "new" | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<Artist | null>(null);
   const [expandedIds, setExpandedIds] = useState<Set<number>>(new Set());
+  const [searchQ, setSearchQ] = useState("");
+  const [searchBy, setSearchBy] = useState<SearchBy>("all");
 
-  const { data: artists = [] } = useQuery({
-    queryKey: ["artists"],
-    queryFn: () => api.get<Artist[]>("/artists"),
-  });
+  const { data: artists = [] } = useArtists();
+  const { data: albumIndex = [] } = useAlbumIndex();
+  const { data: genres = [] } = useGenres();
+
+  const visibleArtists = useMemo(() => {
+    const needle = searchQ.trim().toLowerCase();
+    if (!needle) return artists;
+
+    const matchingIds = new Set<number>();
+
+    if (searchBy === "artist" || searchBy === "all") {
+      for (const a of artists) {
+        if (a.name.toLowerCase().includes(needle)) matchingIds.add(a.id);
+      }
+    }
+
+    if (searchBy === "genre" || searchBy === "all") {
+      // Build set of genre IDs whose name matches
+      const matchingGenreIds = new Set(
+        genres
+          .filter((g) =>
+            g.name.toLowerCase().includes(needle) ||
+            g.synonyms?.some((s) => s.toLowerCase().includes(needle))
+          )
+          .map((g) => g.id)
+      );
+      if (matchingGenreIds.size > 0) {
+        // Artists whose primary genre matches
+        for (const a of artists) {
+          if (a.primary_genre != null && matchingGenreIds.has(a.primary_genre))
+            matchingIds.add(a.id);
+        }
+        // Artists whose albums have a matching genre
+        for (const album of albumIndex) {
+          if (album.genre_ids.some((gid) => matchingGenreIds.has(gid))) {
+            for (const aid of album.artist_ids) matchingIds.add(aid);
+          }
+        }
+      }
+    }
+
+    if (searchBy === "album" || searchBy === "all") {
+      for (const album of albumIndex) {
+        if (album.name.toLowerCase().includes(needle)) {
+          for (const aid of album.artist_ids) matchingIds.add(aid);
+        }
+      }
+    }
+
+    return artists.filter((a) => matchingIds.has(a.id));
+  }, [searchQ, searchBy, artists, albumIndex, genres]);
 
   const move = useMutation({
     mutationFn: (v: { id: number; position: number }) =>
@@ -31,31 +83,56 @@ export function ArtistsPage() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["artists"] }),
   });
 
+  const allExpanded = artists.length > 0 && expandedIds.size === artists.length;
+
   return (
     <section>
       <header className="page-head">
         <h1>Artists</h1>
         <div style={{ display: "flex", gap: "0.5rem" }}>
           <button onClick={() => {
-            const allExpanded = artists.length > 0 && expandedIds.size === artists.length;
             if (allExpanded) {
               setExpandedIds(new Set());
             } else {
               setExpandedIds(new Set(artists.map((a) => a.id)));
             }
           }}>
-            {artists.length > 0 && expandedIds.size === artists.length ? "Collapse all" : "Expand all"}
+            {allExpanded ? "Collapse all" : "Expand all"}
           </button>
           <button onClick={() => setEditing("new")}>+ Add</button>
         </div>
       </header>
 
+      <div className="search-bar">
+        <input
+          type="search"
+          placeholder="Search…"
+          value={searchQ}
+          onChange={(e) => setSearchQ(e.target.value)}
+        />
+        <div className="search-by-chips">
+          {(["all", "artist", "genre", "album"] as SearchBy[]).map((opt) => (
+            <button
+              key={opt}
+              className={`chip${searchBy === opt ? " chip-active" : ""}`}
+              onClick={() => setSearchBy(opt)}
+            >
+              {opt.charAt(0).toUpperCase() + opt.slice(1)}
+            </button>
+          ))}
+        </div>
+        {searchQ.trim().length > 0 && (
+          <span className="search-count">{visibleArtists.length} result{visibleArtists.length !== 1 ? "s" : ""}</span>
+        )}
+      </div>
+
       <SortableList
-        items={artists}
+        items={visibleArtists}
         onReorder={(next) => qc.setQueryData(["artists"], next)}
         onMove={(id, position) => move.mutate({ id, position })}
+        disableDrag={searchQ.trim().length > 0}
         renderDetail={(a) =>
-          expandedIds.has(a.id) ? <ArtistDetailDropdown artistId={a.id} /> : null
+          expandedIds.has(a.id) ? <ArtistDetailDropdown artistId={a.id} primaryGenreId={a.primary_genre} /> : null
         }
         render={(a) => (
           <>
@@ -79,10 +156,7 @@ export function ArtistsPage() {
             >{expandedIds.has(a.id) ? "▲" : "▼"}</button>
             <button
               className="icon"
-              onClick={(e) => {
-                const top = (e.currentTarget.closest(".row") as HTMLElement).offsetTop;
-                setEditing({ artist: a, top });
-              }}
+              onClick={() => setEditing({ artist: a })}
             >✎</button>
             <button className="icon" onClick={() => setConfirmDelete(a)}>✕</button>
           </>
@@ -101,11 +175,14 @@ export function ArtistsPage() {
       )}
 
       {editing && (
-        <ArtistForm
-          initial={editing === "new" ? undefined : editing.artist}
-          anchorTop={editing === "new" ? undefined : editing.top}
-          onClose={() => setEditing(null)}
-        />
+        <div className="modal-backdrop" onClick={() => setEditing(null)}>
+          <div onClick={(e) => e.stopPropagation()}>
+            <ArtistForm
+              initial={editing === "new" ? undefined : editing.artist}
+              onClose={() => setEditing(null)}
+            />
+          </div>
+        </div>
       )}
     </section>
   );

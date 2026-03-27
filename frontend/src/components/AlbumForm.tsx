@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { api } from "../api/client";
 import { useGenres } from "../api/hooks";
@@ -9,17 +9,17 @@ import { GenreChooser } from "./GenreChooser";
 const orNull = (s: string) => (s.trim() === "" ? null : s);
 
 export function AlbumForm(props: {
-  artistId: number;           // primary artist (context for linking on create)
+  artistId: number;
   initial?: Album;
   onClose: () => void;
-  anchorTop?: number;         // pixel offset for inline positioning
 }) {
-  const { artistId, initial, onClose, anchorTop } = props;
+  const { artistId, initial, onClose } = props;
   const editing = initial !== undefined;
   const qc = useQueryClient();
   useGenres(); // warm cache
+  const [artistsOpen, setArtistsOpen] = useState(false);
+  const [genreOpen, setGenreOpen] = useState(false);
 
-  // Runtime split into min:sec for friendlier input
   const initMin = initial ? Math.floor(initial.runtime_seconds / 60) : 0;
   const initSec = initial ? initial.runtime_seconds % 60 : 0;
 
@@ -35,7 +35,6 @@ export function AlbumForm(props: {
     notes:        initial?.notes        ?? "",
   });
 
-  // Album's current genres (only when editing)
   const { data: currentGenres = [] } = useQuery({
     queryKey: ["albums", initial?.id, "genres"],
     queryFn: () => api.get<Genre[]>(`/albums/${initial!.id}/genres`),
@@ -46,13 +45,11 @@ export function AlbumForm(props: {
     if (currentGenres.length) setGenreIds(new Set(currentGenres.map((g) => g.id)));
   }, [currentGenres]);
 
-  // Album's current linked artists (only when editing)
   const { data: currentArtists = [] } = useQuery({
     queryKey: ["albums", initial?.id, "artists"],
     queryFn: () => api.get<ArtistRef[]>(`/albums/${initial!.id}/artists`),
     enabled: editing,
   });
-  // All artists for the collaborator picker
   const { data: allArtists = [] } = useQuery({
     queryKey: ["artists"],
     queryFn: () => api.get<ArtistRef[]>("/artists"),
@@ -87,7 +84,6 @@ export function AlbumForm(props: {
         album = await api.post<Album>("/albums", body);
       }
 
-      // Sync artist links
       if (editing) {
         const beforeArtists = new Set(currentArtists.map((a) => a.id));
         for (const id of artistIds)
@@ -95,12 +91,10 @@ export function AlbumForm(props: {
         for (const id of beforeArtists)
           if (!artistIds.has(id)) await api.delete(`/albums/${album.id}/artists/${id}`);
       } else {
-        // On create, link all selected artists
         for (const id of artistIds)
           await api.put(`/albums/${album.id}/artists/${id}`);
       }
 
-      // Sync genre tags
       const before = new Set(currentGenres.map((g) => g.id));
       for (const id of genreIds)
         if (!before.has(id)) await api.put(`/albums/${album.id}/genres/${id}`);
@@ -111,7 +105,7 @@ export function AlbumForm(props: {
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["artists", artistId, "albums"] });
-      qc.invalidateQueries({ queryKey: ["albums"] });
+      qc.invalidateQueries({ queryKey: ["albums", "index"] });
       onClose();
     },
   });
@@ -125,10 +119,18 @@ export function AlbumForm(props: {
     (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>
       setF({ ...f, [k]: e.target.value });
 
-  const style = anchorTop !== undefined ? { top: anchorTop } : undefined;
+  const [artistSortSnap, setArtistSortSnap] = useState(() => artistIds);
+  useEffect(() => { setArtistSortSnap(artistIds); }, [artistSearch]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const filteredArtists = useMemo(() => {
+    const q = artistSearch.trim().toLowerCase();
+    return allArtists
+      .filter((a) => !q || a.name.toLowerCase().includes(q))
+      .sort((a, b) => (artistSortSnap.has(a.id) ? 0 : 1) - (artistSortSnap.has(b.id) ? 0 : 1));
+  }, [artistSearch, allArtists, artistSortSnap]);
 
   return (
-    <dialog open className="modal inline-modal" style={style}>
+    <dialog open className="modal">
       <form onSubmit={(e) => { e.preventDefault(); save.mutate(); }}>
         <h2>{editing ? "Edit" : "New"} Album</h2>
 
@@ -176,38 +178,63 @@ export function AlbumForm(props: {
         </label>
 
         <fieldset>
-          <legend>Artists</legend>
-          <input
-            className="genre-search"
-            type="search"
-            placeholder="Search artists…"
-            value={artistSearch}
-            onChange={(e) => setArtistSearch(e.target.value)}
-          />
-          <div className="chips">
-            {allArtists.filter((a) =>
-              !artistSearch.trim() ||
-              a.name.toLowerCase().includes(artistSearch.trim().toLowerCase())
-            ).map((a) => (
-              <label key={a.id} className="chip">
-                <input
-                  type="checkbox"
-                  checked={artistIds.has(a.id)}
-                  onChange={(e) => {
-                    const next = new Set(artistIds);
-                    e.target.checked ? next.add(a.id) : next.delete(a.id);
-                    setArtistIds(next);
-                  }}
-                />
-                {a.name}
-              </label>
-            ))}
-          </div>
+          <legend
+            className="collapsible-legend"
+            onClick={() => setArtistsOpen((o) => !o)}
+          >
+            Artists
+            <span className="collapse-arrow">{artistsOpen ? "▲" : "▼"}</span>
+          </legend>
+          {artistsOpen && (
+            <>
+              <input
+                className="genre-search"
+                type="search"
+                placeholder="Search artists…"
+                value={artistSearch}
+                onChange={(e) => setArtistSearch(e.target.value)}
+              />
+              <div className="chips">
+                {filteredArtists.map((a) => (
+                  <label key={a.id} className="chip">
+                    <input
+                      type="checkbox"
+                      checked={artistIds.has(a.id)}
+                      onChange={(e) => {
+                        const next = new Set(artistIds);
+                        e.target.checked ? next.add(a.id) : next.delete(a.id);
+                        setArtistIds(next);
+                      }}
+                    />
+                    {a.name}
+                  </label>
+                ))}
+              </div>
+            </>
+          )}
+          {!artistsOpen && (
+            <span className="collapsed-summary" onClick={() => setArtistsOpen(true)}>
+              {artistIds.size} selected
+            </span>
+          )}
         </fieldset>
 
         <fieldset>
-          <legend>Genres</legend>
-          <GenreChooser selected={genreIds} onChange={setGenreIds} />
+          <legend
+            className="collapsible-legend"
+            onClick={() => setGenreOpen((o) => !o)}
+          >
+            Genres
+            <span className="collapse-arrow">{genreOpen ? "▲" : "▼"}</span>
+          </legend>
+          {genreOpen && (
+            <GenreChooser selected={genreIds} onChange={setGenreIds} />
+          )}
+          {!genreOpen && (
+            <span className="collapsed-summary" onClick={() => setGenreOpen(true)}>
+              {genreIds.size > 0 ? `${genreIds.size} selected` : "None selected"}
+            </span>
+          )}
         </fieldset>
 
         <footer>

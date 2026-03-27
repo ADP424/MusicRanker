@@ -1,4 +1,4 @@
-from .album import AlbumIn, AlbumOut, AlbumPatch
+from .album import AlbumIn, AlbumIndex, AlbumOut, AlbumPatch
 from .artist import ArtistIn, ArtistOut, ArtistPatch
 from .base import LinkBody, ORMSchema, PositionBody
 from .genre import GenreIn, GenreOut, GenrePatch
@@ -14,6 +14,7 @@ __all__ = [
     "ArtistPatch",
     "ArtistOut",
     "AlbumIn",
+    "AlbumIndex",
     "AlbumPatch",
     "AlbumOut",
 ]

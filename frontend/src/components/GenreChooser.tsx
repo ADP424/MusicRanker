@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { api } from "../api/client";
 import { useGenres } from "../api/hooks";
@@ -41,13 +41,23 @@ export function GenreChooser(props: {
 
   const needle = search.trim().toLowerCase();
 
-  const candidates = allGenres.filter((g) => {
-    if (g.id === excludeId) return false;
-    if (needle && !g.name.toLowerCase().includes(needle) &&
-        !g.synonyms?.some((s) => s.toLowerCase().includes(needle))) return false;
-    if (parentFilter !== null && !descendantIds.has(g.id)) return false;
-    return true;
-  });
+  // sortSnap is the selection set used for ordering. It updates when the filter
+  // inputs change (needle, parentFilter) but NOT when the user checks/unchecks
+  // a box — so the list never reorders mid-interaction.
+  const [sortSnap, setSortSnap] = useState(() => selected);
+  useEffect(() => { setSortSnap(selected); }, [needle, parentFilter]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const candidates = useMemo(() => {
+    return allGenres
+      .filter((g) => {
+        if (g.id === excludeId) return false;
+        if (needle && !g.name.toLowerCase().includes(needle) &&
+            !g.synonyms?.some((s) => s.toLowerCase().includes(needle))) return false;
+        if (parentFilter !== null && !descendantIds.has(g.id)) return false;
+        return true;
+      })
+      .sort((a, b) => (sortSnap.has(a.id) ? 0 : 1) - (sortSnap.has(b.id) ? 0 : 1));
+  }, [needle, parentFilter, allGenres, excludeId, descendantIds, sortSnap]);
 
   function toggle(id: number, checked: boolean) {
     if (single) {
