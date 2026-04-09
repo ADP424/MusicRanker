@@ -37,6 +37,14 @@ section { position: relative; }
 .modal input, .modal select { padding: 0.5rem; font: inherit; }
 .modal footer { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 0.5rem; }
 .err { color: #c33; }
+.dup-warning {
+  display: flex; justify-content: space-between; align-items: center;
+  background: #7741001a; border: 1px solid #a0600066; border-radius: 6px;
+  padding: 0.6rem 0.75rem; margin-bottom: 1rem; color: #a06000;
+}
+@media (prefers-color-scheme: dark) {
+  .dup-warning { background: #7741002a; border-color: #c0800099; color: #e0a040; }
+}
 
 .grid-2  { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
 .inline  { display: flex; align-items: center; gap: 0.5rem; }
@@ -280,3 +288,56 @@ main:has(.stats-page) { max-width: 90rem; }
 .detail-label { font-size: 0.75rem; opacity: 0.6; }
 .detail-tags { margin-top: 0.25rem; }
 .detail-tags .detail-label { display: inline; margin-right: 0.4rem; }
+
+/* Home page */
+.home-page {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  gap: 3rem;
+}
+.home-title {
+  font-size: 3rem;
+  font-weight: 700;
+  margin: 0;
+  letter-spacing: -0.02em;
+}
+.home-choices {
+  display: flex;
+  gap: 2rem;
+}
+.home-choice {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 2.5rem 3rem;
+  border: 1px solid #8884;
+  border-radius: 12px;
+  background: none;
+  cursor: pointer;
+  font: inherit;
+  transition: border-color 0.15s, background 0.15s;
+}
+.home-choice:hover {
+  border-color: currentColor;
+  background: #8881;
+}
+.home-choice-icon {
+  font-size: 3rem;
+  line-height: 1;
+}
+.home-choice-label {
+  font-size: 1.25rem;
+  font-weight: 600;
+}
+
+/* Nav home link — styled more subtly */
+.nav-home {
+  margin-left: auto;
+  opacity: 0.5;
+  font-size: 0.875rem;
+}
+.nav-home:hover { opacity: 1; }

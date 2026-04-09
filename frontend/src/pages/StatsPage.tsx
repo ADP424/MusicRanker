@@ -172,11 +172,13 @@ export function StatsPage() {
     { key: "avg_album_score", label: "Avg Album Score", numeric: true, fmt: (v) => v != null ? v.toFixed(4) : "—" },
   ];
   const genreCols: ColDef[] = [
-    { key: "genre_name",      label: "Genre" },
-    { key: "artist_count",    label: "Artists",         numeric: true },
-    { key: "avg_artist_rank", label: "Avg Artist Rank", numeric: true, fmt: fmt2 },
-    { key: "album_count",     label: "Albums",          numeric: true },
-    { key: "avg_album_score", label: "Avg Album Score", numeric: true, fmt: (v) => v != null ? v.toFixed(4) : "—" },
+    { key: "genre_name",          label: "Genre" },
+    { key: "artist_count",        label: "Artists",         numeric: true },
+    { key: "artist_count_direct", label: "Artists (direct)", numeric: true },
+    { key: "avg_artist_rank",     label: "Avg Artist Rank", numeric: true, fmt: fmt2 },
+    { key: "album_count",         label: "Albums",          numeric: true },
+    { key: "album_count_direct",  label: "Albums (direct)", numeric: true },
+    { key: "avg_album_score",     label: "Avg Album Score", numeric: true, fmt: (v) => v != null ? v.toFixed(4) : "—" },
   ];
 
   return (

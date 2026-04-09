@@ -16,7 +16,7 @@ from ..api_models import (
     PositionBody,
 )
 from ..database import get_database
-from ..database_models import Album, AlbumArtist, Genre
+from ..database_models import Album, AlbumArtist, Genre, Movie
 from ..ranking import rank_between
 
 router = APIRouter(prefix="/albums", tags=["albums"])
@@ -131,6 +131,27 @@ def remove_genre(aid: int, gid: int, db: Session = Depends(get_database)):
     album = _get(db, aid)
     if (genre := db.get(Genre, gid)) and genre in album.genres:
         album.genres.remove(genre)
+
+
+# ── Soundtrack links ───────────────────────────────────────────────────────────
+
+
+@router.put("/{aid}/soundtrack/{mid}", status_code=204)
+def link_soundtrack(aid: int, mid: int, db: Session = Depends(get_database)):
+    album = _get(db, aid)
+    movie = db.get(Movie, mid)
+    if not movie:
+        raise HTTPException(404, "Movie not found")
+    if movie not in album.soundtrack_movies:
+        album.soundtrack_movies.append(movie)
+
+
+@router.delete("/{aid}/soundtrack/{mid}", status_code=204)
+def unlink_soundtrack(aid: int, mid: int, db: Session = Depends(get_database)):
+    album = _get(db, aid)
+    movie = db.get(Movie, mid)
+    if movie and movie in album.soundtrack_movies:
+        album.soundtrack_movies.remove(movie)
 
 
 def _rank_at(db: Session, artist_id: int, position: int | None, exclude: int | None) -> Decimal:

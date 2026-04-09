@@ -9,7 +9,7 @@ from .genre_parent import genre_parents
 
 
 class Genre(Base):
-    __tablename__ = "genres"
+    __tablename__ = "music_genres"
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(Text, unique=True)

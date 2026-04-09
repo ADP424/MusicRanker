@@ -51,6 +51,14 @@ def create_all() -> None:
 
 
 def drop_all() -> None:
+    # Drop any tables that exist in the DB but are no longer in SQLAlchemy metadata
+    # (e.g. leftovers from old migrations) so they don't block FK-constrained drops.
+    with _engine.begin() as conn:
+        conn.execute(text("DROP TABLE IF EXISTS movie_directors CASCADE"))
+        conn.execute(text("DROP TABLE IF EXISTS directors CASCADE"))
+        conn.execute(text("DROP TABLE IF EXISTS movie_cast_members CASCADE"))
+        conn.execute(text("DROP TABLE IF EXISTS cast_members CASCADE"))
     Base.metadata.drop_all(_engine)
     with _engine.begin() as conn:
         conn.execute(text("DROP TYPE IF EXISTS nationality CASCADE"))
+        conn.execute(text("DROP TYPE IF EXISTS cast_role CASCADE"))

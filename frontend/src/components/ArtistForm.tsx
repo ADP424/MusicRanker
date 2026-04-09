@@ -11,7 +11,7 @@ const orNull = (s: string) => (s.trim() === "" ? null : s);
 
 export function ArtistForm(props: {
   initial?: Artist;
-  onClose: () => void;
+  onClose: (savedName?: string, savedId?: number) => void;
 }) {
   const { initial, onClose } = props;
   const editing = initial !== undefined;
@@ -43,12 +43,12 @@ export function ArtistForm(props: {
         notes: orNull(f.notes),
       };
       return editing
-        ? api.patch(`/artists/${initial.id}`, body)
-        : api.post("/artists", body);
+        ? api.patch<Artist>(`/artists/${initial.id}`, body)
+        : api.post<Artist>("/artists", body);
     },
-    onSuccess: () => {
+    onSuccess: (saved) => {
       qc.invalidateQueries({ queryKey: ["artists"] });
-      onClose();
+      onClose(saved.name, saved.id);
     },
   });
 

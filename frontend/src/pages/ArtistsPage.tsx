@@ -19,6 +19,7 @@ export function ArtistsPage() {
   const [expandedIds, setExpandedIds] = useState<Set<number>>(new Set());
   const [searchQ, setSearchQ] = useState("");
   const [searchBy, setSearchBy] = useState<SearchBy>("all");
+  const [dupWarning, setDupWarning] = useState<string | null>(null);
 
   const { data: artists = [] } = useArtists();
   const { data: albumIndex = [] } = useAlbumIndex();
@@ -80,7 +81,14 @@ export function ArtistsPage() {
 
   const remove = useMutation({
     mutationFn: (id: number) => api.delete(`/artists/${id}`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["artists"] }),
+    onMutate: async (id) => {
+      await qc.cancelQueries({ queryKey: ["artists"] });
+      const prev = qc.getQueryData<Artist[]>(["artists"]);
+      qc.setQueryData<Artist[]>(["artists"], (old = []) => old.filter((a) => a.id !== id));
+      return { prev };
+    },
+    onError: (_err, _id, ctx) => qc.setQueryData(["artists"], ctx?.prev),
+    onSettled: () => qc.invalidateQueries({ queryKey: ["artists"] }),
   });
 
   const allExpanded = artists.length > 0 && expandedIds.size === artists.length;
@@ -102,6 +110,13 @@ export function ArtistsPage() {
           <button onClick={() => setEditing("new")}>+ Add</button>
         </div>
       </header>
+
+      {dupWarning && (
+        <div className="dup-warning">
+          <span>{dupWarning}</span>
+          <button className="icon" onClick={() => setDupWarning(null)}>✕</button>
+        </div>
+      )}
 
       <div className="search-bar">
         <input
@@ -132,11 +147,13 @@ export function ArtistsPage() {
         onMove={(id, position) => move.mutate({ id, position })}
         disableDrag={searchQ.trim().length > 0}
         renderDetail={(a) =>
-          expandedIds.has(a.id) ? <ArtistDetailDropdown artistId={a.id} primaryGenreId={a.primary_genre} /> : null
+          expandedIds.has(a.id) ? (
+            <ArtistDetailDropdown artistId={a.id} primaryGenreId={a.primary_genre} />
+          ) : null
         }
         render={(a) => (
           <>
-            <Link className="name" to={`/artists/${a.id}`}>{a.name}</Link>
+            <Link className="name" to={`/music/artists/${a.id}`}>{a.name}</Link>
             <span className="meta">
               {a.core_nationality}
               {a.birth_nationality !== a.core_nationality && (
@@ -179,7 +196,16 @@ export function ArtistsPage() {
           <div onClick={(e) => e.stopPropagation()}>
             <ArtistForm
               initial={editing === "new" ? undefined : editing.artist}
-              onClose={() => setEditing(null)}
+              onClose={(savedName, savedId) => {
+                setEditing(null);
+                if (savedName != null) {
+                  const nameLower = savedName.toLowerCase();
+                  const dups = artists.filter(
+                    (a) => a.name.toLowerCase() === nameLower && a.id !== savedId
+                  );
+                  if (dups.length > 0) setDupWarning(`Warning: another artist named "${savedName}" already exists.`);
+                }
+              }}
             />
           </div>
         </div>

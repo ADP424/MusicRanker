@@ -11,6 +11,11 @@ class AlbumArtistRef(BaseModel):
     discography_link: str
 
 
+class AlbumSoundtrackMovieRef(BaseModel):
+    id: int
+    name: str
+
+
 class AlbumIn(BaseModel):
     name: str
     runtime_seconds: int = Field(gt=0)
@@ -47,6 +52,7 @@ class AlbumOut(ORMSchema):
     position: int | None = None
     artists: list[AlbumArtistRef] = []
     genre_ids: list[int] = []
+    soundtrack_movies: list[AlbumSoundtrackMovieRef] = []
 
 
 class AlbumIndex(ORMSchema):

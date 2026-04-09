@@ -7,11 +7,13 @@ from sqlalchemy import CheckConstraint, Interval, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .album_genre import album_genres
+from .album_movie_soundtrack import album_movie_soundtrack
 from .base import Base
 
 if TYPE_CHECKING:
     from .album_artist import AlbumArtist
     from .genre import Genre
+    from .movie import Movie
 
 
 class Album(Base):
@@ -36,6 +38,11 @@ class Album(Base):
     genres: Mapped[list[Genre]] = relationship(
         "Genre",
         secondary=album_genres,
+    )
+    soundtrack_movies: Mapped[list[Movie]] = relationship(
+        "Movie",
+        secondary=album_movie_soundtrack,
+        back_populates="soundtrack_albums",
     )
 
     @property

@@ -466,6 +466,8 @@ def by_genre(db: Session = Depends(get_database)):
     # For each scored album, expand to all ancestor genres too
     genre_albums: dict[int, list[ScoredAlbum]] = defaultdict(list)
     root_genre_albums: dict[int, list[ScoredAlbum]] = defaultdict(list)
+    # Direct-only counts (no ancestor expansion)
+    genre_albums_direct: dict[int, list[ScoredAlbum]] = defaultdict(list)
 
     for sa in scored_albums:
         gids = album_genre_ids.get(sa.album.id, [])
@@ -477,10 +479,14 @@ def by_genre(db: Session = Depends(get_database)):
         for gid in all_gids:
             if gid in roots:
                 root_genre_albums[gid].append(sa)
+        for gid in gids:
+            genre_albums_direct[gid].append(sa)
 
     # Artist primary genre
     artist_genre: dict[int, list[ArtistDetail]] = defaultdict(list)
     root_artist_genre: dict[int, list[ArtistDetail]] = defaultdict(list)
+    # Direct-only counts (no ancestor expansion)
+    artist_genre_direct: dict[int, list[ArtistDetail]] = defaultdict(list)
     for ad in artist_details:
         gid = ad.artist.primary_genre
         if gid is None:
@@ -491,11 +497,11 @@ def by_genre(db: Session = Depends(get_database)):
         for g in all_gids:
             if g in roots:
                 root_artist_genre[g].append(ad)
+        artist_genre_direct[gid].append(ad)
 
-    def _build(genre_alb, genre_art):
+    def _build(genre_alb, genre_art, genre_alb_direct, genre_art_direct, candidate_gids):
         result = []
-        all_gids = set(genre_alb) | set(genre_art)
-        for gid in all_gids:
+        for gid in candidate_gids:
             g = genre_by_id.get(gid)
             if g is None:
                 continue
@@ -506,16 +512,19 @@ def by_genre(db: Session = Depends(get_database)):
                     "genre_id": gid,
                     "genre_name": g.name,
                     "album_count": len(alb),
+                    "album_count_direct": len(genre_alb_direct.get(gid, [])),
                     "avg_album_score": (round(mean(sa.score for sa in alb), 6) if alb else None),
                     "artist_count": len(art),
+                    "artist_count_direct": len(genre_art_direct.get(gid, [])),
                     "avg_artist_rank": (round(mean(ad.position for ad in art), 2) if art else None),
                 }
             )
         return sorted(result, key=lambda r: r["genre_name"])
 
+    all_gids = set(genre_by_id.keys())
     return {
-        "by_genre": _build(genre_albums, artist_genre),
-        "by_root_genre": _build(root_genre_albums, root_artist_genre),
+        "by_genre": _build(genre_albums, artist_genre, genre_albums_direct, artist_genre_direct, all_gids),
+        "by_root_genre": _build(root_genre_albums, root_artist_genre, genre_albums_direct, artist_genre_direct, roots),
     }
 
 
