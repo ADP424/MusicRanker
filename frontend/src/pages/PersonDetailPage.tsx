@@ -78,7 +78,7 @@ export function PersonDetailPage() {
             {data.movie_roles.map((r, i) => (
               <li key={i} className="sortable-item">
                 <div className="row" style={{ gridTemplateColumns: "1fr auto" }}>
-                  <span className="name">{r.movie_name}</span>
+                  <Link className="name" to={`/movies/${r.movie_id}`}>{r.movie_name}</Link>
                   <span className="meta">{ROLE_LABEL[r.role] ?? r.role}</span>
                 </div>
               </li>

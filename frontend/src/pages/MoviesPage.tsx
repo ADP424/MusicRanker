@@ -195,7 +195,7 @@ export function MoviesPage() {
                         {byRole[role].map((p, i) => (
                           <span key={p.id}>
                             {i > 0 && ", "}
-                            {p.name}
+                            <Link className="plain-link" to={`/people/${p.id}`}>{p.name}</Link>
                           </span>
                         ))}
                       </span>
@@ -205,7 +205,17 @@ export function MoviesPage() {
               {m.genre_ids.length > 0 && (
                 <div className="album-detail-row">
                   <span className="detail-label">Genres</span>
-                  <span>{m.genre_ids.map((id) => genreMap[id]).filter(Boolean).sort().join(", ")}</span>
+                  <span>
+                    {m.genre_ids
+                      .filter((id) => genreMap[id])
+                      .sort((a, b) => genreMap[a].localeCompare(genreMap[b]))
+                      .map((id, i) => (
+                        <span key={id}>
+                          {i > 0 && ", "}
+                          <Link className="plain-link" to={`/movies/genres/${id}`}>{genreMap[id]}</Link>
+                        </span>
+                      ))}
+                  </span>
                 </div>
               )}
               {m.soundtrack_albums.length > 0 && (
@@ -215,9 +225,7 @@ export function MoviesPage() {
                     {m.soundtrack_albums.map((a, i) => (
                       <span key={a.id}>
                         {i > 0 && ", "}
-                        <Link to={a.artist_ids.length > 0 ? `/music/artists/${a.artist_ids[0]}` : "/music"}>
-                          {a.name}
-                        </Link>
+                        <Link to={`/music/albums/${a.id}`}>{a.name}</Link>
                       </span>
                     ))}
                   </span>
@@ -244,9 +252,10 @@ export function MoviesPage() {
         render={(m) => (
           <>
             <span className="name">
-              {m.watch_link
-                ? <a href={m.watch_link} target="_blank" rel="noreferrer" className="album-name-link">{m.name}</a>
-                : m.name}
+              <Link to={`/movies/${m.id}`} className="plain-link">{m.name}</Link>
+              {m.watch_link && (
+                <> <a href={m.watch_link} target="_blank" rel="noreferrer" style={{ textDecoration: "none", fontStyle: "italic", fontSize: "0.85em", opacity: 0.7, color: "inherit" }}>(link)</a></>
+              )}
             </span>
             <span className="meta">
               {m.release_year} · {fmtRuntime(m.runtime_minutes)}

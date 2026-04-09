@@ -1,5 +1,6 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
+import { Link } from "react-router-dom";
 
 import { api } from "../api/client";
 import { useGenres } from "../api/hooks";
@@ -52,7 +53,7 @@ export function GenresPage() {
         <ul className="plain-list">
           {genres.map((g) => (
             <li key={g.id} className="row">
-              <span className="name">{g.name}</span>
+              <Link className="name" to={`/music/genres/${g.id}`}>{g.name}</Link>
               <span className="meta">
                 {g.synonyms?.length ? `aka ${g.synonyms.join(", ")}` : ""}
               </span>

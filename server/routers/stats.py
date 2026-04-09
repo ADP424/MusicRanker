@@ -619,7 +619,10 @@ def artist_detail(aid: int, db: Session = Depends(get_database)):
     unique_genre_ids = set(genre_rows)
     if ad.artist.primary_genre:
         unique_genre_ids.add(ad.artist.primary_genre)
-    genre_names = sorted(g.name for g in db.scalars(select(Genre).where(Genre.id.in_(unique_genre_ids))).all())
+    genres = sorted(
+        [{"id": g.id, "name": g.name} for g in db.scalars(select(Genre).where(Genre.id.in_(unique_genre_ids))).all()],
+        key=lambda g: g["name"],
+    )
 
     # Collaborators: other artists who share albums with this artist
     collaborator_ids: set[int] = set()
@@ -627,9 +630,32 @@ def artist_detail(aid: int, db: Session = Depends(get_database)):
         artist_ids_on_album = {a.id for a, _ in sa.artist_links}
         if aid in artist_ids_on_album:
             collaborator_ids |= artist_ids_on_album - {aid}
-    collaborator_names = (
-        sorted(a.name for a in db.scalars(select(Artist).where(Artist.id.in_(collaborator_ids))).all())
+    collaborators = (
+        sorted(
+            [
+                {"id": a.id, "name": a.name}
+                for a in db.scalars(select(Artist).where(Artist.id.in_(collaborator_ids))).all()
+            ],
+            key=lambda a: a["name"],
+        )
         if collaborator_ids
+        else []
+    )
+
+    # Members: people linked to this artist
+    from ..database_models import ArtistPerson
+    from ..database_models import Person as PersonModel
+
+    member_ids = [ap.person_id for ap in db.scalars(select(ArtistPerson).where(ArtistPerson.artist_id == aid)).all()]
+    members = (
+        sorted(
+            [
+                {"id": p.id, "name": p.name}
+                for p in db.scalars(select(PersonModel).where(PersonModel.id.in_(member_ids))).all()
+            ],
+            key=lambda p: p["name"],
+        )
+        if member_ids
         else []
     )
 
@@ -647,7 +673,8 @@ def artist_detail(aid: int, db: Session = Depends(get_database)):
         "total_listened_seconds": int(total_listened_s),
         "avg_runtime": _fmt(avg_runtime_s),
         "avg_runtime_seconds": int(avg_runtime_s),
-        "genres": genre_names,
-        "collaborators": collaborator_names,
+        "genres": genres,
+        "members": members,
+        "collaborators": collaborators,
         "avg_album_score": (round(mean(score for _, _, score in albums), 6) if albums else None),
     }

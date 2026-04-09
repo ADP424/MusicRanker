@@ -262,7 +262,17 @@ export function ArtistDetailPage() {
               {a.genre_ids.length > 0 && (
                 <div className="album-detail-row">
                   <span className="detail-label">Genres</span>
-                  <span>{a.genre_ids.map((id) => genreMap[id]).filter(Boolean).sort().join(", ")}</span>
+                  <span>
+                    {a.genre_ids
+                      .filter((id) => genreMap[id])
+                      .sort((a, b) => genreMap[a].localeCompare(genreMap[b]))
+                      .map((id, i) => (
+                        <span key={id}>
+                          {i > 0 && ", "}
+                          <Link className="plain-link" to={`/music/genres/${id}`}>{genreMap[id]}</Link>
+                        </span>
+                      ))}
+                  </span>
                 </div>
               )}
               {a.artists.length > 1 && (
@@ -287,7 +297,7 @@ export function ArtistDetailPage() {
                     {a.soundtrack_movies.map((m, i) => (
                       <span key={m.id}>
                         {i > 0 && ", "}
-                        <Link to="/movies">{m.name}</Link>
+                        <Link to={`/movies/${m.id}`}>{m.name}</Link>
                       </span>
                     ))}
                   </span>
@@ -314,9 +324,10 @@ export function ArtistDetailPage() {
         render={(a) => (
           <>
             <span className="name">
-              {a.listen_link
-                ? <a href={a.listen_link} target="_blank" rel="noreferrer" className="album-name-link">{a.name}</a>
-                : a.name}
+              <Link to={`/music/albums/${a.id}`} className="plain-link">{a.name}</Link>
+              {a.listen_link && (
+                <> <a href={a.listen_link} target="_blank" rel="noreferrer" style={{ textDecoration: "none", fontStyle: "italic", fontSize: "0.85em", opacity: 0.7, color: "inherit" }}>(link)</a></>
+              )}
             </span>
             <span className="meta">
               {a.release_year} · {Math.floor(a.runtime_seconds / 60)}:

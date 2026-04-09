@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { Link } from "react-router-dom";
 import { api } from "../api/client";
 import { useGenres } from "../api/hooks";
 import type { Album, ArtistDetail } from "../api/types";
@@ -13,7 +14,7 @@ function fmtRuntime(seconds: number) {
 
 export function ArtistDetailDropdown({ artistId, primaryGenreId }: { artistId: number; primaryGenreId: number | null }) {
   const { data: genreList = [] } = useGenres();
-  const primaryGenreName = primaryGenreId != null ? genreList.find((g) => g.id === primaryGenreId)?.name : undefined;
+  const primaryGenre = primaryGenreId != null ? genreList.find((g) => g.id === primaryGenreId) : undefined;
 
   const { data, isLoading } = useQuery({
     queryKey: ["stats", "artist-detail", artistId],
@@ -37,22 +38,40 @@ export function ArtistDetailDropdown({ artistId, primaryGenreId }: { artistId: n
         <div><span className="detail-label">Avg Runtime</span><span>{data.avg_runtime}</span></div>
         <div><span className="detail-label">Avg Album Score</span><span>{data.avg_album_score?.toFixed(4) ?? "—"}</span></div>
       </div>
-      {primaryGenreName && (
+      {primaryGenre && (
         <div className="detail-tags">
           <span className="detail-label">Primary Genre</span>
-          <span>{primaryGenreName}</span>
+          <Link to={`/music/genres/${primaryGenre.id}`} className="plain-link">{primaryGenre.name}</Link>
         </div>
       )}
       {data.genres.length > 0 && (
         <div className="detail-tags">
           <span className="detail-label">Genres</span>
-          <span>{data.genres.join(", ")}</span>
+          <span>
+            {data.genres.map((g, i) => (
+              <span key={g.id}>{i > 0 && ", "}<Link to={`/music/genres/${g.id}`} className="plain-link">{g.name}</Link></span>
+            ))}
+          </span>
+        </div>
+      )}
+      {data.members.length > 0 && (
+        <div className="detail-tags">
+          <span className="detail-label">Members</span>
+          <span>
+            {data.members.map((p, i) => (
+              <span key={p.id}>{i > 0 && ", "}<Link to={`/people/${p.id}`} className="plain-link">{p.name}</Link></span>
+            ))}
+          </span>
         </div>
       )}
       {data.collaborators.length > 0 && (
         <div className="detail-tags">
           <span className="detail-label">Collaborators</span>
-          <span>{data.collaborators.join(", ")}</span>
+          <span>
+            {data.collaborators.map((a, i) => (
+              <span key={a.id}>{i > 0 && ", "}<Link to={`/music/artists/${a.id}`} className="plain-link">{a.name}</Link></span>
+            ))}
+          </span>
         </div>
       )}
       {albums.length > 0 && (
@@ -61,9 +80,10 @@ export function ArtistDetailDropdown({ artistId, primaryGenreId }: { artistId: n
             <li key={a.id} className="dropdown-album-row">
               <span className="dropdown-album-pos">#{a.position}</span>
               <span className="dropdown-album-name">
-                {a.listen_link
-                  ? <a href={a.listen_link} target="_blank" rel="noreferrer" className="album-name-link">{a.name}</a>
-                  : a.name}
+                <Link to={`/music/albums/${a.id}`} className="plain-link">{a.name}</Link>
+                {a.listen_link && (
+                  <> <a href={a.listen_link} target="_blank" rel="noreferrer" style={{ textDecoration: "none", fontStyle: "italic", fontSize: "0.85em", opacity: 0.7, color: "inherit" }}>(link)</a></>
+                )}
                 {a.alias && (
                   <span className="dropdown-album-alias">
                     {" ("}
@@ -80,7 +100,7 @@ export function ArtistDetailDropdown({ artistId, primaryGenreId }: { artistId: n
                         {i > 0 && " / "}
                         {ar.discography_link
                           ? <a href={ar.discography_link} target="_blank" rel="noreferrer" className="plain-link">{ar.name}</a>
-                          : ar.name}
+                          : <Link to={`/music/artists/${ar.id}`} className="plain-link">{ar.name}</Link>}
                       </span>
                     ))}]
                   </span>

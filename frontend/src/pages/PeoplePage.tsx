@@ -3,8 +3,9 @@ import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { api } from "../api/client";
-import { useArtists, usePeople } from "../api/hooks";
+import { useArtists, useMoviesRanked, usePeople } from "../api/hooks";
 import type { Person } from "../api/types";
+import { CAST_ROLE_LABELS } from "../api/types";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { PersonForm } from "../components/PersonForm";
 
@@ -12,37 +13,40 @@ type PeopleSearchBy = "all" | "name" | "nationality";
 
 function PersonRow({ person }: { person: Person }) {
   const { data: artists = [] } = useArtists();
-  const qc = useQueryClient();
+  const { data: movies = [] } = useMoviesRanked();
 
   const linkedArtists = artists.filter((a) => person.artist_ids.includes(a.id));
-
-  const unlinkArtist = useMutation({
-    mutationFn: (aid: number) => api.delete(`/persons/${person.id}/artists/${aid}`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["people"] }),
-  });
+  const linkedMovies = movies.flatMap((m) =>
+    m.persons
+      .filter((p) => p.id === person.id)
+      .map((p) => ({ movie: m, role: p.role }))
+  );
 
   return (
     <div className="artist-detail-dropdown">
+      {linkedArtists.length === 0 && linkedMovies.length === 0 && (
+        <div style={{ opacity: 0.5, fontSize: 13 }}>No linked artists or movies</div>
+      )}
       {linkedArtists.length > 0 && (
-        <div className="detail-tags">
-          <span className="detail-label">Artists</span>
-          <span>
-            {linkedArtists.map((a) => (
-              <span key={a.id} style={{ marginRight: "0.5rem" }}>
-                <Link to={`/music/artists/${a.id}`} className="plain-link">{a.name}</Link>
-                <button
-                  className="icon"
-                  style={{ marginLeft: 4, fontSize: 10 }}
-                  title="Unlink artist"
-                  onClick={() => unlinkArtist.mutate(a.id)}
-                >✕</button>
-              </span>
-            ))}
-          </span>
+        <div>
+          <div className="detail-label" style={{ marginBottom: "0.25rem" }}>Artists</div>
+          {linkedArtists.map((a) => (
+            <div key={a.id}>
+              <Link to={`/music/artists/${a.id}`} className="plain-link">{a.name}</Link>
+            </div>
+          ))}
         </div>
       )}
-      {linkedArtists.length === 0 && (
-        <div style={{ opacity: 0.5, fontSize: 13 }}>No linked artists</div>
+      {linkedMovies.length > 0 && (
+        <div style={{ marginTop: linkedArtists.length > 0 ? "0.5rem" : 0 }}>
+          <div className="detail-label" style={{ marginBottom: "0.25rem" }}>Movies</div>
+          {linkedMovies.map(({ movie, role }) => (
+            <div key={movie.id}>
+              <Link to={`/movies/${movie.id}`} className="plain-link">{movie.name}</Link>
+              <span style={{ opacity: 0.6, fontSize: 11, marginLeft: 4 }}>({CAST_ROLE_LABELS[role]})</span>
+            </div>
+          ))}
+        </div>
       )}
     </div>
   );
@@ -77,6 +81,8 @@ export function PeoplePage() {
     });
   }, [searchQ, searchBy, people]);
 
+  const allExpanded = visiblePeople.length > 0 && visiblePeople.every((p) => expandedIds.has(p.id));
+
   const remove = useMutation({
     mutationFn: (id: number) => api.delete(`/persons/${id}`),
     onMutate: async (id) => {
@@ -101,7 +107,18 @@ export function PeoplePage() {
     <section>
       <header className="page-head">
         <h1>People</h1>
-        <button onClick={() => setEditing("new")}>+ Add</button>
+        <div style={{ display: "flex", gap: "0.5rem" }}>
+          <button onClick={() => {
+            if (allExpanded) {
+              setExpandedIds(new Set());
+            } else {
+              setExpandedIds(new Set(visiblePeople.map((p) => p.id)));
+            }
+          }}>
+            {allExpanded ? "Collapse all" : "Expand all"}
+          </button>
+          <button onClick={() => setEditing("new")}>+ Add</button>
+        </div>
       </header>
 
       {dupWarning && (

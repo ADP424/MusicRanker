@@ -1,9 +1,13 @@
 import { NavLink, Route, Routes } from "react-router-dom";
 import { usePrefetchAll, usePrefetchMovies, usePrefetchPeople } from "./api/hooks";
+import { AlbumDetailPage } from "./pages/AlbumDetailPage";
 import { ArtistsPage } from "./pages/ArtistsPage";
 import { ArtistDetailPage } from "./pages/ArtistDetailPage";
+import { GenreDetailPage } from "./pages/GenreDetailPage";
 import { GenresPage } from "./pages/GenresPage";
 import { HomePage } from "./pages/HomePage";
+import { MovieDetailPage } from "./pages/MovieDetailPage";
+import { MovieGenreDetailPage } from "./pages/MovieGenreDetailPage";
 import { MovieGenresPage } from "./pages/MovieGenresPage";
 import { MoviesPage } from "./pages/MoviesPage";
 import { MovieStatsPage } from "./pages/MovieStatsPage";
@@ -26,7 +30,9 @@ function MusicSection() {
         <Routes>
           <Route path="/" element={<ArtistsPage />} />
           <Route path="/genres" element={<GenresPage />} />
+          <Route path="/genres/:id" element={<GenreDetailPage />} />
           <Route path="/artists/:id" element={<ArtistDetailPage />} />
+          <Route path="/albums/:id" element={<AlbumDetailPage />} />
           <Route path="/stats" element={<StatsPage />} />
         </Routes>
       </main>
@@ -48,6 +54,8 @@ function MoviesSection() {
         <Routes>
           <Route path="/" element={<MoviesPage />} />
           <Route path="/genres" element={<MovieGenresPage />} />
+          <Route path="/genres/:id" element={<MovieGenreDetailPage />} />
+          <Route path="/:id" element={<MovieDetailPage />} />
           <Route path="/stats" element={<MovieStatsPage />} />
         </Routes>
       </main>

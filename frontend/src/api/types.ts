@@ -79,6 +79,11 @@ export interface ArtistBody {
   notes: string | null;
 }
 
+export interface NamedRef {
+  id: number;
+  name: string;
+}
+
 export interface ArtistDetail {
   album_count: number;
   total_runtime: string;
@@ -87,8 +92,9 @@ export interface ArtistDetail {
   total_listened_seconds: number;
   avg_runtime: string;
   avg_runtime_seconds: number;
-  genres: string[];
-  collaborators: string[];
+  genres: NamedRef[];
+  members: NamedRef[];
+  collaborators: NamedRef[];
   avg_album_score: number | null;
 }
 
@@ -188,6 +194,13 @@ export interface MovieGenre {
 export type CastRole = "director" | "composer" | "actor" | "lead_actor";
 
 export const CAST_ROLES: CastRole[] = ["director", "composer", "lead_actor", "actor"];
+
+export const CAST_ROLE_LABELS: Record<CastRole, string> = {
+  director: "Director",
+  composer: "Composer",
+  actor: "Actor",
+  lead_actor: "Lead Actor",
+};
 
 export interface MoviePersonRef {
   id: number;
