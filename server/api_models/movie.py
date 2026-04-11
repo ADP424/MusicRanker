@@ -20,7 +20,7 @@ class MovieSoundtrackAlbumRef(BaseModel):
 
 class MovieIn(BaseModel):
     name: str
-    runtime_minutes: int = Field(gt=0)
+    runtime_minutes: int = Field(ge=0)
     release_year: int
     watches: int = Field(default=1, ge=1)
     watch_link: str | None = None
@@ -30,7 +30,7 @@ class MovieIn(BaseModel):
 
 class MoviePatch(BaseModel):
     name: str | None = None
-    runtime_minutes: int | None = Field(default=None, gt=0)
+    runtime_minutes: int | None = Field(default=None, ge=0)
     release_year: int | None = None
     watches: int | None = Field(default=None, ge=1)
     watch_link: str | None = None

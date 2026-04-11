@@ -1,19 +1,24 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
 import { useParams, Link } from "react-router-dom";
 
 import { api } from "../api/client";
-import type { PersonDetail } from "../api/types";
+import { PersonForm } from "../components/PersonForm";
+import type { Person, PersonDetail } from "../api/types";
 
 const ROLE_LABEL: Record<string, string> = {
   director:   "Director",
   composer:   "Composer",
-  actor:      "Actor",
-  lead_actor: "Lead Actor",
+  actor:       "Actor",
+  lead_actor:  "Lead Actor",
+  cameo_actor: "Cameo Actor",
 };
 
 export function PersonDetailPage() {
   const { id } = useParams<{ id: string }>();
   const pid = Number(id);
+  const qc = useQueryClient();
+  const [editing, setEditing] = useState(false);
 
   const { data, isLoading, isError } = useQuery({
     queryKey: ["people", pid, "detail"],
@@ -28,6 +33,7 @@ export function PersonDetailPage() {
     <section>
       <header className="page-head">
         <h1>{data.name}</h1>
+        <button onClick={() => setEditing(true)}>✎ Edit</button>
       </header>
 
       <div className="artist-detail-dropdown" style={{ marginBottom: "1.5rem" }}>
@@ -89,6 +95,21 @@ export function PersonDetailPage() {
 
       {data.artists.length === 0 && data.movie_roles.length === 0 && (
         <p style={{ opacity: 0.5 }}>No linked artists or movie roles yet.</p>
+      )}
+
+      {editing && (
+        <div className="modal-backdrop" onClick={() => setEditing(false)}>
+          <div onClick={(e) => e.stopPropagation()}>
+            <PersonForm
+              initial={{ ...data, artist_ids: data.artists.map((a) => a.id) } as Person}
+              onClose={() => {
+                setEditing(false);
+                qc.invalidateQueries({ queryKey: ["people", pid, "detail"] });
+                qc.invalidateQueries({ queryKey: ["people"] });
+              }}
+            />
+          </div>
+        </div>
       )}
     </section>
   );

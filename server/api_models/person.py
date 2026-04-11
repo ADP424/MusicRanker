@@ -48,22 +48,32 @@ class PersonDetail(BaseModel):
     movie_roles: list[PersonMovieRoleRef] = []
 
 
-class GraphEdge(BaseModel):
-    person_a: int
-    person_b: int
-    via_movie_ids: list[int] = []
-    via_artist_ids: list[int] = []
-
-
-class GraphPersonOut(BaseModel):
+class GraphPersonNode(BaseModel):
     id: int
     name: str
     artist_ids: list[int] = []
     movie_roles: list[str] = []  # distinct roles across all movies
 
 
+class GraphMovieNode(BaseModel):
+    id: int
+    name: str
+
+
+class GraphArtistNode(BaseModel):
+    id: int
+    name: str
+
+
+class GraphEdge(BaseModel):
+    # source is always a person id; target is a movie or artist id (prefixed in frontend)
+    person_id: int
+    target_id: int
+    target_type: str  # "movie" | "artist"
+
+
 class PersonGraphOut(BaseModel):
-    persons: list[GraphPersonOut] = []
-    edges: list[GraphEdge] = []
-    movies: dict[int, str] = {}  # id → name
-    artists: dict[int, str] = {}  # id → name
+    persons: list[GraphPersonNode] = []
+    movies: list[GraphMovieNode] = []
+    artists: list[GraphArtistNode] = []
+    edges: list[GraphEdge] = []  # id → name

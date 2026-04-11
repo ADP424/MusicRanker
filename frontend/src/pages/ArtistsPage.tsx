@@ -148,7 +148,7 @@ export function ArtistsPage() {
         disableDrag={searchQ.trim().length > 0}
         renderDetail={(a) =>
           expandedIds.has(a.id) ? (
-            <ArtistDetailDropdown artistId={a.id} primaryGenreId={a.primary_genre} />
+            <ArtistDetailDropdown artistId={a.id} primaryGenreId={a.primary_genre} discographyLink={a.discography_link} />
           ) : null
         }
         render={(a) => (

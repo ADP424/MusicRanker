@@ -12,7 +12,7 @@ function fmtRuntime(seconds: number) {
   return `${m}:${String(s).padStart(2, "0")}`;
 }
 
-export function ArtistDetailDropdown({ artistId, primaryGenreId }: { artistId: number; primaryGenreId: number | null }) {
+export function ArtistDetailDropdown({ artistId, primaryGenreId, discographyLink }: { artistId: number; primaryGenreId: number | null; discographyLink?: string }) {
   const { data: genreList = [] } = useGenres();
   const primaryGenre = primaryGenreId != null ? genreList.find((g) => g.id === primaryGenreId) : undefined;
 
@@ -38,6 +38,12 @@ export function ArtistDetailDropdown({ artistId, primaryGenreId }: { artistId: n
         <div><span className="detail-label">Avg Runtime</span><span>{data.avg_runtime}</span></div>
         <div><span className="detail-label">Avg Album Score</span><span>{data.avg_album_score?.toFixed(4) ?? "—"}</span></div>
       </div>
+      {discographyLink && (
+        <div className="detail-tags">
+          <span className="detail-label">Discography</span>
+          <a href={discographyLink} target="_blank" rel="noreferrer" className="plain-link">Link</a>
+        </div>
+      )}
       {primaryGenre && (
         <div className="detail-tags">
           <span className="detail-label">Primary Genre</span>

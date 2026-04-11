@@ -21,7 +21,7 @@ from ..ranking import rank_between
 
 router = APIRouter(prefix="/movies", tags=["movies"])
 
-ROLE_ORDER = [CastRole.director, CastRole.composer, CastRole.actor, CastRole.lead_actor]
+ROLE_ORDER = [CastRole.director, CastRole.composer, CastRole.lead_actor, CastRole.actor, CastRole.cameo_actor]
 
 
 def _get(db: Session, mid: int) -> Movie:

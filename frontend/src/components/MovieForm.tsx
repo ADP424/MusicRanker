@@ -13,8 +13,9 @@ const orNull = (s: string) => (s.trim() === "" ? null : s);
 const ROLE_LABEL: Record<CastRole, string> = {
   director:   "Director",
   composer:   "Composer",
-  actor:      "Actor",
-  lead_actor: "Lead Actor",
+  actor:       "Actor",
+  lead_actor:  "Lead Actor",
+  cameo_actor: "Cameo Actor",
 };
 
 // A pending person link: person_id + role
@@ -71,11 +72,15 @@ export function MovieForm(props: {
   );
   const [albumSearch, setAlbumSearch] = useState("");
 
+  const [albumSortSnap, setAlbumSortSnap] = useState(() => soundtrackIds);
+  useEffect(() => { setAlbumSortSnap(soundtrackIds); }, [albumSearch]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const filteredAlbums = useMemo(() => {
     const q = albumSearch.trim().toLowerCase();
     return (q ? allAlbums.filter((a: AlbumIndex) => a.name.toLowerCase().includes(q)) : allAlbums)
+      .sort((a: AlbumIndex, b: AlbumIndex) => (albumSortSnap.has(a.id) ? 0 : 1) - (albumSortSnap.has(b.id) ? 0 : 1))
       .slice(0, 50);
-  }, [albumSearch, allAlbums]);
+  }, [albumSearch, allAlbums, albumSortSnap]);
 
   useEffect(() => {
     if (editing && initial.persons) {
@@ -85,10 +90,19 @@ export function MovieForm(props: {
     }
   }, [initial?.persons]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const [castSortSnap, setCastSortSnap] = useState(() => castLinks);
+  useEffect(() => { setCastSortSnap(castLinks); }, [castSearch, addRole]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const filteredPeople = useMemo(() => {
     const q = castSearch.trim().toLowerCase();
-    return allPeople.filter((p) => !q || p.name.toLowerCase().includes(q));
-  }, [castSearch, allPeople]);
+    return allPeople
+      .filter((p) => !q || p.name.toLowerCase().includes(q))
+      .sort((a, b) => {
+        const aKey = linkKey({ personId: a.id, role: addRole });
+        const bKey = linkKey({ personId: b.id, role: addRole });
+        return (castSortSnap.has(aKey) ? 0 : 1) - (castSortSnap.has(bKey) ? 0 : 1);
+      });
+  }, [castSearch, allPeople, castSortSnap, addRole]);
 
   function toggleLink(person: Person, role: CastRole) {
     const key = linkKey({ personId: person.id, role });
@@ -174,7 +188,7 @@ export function MovieForm(props: {
 
   // Grouped summary of selected persons
   const selectedByRole = useMemo(() => {
-    const map: Record<CastRole, string[]> = { director: [], composer: [], actor: [], lead_actor: [] };
+    const map: Record<CastRole, string[]> = { director: [], composer: [], actor: [], lead_actor: [], cameo_actor: [] };
     for (const link of pendingLinks) {
       const p = allPeople.find((p) => p.id === link.personId);
       if (p) map[link.role].push(p.name);
@@ -211,7 +225,7 @@ export function MovieForm(props: {
 
         <div className="grid-2">
           <label>Runtime (minutes)
-            <input type="number" min={1} value={f.runtime_minutes} onChange={num("runtime_minutes")} />
+            <input type="number" min={0} value={f.runtime_minutes} onChange={num("runtime_minutes")} />
           </label>
           <label>Release year
             <input required type="number" value={f.release_year} onChange={num("release_year")} />

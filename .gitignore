@@ -20,6 +20,12 @@ node_modules
 
 # Input
 *.csv
+*.tsv
 
 # Snapshots
-snapshots/
+server/snapshots/
+!server/snapshots/.gitkeep
+
+# TMDB Import
+tmdb_cache.json
+tmdb_import_report.txt

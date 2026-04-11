@@ -1,12 +1,16 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
 import { api } from "../api/client";
+import { GenreForm } from "../components/GenreForm";
 import type { Genre } from "../api/types";
 
 export function GenreDetailPage() {
   const { id } = useParams<{ id: string }>();
   const gid = Number(id);
+  const qc = useQueryClient();
+  const [editing, setEditing] = useState(false);
 
   const { data: genre, isLoading, isError } = useQuery({
     queryKey: ["genres", gid],
@@ -33,6 +37,7 @@ export function GenreDetailPage() {
     <section>
       <header className="page-head">
         <h1>{genre.name}</h1>
+        <button onClick={() => setEditing(true)}>✎ Edit</button>
       </header>
 
       <div className="artist-detail-dropdown" style={{ marginBottom: "1.5rem" }}>
@@ -85,6 +90,22 @@ export function GenreDetailPage() {
 
       {parents.length === 0 && children.length === 0 && (
         <p style={{ opacity: 0.5 }}>No parent or child genres.</p>
+      )}
+
+      {editing && (
+        <div className="modal-backdrop" onClick={() => setEditing(false)}>
+          <div onClick={(e) => e.stopPropagation()}>
+            <GenreForm
+              initial={genre}
+              onClose={() => {
+                setEditing(false);
+                qc.invalidateQueries({ queryKey: ["genres", gid] });
+                qc.invalidateQueries({ queryKey: ["genres", gid, "parents"] });
+                qc.invalidateQueries({ queryKey: ["genres", gid, "children"] });
+              }}
+            />
+          </div>
+        </div>
       )}
     </section>
   );

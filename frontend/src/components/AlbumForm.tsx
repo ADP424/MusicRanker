@@ -11,7 +11,7 @@ const orNull = (s: string) => (s.trim() === "" ? null : s);
 export function AlbumForm(props: {
   artistId: number;
   initial?: Album;
-  onClose: () => void;
+  onClose: (savedName?: string, savedId?: number) => void;
 }) {
   const { artistId, initial, onClose } = props;
   const editing = initial !== undefined;
@@ -103,14 +103,14 @@ export function AlbumForm(props: {
 
       return album;
     },
-    onSuccess: () => {
+    onSuccess: (album) => {
       qc.invalidateQueries({ queryKey: ["artists", artistId, "albums"] });
       qc.invalidateQueries({ queryKey: ["albums", "index"] });
       if (editing) {
         qc.invalidateQueries({ queryKey: ["albums", initial.id, "genres"] });
         qc.invalidateQueries({ queryKey: ["albums", initial.id, "artists"] });
       }
-      onClose();
+      onClose(album.name, album.id);
     },
   });
 

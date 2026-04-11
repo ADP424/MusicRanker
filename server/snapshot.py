@@ -6,7 +6,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-load_dotenv(Path(__file__).parent / ".env")
+load_dotenv()
 
 SNAPSHOTS_DIR = Path(__file__).parent / "snapshots"
 

@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
 import { api } from "../api/client";
-import { useGenres } from "../api/hooks";
+import { useAlbumIndex, useGenres } from "../api/hooks";
 import type { Album, ArtistRef, Genre } from "../api/types";
 import { AlbumForm } from "../components/AlbumForm";
 import { ConfirmDialog } from "../components/ConfirmDialog";
@@ -242,11 +242,15 @@ export function AlbumDetailPage() {
   const qc = useQueryClient();
   const [editing, setEditing] = useState(false);
 
+  const [dupWarning, setDupWarning] = useState<string | null>(null);
+
   const { data: album, isLoading, isError } = useQuery({
     queryKey: ["albums", albumId],
     queryFn: () => api.get<Album>(`/albums/${albumId}`),
     enabled: !isNaN(albumId),
   });
+
+  const { data: albumIndex = [] } = useAlbumIndex();
 
   if (isLoading) return <section><p>Loading…</p></section>;
   if (isError || !album) return <section><p>Album not found.</p></section>;
@@ -264,6 +268,13 @@ export function AlbumDetailPage() {
         </h1>
         <button onClick={() => setEditing(true)}>✎ Edit</button>
       </header>
+
+      {dupWarning && (
+        <div className="dup-warning">
+          <span>{dupWarning}</span>
+          <button className="icon" onClick={() => setDupWarning(null)}>✕</button>
+        </div>
+      )}
 
       <div className="artist-detail-dropdown" style={{ marginBottom: "1.5rem" }}>
         <div className="artist-detail-grid">
@@ -320,9 +331,16 @@ export function AlbumDetailPage() {
             <AlbumForm
               artistId={firstArtistId}
               initial={album}
-              onClose={() => {
+              onClose={(savedName, savedId) => {
                 setEditing(false);
                 qc.invalidateQueries({ queryKey: ["albums", albumId] });
+                if (savedName != null) {
+                  const nameLower = savedName.toLowerCase();
+                  const dups = albumIndex.filter(
+                    (a) => a.name.toLowerCase() === nameLower && a.id !== savedId
+                  );
+                  if (dups.length > 0) setDupWarning(`Warning: another album named "${savedName}" already exists.`);
+                }
               }}
             />
           </div>

@@ -23,6 +23,7 @@ const ROLE_LABEL: Record<string, string> = {
   composer: "Composer",
   lead_actor: "Lead Actor",
   actor: "Actor",
+  cameo_actor: "Cameo Actor",
 };
 
 export function MoviesPage() {
@@ -185,7 +186,7 @@ export function MoviesPage() {
             <div className="album-detail-dropdown">
               {m.persons.length > 0 && (() => {
                 const byRole = groupPersons(m.persons);
-                const roleOrder = ["director", "composer", "lead_actor", "actor"];
+                const roleOrder = ["director", "composer", "lead_actor", "actor", "cameo_actor"];
                 return roleOrder
                   .filter((r) => byRole[r]?.length)
                   .map((role) => (

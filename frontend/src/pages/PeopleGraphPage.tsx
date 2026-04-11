@@ -1,94 +1,21 @@
+import * as d3 from "d3-force";
 import { useQuery } from "@tanstack/react-query";
-import { useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api/client";
 import type { CastRole, GraphPerson, PersonGraph } from "../api/types";
 import { CAST_ROLES } from "../api/types";
 
-// ─── Force layout ──────────────────────────────────────────────────────────
+// ─── Constants ─────────────────────────────────────────────────────────────
 
-const NODE_R = 28;
-const ITERATIONS = 300;
-const REPULSION = 6000;
-const SPRING_LEN = 200;
-const SPRING_K = 0.04;
-const DAMPING = 0.85;
-
-interface Pos { x: number; y: number }
-
-function forceLayout(
-  nodeIds: number[],
-  edges: Array<{ a: number; b: number }>,
-): Map<number, Pos> {
-  if (nodeIds.length === 0) return new Map();
-
-  const pos = new Map<number, Pos>();
-  nodeIds.forEach((id, i) => {
-    const angle = (2 * Math.PI * i) / nodeIds.length;
-    const r = 150 + nodeIds.length * 8;
-    pos.set(id, { x: r * Math.cos(angle), y: r * Math.sin(angle) });
-  });
-
-  const vel = new Map<number, Pos>(nodeIds.map((id) => [id, { x: 0, y: 0 }]));
-
-  for (let iter = 0; iter < ITERATIONS; iter++) {
-    const force = new Map<number, Pos>(nodeIds.map((id) => [id, { x: 0, y: 0 }]));
-
-    for (let i = 0; i < nodeIds.length; i++) {
-      for (let j = i + 1; j < nodeIds.length; j++) {
-        const a = nodeIds[i], b = nodeIds[j];
-        const pa = pos.get(a)!, pb = pos.get(b)!;
-        const dx = pa.x - pb.x, dy = pa.y - pb.y;
-        const dist = Math.max(1, Math.sqrt(dx * dx + dy * dy));
-        const mag = REPULSION / (dist * dist);
-        const fx = (dx / dist) * mag, fy = (dy / dist) * mag;
-        force.get(a)!.x += fx; force.get(a)!.y += fy;
-        force.get(b)!.x -= fx; force.get(b)!.y -= fy;
-      }
-    }
-
-    for (const { a, b } of edges) {
-      const pa = pos.get(a), pb = pos.get(b);
-      if (!pa || !pb) continue;
-      const dx = pb.x - pa.x, dy = pb.y - pa.y;
-      const dist = Math.max(1, Math.sqrt(dx * dx + dy * dy));
-      const mag = SPRING_K * (dist - SPRING_LEN);
-      const fx = (dx / dist) * mag, fy = (dy / dist) * mag;
-      force.get(a)!.x += fx; force.get(a)!.y += fy;
-      force.get(b)!.x -= fx; force.get(b)!.y -= fy;
-    }
-
-    for (const id of nodeIds) {
-      const v = vel.get(id)!;
-      const f = force.get(id)!;
-      v.x = (v.x + f.x) * DAMPING;
-      v.y = (v.y + f.y) * DAMPING;
-      const p = pos.get(id)!;
-      p.x += v.x;
-      p.y += v.y;
-    }
-  }
-
-  let minX = Infinity, minY = Infinity;
-  for (const p of pos.values()) { minX = Math.min(minX, p.x); minY = Math.min(minY, p.y); }
-  for (const p of pos.values()) { p.x -= minX - NODE_R * 2; p.y -= minY - NODE_R * 2; }
-
-  return pos;
-}
-
-// ─── Edge tooltip ──────────────────────────────────────────────────────────
-
-function edgeLabel(
-  via_movie_ids: number[],
-  via_artist_ids: number[],
-  movies: Record<number, string>,
-  artists: Record<number, string>,
-): string {
-  const parts: string[] = [];
-  via_movie_ids.forEach((id) => { if (movies[id]) parts.push(movies[id]); });
-  via_artist_ids.forEach((id) => { if (artists[id]) parts.push(artists[id]); });
-  return parts.join(", ");
-}
+const PERSON_R = 18;
+const HUB_R = 12; // movie/artist hub nodes
+const PERSON_COLOR = "#6b8cba";
+const MOVIE_COLOR = "#c47c3e";
+const ARTIST_COLOR = "#6ba06b";
+const EDGE_COLOR_DEFAULT = "rgba(150,150,150,0.18)";
+const EDGE_COLOR_HL = "rgba(150,150,150,0.75)";
+const EDGE_COLOR_DIM = "rgba(150,150,150,0.05)";
 
 // ─── Role label ────────────────────────────────────────────────────────────
 
@@ -97,6 +24,7 @@ const ROLE_LABELS: Record<CastRole, string> = {
   composer: "Composer",
   lead_actor: "Lead actor",
   actor: "Actor",
+  cameo_actor: "Cameo Actor",
 };
 
 // ─── Filters ───────────────────────────────────────────────────────────────
@@ -111,10 +39,9 @@ function personPassesFilter(person: GraphPerson, filters: Filters): boolean {
   const hasMovies = person.movie_roles.length > 0;
   const hasMusic = person.artist_ids.length > 0;
 
-  if (!filters.moviePerson && !filters.musicArtist) return true; // no filter active
+  if (!filters.moviePerson && !filters.musicArtist) return true;
 
   if (filters.moviePerson && hasMovies) {
-    // If specific role checkboxes are checked, require at least one match
     if (filters.movieRoles.size > 0) {
       if (person.movie_roles.some((r) => filters.movieRoles.has(r))) return true;
     } else {
@@ -126,6 +53,46 @@ function personPassesFilter(person: GraphPerson, filters: Filters): boolean {
   return false;
 }
 
+// ─── D3 node/link types ────────────────────────────────────────────────────
+
+interface SimNode extends d3.SimulationNodeDatum {
+  uid: string; // "p-{id}" | "m-{id}" | "a-{id}"
+  label: string;
+  kind: "person" | "movie" | "artist";
+  id_: number;
+}
+
+interface SimLink extends d3.SimulationLinkDatum<SimNode> {
+  source: SimNode;
+  target: SimNode;
+}
+
+// ─── Search result type ───────────────────────────────────────────────────
+
+type SearchKind = "all" | "person" | "movie" | "artist";
+
+interface SearchResult {
+  uid: string;
+  label: string;
+  kind: "person" | "movie" | "artist";
+  id_: number;
+}
+
+// ─── Hit-test helper ──────────────────────────────────────────────────────
+
+function hitTest(nodes: SimNode[], canvasX: number, canvasY: number): SimNode | null {
+  for (let i = nodes.length - 1; i >= 0; i--) {
+    const node = nodes[i];
+    const x = node.x ?? 0;
+    const y = node.y ?? 0;
+    const r = node.kind === "person" ? PERSON_R : HUB_R;
+    const dx = canvasX - x;
+    const dy = canvasY - y;
+    if (dx * dx + dy * dy <= r * r) return node;
+  }
+  return null;
+}
+
 // ─── Main component ─────────────────────────────────────────────────────────
 
 export function PeopleGraphPage() {
@@ -134,17 +101,26 @@ export function PeopleGraphPage() {
     queryFn: () => api.get<PersonGraph>("/persons/graph"),
   });
 
-  const [offset, setOffset] = useState({ x: 0, y: 0 });
-  const [zoom, setZoom] = useState(1);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  const transform = useRef({ x: 0, y: 0, k: 1 });
   const dragging = useRef(false);
   const moved = useRef(false);
-  const lastPos = useRef({ x: 0, y: 0 });
-  const [selected, setSelected] = useState<number | null>(null);
+  const lastMouse = useRef({ x: 0, y: 0 });
+
+  const [selected, setSelected] = useState<string | null>(null); // uid
+  const [, forceRedraw] = useState(0);
 
   // Filters
   const [filterMoviePerson, setFilterMoviePerson] = useState(false);
   const [filterMovieRoles, setFilterMovieRoles] = useState<Set<CastRole>>(new Set());
   const [filterMusicArtist, setFilterMusicArtist] = useState(false);
+
+  // Search
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchKind, setSearchKind] = useState<SearchKind>("all");
 
   function toggleRole(role: CastRole) {
     setFilterMovieRoles((prev) => {
@@ -160,127 +136,481 @@ export function PeopleGraphPage() {
     musicArtist: filterMusicArtist,
   };
 
+  // Derived lookup maps
+  const movieById = useMemo(() => {
+    if (!data) return new Map<number, string>();
+    return new Map(data.movies.map((m) => [m.id, m.name]));
+  }, [data]);
+
+  const artistById = useMemo(() => {
+    if (!data) return new Map<number, string>();
+    return new Map(data.artists.map((a) => [a.id, a.name]));
+  }, [data]);
+
+  const personById = useMemo(() => {
+    if (!data) return new Map<number, GraphPerson>();
+    return new Map(data.persons.map((p) => [p.id, p]));
+  }, [data]);
+
   // Filtered persons
   const filteredPersons = useMemo(() => {
     if (!data) return [];
     return data.persons.filter((p) => personPassesFilter(p, filters));
   }, [data, filterMoviePerson, filterMovieRoles, filterMusicArtist]);
 
-  const filteredPersonIds = useMemo(() => new Set(filteredPersons.map((p) => p.id)), [filteredPersons]);
+  const filteredPersonUids = useMemo(
+    () => new Set(filteredPersons.map((p) => `p-${p.id}`)),
+    [filteredPersons],
+  );
 
-  // Only edges where both endpoints are in the filtered set
-  const filteredEdges = useMemo(() => {
-    if (!data) return [];
-    return data.edges.filter(
-      (e) => filteredPersonIds.has(e.person_a) && filteredPersonIds.has(e.person_b),
-    );
-  }, [data, filteredPersonIds]);
+  // Build bipartite sim nodes + links from filtered data
+  const { simNodes, simLinks } = useMemo(() => {
+    if (!data) return { simNodes: [], simLinks: [] };
 
-  // Compute layout based on filtered persons/edges
-  const { positions, canvasW, canvasH } = useMemo(() => {
-    const nodeIds = filteredPersons.map((p) => p.id);
-    const simEdges = filteredEdges.map((e) => ({ a: e.person_a, b: e.person_b }));
-    const positions = forceLayout(nodeIds, simEdges);
-    let maxX = 0, maxY = 0;
-    for (const p of positions.values()) {
-      maxX = Math.max(maxX, p.x);
-      maxY = Math.max(maxY, p.y);
+    const nodeMap = new Map<string, SimNode>();
+
+    for (const p of filteredPersons) {
+      const uid = `p-${p.id}`;
+      nodeMap.set(uid, { uid, label: p.name, kind: "person", id_: p.id });
     }
-    return { positions, canvasW: maxX + NODE_R * 3, canvasH: maxY + NODE_R * 3 };
-  }, [filteredPersons, filteredEdges]);
 
-  // Nodes/edges connected to selected (only within filtered set)
-  const connectedIds = useMemo(() => {
-    if (selected === null || !data) return null;
-    if (!filteredPersonIds.has(selected)) return null;
-    const ids = new Set<number>([selected]);
-    for (const e of filteredEdges) {
-      if (e.person_a === selected || e.person_b === selected) {
-        ids.add(e.person_a);
-        ids.add(e.person_b);
+    const links: Array<{ sourceUid: string; targetUid: string }> = [];
+
+    for (const edge of data.edges) {
+      const personUid = `p-${edge.person_id}`;
+      if (!filteredPersonUids.has(personUid)) continue;
+
+      const hubUid =
+        edge.target_type === "movie" ? `m-${edge.target_id}` : `a-${edge.target_id}`;
+
+      if (!nodeMap.has(hubUid)) {
+        const label =
+          edge.target_type === "movie"
+            ? (movieById.get(edge.target_id) ?? String(edge.target_id))
+            : (artistById.get(edge.target_id) ?? String(edge.target_id));
+        nodeMap.set(hubUid, {
+          uid: hubUid,
+          label,
+          kind: edge.target_type === "movie" ? "movie" : "artist",
+          id_: edge.target_id,
+        });
+      }
+
+      links.push({ sourceUid: personUid, targetUid: hubUid });
+    }
+
+    // Prune hub nodes connected to only 1 filtered person
+    const hubDegree = new Map<string, number>();
+    for (const { targetUid } of links) {
+      if (!targetUid.startsWith("p-")) {
+        hubDegree.set(targetUid, (hubDegree.get(targetUid) ?? 0) + 1);
       }
     }
-    return ids;
-  }, [selected, filteredEdges, filteredPersonIds]);
+    for (const [uid, deg] of hubDegree) {
+      if (deg < 2) nodeMap.delete(uid);
+    }
+
+    const filteredLinks = links.filter(
+      ({ sourceUid, targetUid }) => nodeMap.has(sourceUid) && nodeMap.has(targetUid),
+    );
+
+    const simNodes = Array.from(nodeMap.values());
+    const nodeByUid = new Map(simNodes.map((n) => [n.uid, n]));
+    const simLinks: SimLink[] = filteredLinks.map(({ sourceUid, targetUid }) => ({
+      source: nodeByUid.get(sourceUid)!,
+      target: nodeByUid.get(targetUid)!,
+    }));
+
+    return { simNodes, simLinks };
+  }, [filteredPersons, filteredPersonUids, data, movieById, artistById]);
+
+  // ─── D3 simulation ──────────────────────────────────────────────────────
+
+  const simRef = useRef<d3.Simulation<SimNode, SimLink> | null>(null);
+  const nodesRef = useRef<SimNode[]>([]);
+  const linksRef = useRef<SimLink[]>([]);
+  const selectedRef = useRef<string | null>(null);
+  const connectedRef = useRef<Set<string> | null>(null);
+  const simSettledRef = useRef(false); // true once the sim has run fitView at least once
+
+  useEffect(() => { selectedRef.current = selected; }, [selected]);
+
+  const drawDirect = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    const dpr = window.devicePixelRatio || 1;
+
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    const { x, y, k } = transform.current;
+    ctx.setTransform(dpr * k, 0, 0, dpr * k, dpr * x, dpr * y);
+
+    const nodes = nodesRef.current;
+    const links = linksRef.current;
+    const sel = selectedRef.current;
+    const conn = connectedRef.current;
+
+    // Draw edges
+    for (const link of links) {
+      const sx = link.source.x ?? 0, sy = link.source.y ?? 0;
+      const tx = link.target.x ?? 0, ty = link.target.y ?? 0;
+      const hl = conn !== null && conn.has(link.source.uid) && conn.has(link.target.uid);
+      const dm = conn !== null && !hl;
+      ctx.beginPath();
+      ctx.moveTo(sx, sy);
+      ctx.lineTo(tx, ty);
+      ctx.strokeStyle = dm ? EDGE_COLOR_DIM : hl ? EDGE_COLOR_HL : EDGE_COLOR_DEFAULT;
+      ctx.lineWidth = hl ? 1.5 : 1;
+      ctx.stroke();
+    }
+
+    // Draw nodes
+    for (const node of nodes) {
+      const nx = node.x ?? 0, ny = node.y ?? 0;
+      const r = node.kind === "person" ? PERSON_R : HUB_R;
+      const isSelected = node.uid === sel;
+      const isConnected = conn !== null && conn.has(node.uid);
+      const isDimmed = conn !== null && !isConnected;
+
+      ctx.globalAlpha = isDimmed ? 0.15 : 1;
+
+      const baseColor =
+        node.kind === "person" ? PERSON_COLOR : node.kind === "movie" ? MOVIE_COLOR : ARTIST_COLOR;
+
+      ctx.beginPath();
+      ctx.arc(nx, ny, r, 0, Math.PI * 2);
+      ctx.fillStyle = isSelected ? baseColor : baseColor + "44";
+      ctx.fill();
+      ctx.strokeStyle = isSelected ? baseColor : baseColor + "99";
+      ctx.lineWidth = isSelected ? 2 : 1;
+      ctx.stroke();
+
+      // Labels
+      ctx.fillStyle = isDimmed ? "#666" : "#ccc";
+      const isHub = node.kind !== "person";
+      const fontSize = isHub ? 9 : (isSelected ? 11 : 10);
+      ctx.font = `${isSelected ? "bold " : ""}${fontSize}px sans-serif`;
+      ctx.textAlign = "center";
+
+      if (isHub) {
+        ctx.textBaseline = "top";
+        ctx.fillText(node.label, nx, ny + r + 3, 120);
+      } else {
+        ctx.textBaseline = "middle";
+        const maxW = r * 2 - 4;
+        const words = node.label.split(" ");
+        const lines: string[] = [];
+        let line = "";
+        for (const word of words) {
+          const test = line ? `${line} ${word}` : word;
+          if (ctx.measureText(test).width > maxW && line) { lines.push(line); line = word; }
+          else line = test;
+        }
+        if (line) lines.push(line);
+        const lineH = fontSize + 2;
+        const startY = ny - ((lines.length - 1) * lineH) / 2;
+        for (let i = 0; i < lines.length; i++) ctx.fillText(lines[i], nx, startY + i * lineH, maxW);
+      }
+
+      ctx.globalAlpha = 1;
+    }
+  }, []);
+
+  const fitView = useCallback(() => {
+    const nodes = nodesRef.current;
+    const container = containerRef.current;
+    if (nodes.length === 0 || !container) return;
+    const { clientWidth: cw, clientHeight: ch } = container;
+    if (cw === 0 || ch === 0) return;
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const n of nodes) {
+      const x = n.x ?? 0, y = n.y ?? 0;
+      minX = Math.min(minX, x); maxX = Math.max(maxX, x);
+      minY = Math.min(minY, y); maxY = Math.max(maxY, y);
+    }
+    const pad = 60;
+    const graphW = maxX - minX + pad * 2;
+    const graphH = maxY - minY + pad * 2;
+    const k = Math.max(0.1, Math.min(4, Math.min(cw / graphW, ch / graphH)));
+    transform.current = {
+      x: cw / 2 - ((minX + maxX) / 2) * k,
+      y: ch / 2 - ((minY + maxY) / 2) * k,
+      k,
+    };
+    drawDirect();
+  }, [drawDirect]);
+
+  // Resize canvas to container
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const container = containerRef.current;
+    if (!canvas || !container) return;
+
+    function resize() {
+      if (!canvas || !container) return;
+      const dpr = window.devicePixelRatio || 1;
+      const w = container.clientWidth;
+      const h = container.clientHeight;
+      if (w === 0 || h === 0) return;
+      canvas.width = w * dpr;
+      canvas.height = h * dpr;
+      canvas.style.width = w + "px";
+      canvas.style.height = h + "px";
+      // If sim has already settled, re-fit to the new dimensions; otherwise just redraw
+      if (simSettledRef.current) fitView(); else drawDirect();
+    }
+
+    const ro = new ResizeObserver(resize);
+    ro.observe(container);
+    resize();
+    return () => ro.disconnect();
+  }, [drawDirect, fitView]);
+
+  // Build/restart simulation when filtered data changes
+  useEffect(() => {
+    nodesRef.current = simNodes;
+    linksRef.current = simLinks;
+    simSettledRef.current = false;
+
+    if (simRef.current) simRef.current.stop();
+
+    if (simNodes.length === 0) { drawDirect(); return; }
+
+    simNodes.forEach((node, i) => {
+      if (node.x === undefined) {
+        const angle = (2 * Math.PI * i) / simNodes.length;
+        const r = 100 + simNodes.length * 4;
+        node.x = r * Math.cos(angle);
+        node.y = r * Math.sin(angle);
+      }
+    });
+
+    let tick = 0;
+    const sim = d3
+      .forceSimulation<SimNode>(simNodes)
+      .force("link", d3.forceLink<SimNode, SimLink>(simLinks).id((d) => d.uid).distance(120).strength(0.4))
+      .force("charge", d3.forceManyBody<SimNode>().strength((d) => (d.kind === "person" ? -300 : -150)))
+      .force("collision", d3.forceCollide<SimNode>((d) => (d.kind === "person" ? PERSON_R + 4 : HUB_R + 4)))
+      .alphaDecay(0.03)
+      .on("tick", () => { if (tick++ < 30) fitView(); else drawDirect(); })
+      .on("end", () => { simSettledRef.current = true; fitView(); });
+
+    simRef.current = sim;
+    return () => { sim.stop(); };
+  }, [simNodes, simLinks, drawDirect, fitView]);
+
+  useEffect(() => { drawDirect(); }, [selected, drawDirect]);
+
+  // ─── Selection helper ────────────────────────────────────────────────────
+
+  function selectNode(uid: string | null) {
+    selectedRef.current = uid;
+    if (uid !== null) {
+      const connUids = new Set<string>([uid]);
+      for (const link of linksRef.current) {
+        if (link.source.uid === uid || link.target.uid === uid) {
+          connUids.add(link.source.uid);
+          connUids.add(link.target.uid);
+        }
+      }
+      connectedRef.current = connUids;
+    } else {
+      connectedRef.current = null;
+    }
+    setSelected(uid);
+    forceRedraw((n) => n + 1);
+  }
+
+  // ─── Pan / zoom ─────────────────────────────────────────────────────────
+
+  function canvasToWorld(cx: number, cy: number) {
+    const { x, y, k } = transform.current;
+    return { x: (cx - x) / k, y: (cy - y) / k };
+  }
 
   function onMouseDown(e: React.MouseEvent) {
     dragging.current = true;
     moved.current = false;
-    lastPos.current = { x: e.clientX, y: e.clientY };
-  }
-  function onMouseMove(e: React.MouseEvent) {
-    if (!dragging.current) return;
-    const dx = e.clientX - lastPos.current.x;
-    const dy = e.clientY - lastPos.current.y;
-    if (Math.abs(dx) > 2 || Math.abs(dy) > 2) moved.current = true;
-    setOffset((o) => ({ x: o.x + dx, y: o.y + dy }));
-    lastPos.current = { x: e.clientX, y: e.clientY };
-  }
-  function onMouseUp() { dragging.current = false; }
-  function onWheel(e: React.WheelEvent) {
-    e.preventDefault();
-    setZoom((z) => Math.max(0.15, Math.min(4, z - e.deltaY * 0.001)));
-  }
-  function onNodeClick(id: number, e: React.MouseEvent) {
-    e.stopPropagation();
-    if (moved.current) return;
-    setSelected((s) => (s === id ? null : id));
-  }
-  function onCanvasClick() {
-    if (moved.current) return;
-    setSelected(null);
+    lastMouse.current = { x: e.clientX, y: e.clientY };
   }
 
-  // Determine which roles actually exist in the data
+  function onMouseMove(e: React.MouseEvent) {
+    if (!dragging.current) return;
+    const dx = e.clientX - lastMouse.current.x;
+    const dy = e.clientY - lastMouse.current.y;
+    if (Math.abs(dx) > 2 || Math.abs(dy) > 2) moved.current = true;
+    transform.current = { ...transform.current, x: transform.current.x + dx, y: transform.current.y + dy };
+    lastMouse.current = { x: e.clientX, y: e.clientY };
+    drawDirect();
+  }
+
+  function onMouseUp() { dragging.current = false; }
+
+  function onWheel(e: React.WheelEvent) {
+    e.preventDefault();
+    const rect = canvasRef.current!.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+    const { x, y, k } = transform.current;
+    const newK = Math.max(0.1, Math.min(6, k * Math.pow(0.999, e.deltaY)));
+    transform.current = {
+      x: mx - (mx - x) * (newK / k),
+      y: my - (my - y) * (newK / k),
+      k: newK,
+    };
+    drawDirect();
+  }
+
+  function onCanvasClick(e: React.MouseEvent) {
+    if (moved.current) return;
+    const rect = canvasRef.current!.getBoundingClientRect();
+    const { x: wx, y: wy } = canvasToWorld(e.clientX - rect.left, e.clientY - rect.top);
+    const hit = hitTest(nodesRef.current, wx, wy);
+    const uid = hit ? hit.uid : null;
+    selectNode(uid === selected ? null : uid);
+  }
+
+  function centerOn(uid: string) {
+    const node = nodesRef.current.find((n) => n.uid === uid);
+    if (!node || !containerRef.current) return;
+    const { clientWidth: w, clientHeight: h } = containerRef.current;
+    const { k } = transform.current;
+    transform.current = { x: w / 2 - (node.x ?? 0) * k, y: h / 2 - (node.y ?? 0) * k, k };
+    drawDirect();
+  }
+
+  // ─── Derived data ────────────────────────────────────────────────────────
+
   const existingRoles = useMemo(() => {
     if (!data) return new Set<CastRole>();
     const roles = new Set<CastRole>();
-    for (const p of data.persons) {
-      for (const r of p.movie_roles) roles.add(r as CastRole);
-    }
+    for (const p of data.persons) for (const r of p.movie_roles) roles.add(r as CastRole);
     return roles;
   }, [data]);
 
-  if (isLoading) return <section><p>Loading…</p></section>;
-  if (isError || !data) return <section><p>Failed to load graph.</p></section>;
+  // All searchable items across all three kinds
+  const searchPool = useMemo((): SearchResult[] => {
+    if (!data) return [];
+    const results: SearchResult[] = [];
+    for (const p of data.persons) results.push({ uid: `p-${p.id}`, label: p.name, kind: "person", id_: p.id });
+    for (const m of data.movies) results.push({ uid: `m-${m.id}`, label: m.name, kind: "movie", id_: m.id });
+    for (const a of data.artists) results.push({ uid: `a-${a.id}`, label: a.name, kind: "artist", id_: a.id });
+    return results;
+  }, [data]);
 
-  if (data.persons.length === 0) {
-    return <section><p style={{ opacity: 0.5 }}>No people to display.</p></section>;
+  const searchResults = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return [];
+    return searchPool
+      .filter((r) => {
+        if (searchKind !== "all" && r.kind !== searchKind) return false;
+        return r.label.toLowerCase().includes(q);
+      })
+      .slice(0, 10);
+  }, [searchQuery, searchPool, searchKind]);
+
+  function handleSearchSelect(result: SearchResult) {
+    setSearchQuery("");
+    setSearchOpen(false);
+    selectNode(result.uid);
+    setTimeout(() => centerOn(result.uid), 0);
   }
 
-  const personById = new Map(data.persons.map((p) => [p.id, p]));
+  // Info panel: what to show depends on whether a person or hub is selected
+  const selectedNode = useMemo(
+    () => (selected ? nodesRef.current.find((n) => n.uid === selected) ?? null : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [selected, simNodes], // simNodes change triggers re-eval
+  );
+
+  // For a selected person: list the visible hub nodes they connect to
+  const personConnections = useMemo(() => {
+    if (!selected || !data || !selected.startsWith("p-")) return [];
+    const personId = parseInt(selected.slice(2));
+    const visibleHubs = new Set(nodesRef.current.filter((n) => n.kind !== "person").map((n) => n.uid));
+    return data.edges
+      .filter((e) => e.person_id === personId)
+      .map((e) => {
+        const hubUid = e.target_type === "movie" ? `m-${e.target_id}` : `a-${e.target_id}`;
+        if (!visibleHubs.has(hubUid)) return null;
+        return {
+          uid: hubUid,
+          label: e.target_type === "movie"
+            ? (movieById.get(e.target_id) ?? String(e.target_id))
+            : (artistById.get(e.target_id) ?? String(e.target_id)),
+          kind: e.target_type as "movie" | "artist",
+          id_: e.target_id,
+        };
+      })
+      .filter(Boolean) as Array<{ uid: string; label: string; kind: "movie" | "artist"; id_: number }>;
+  }, [selected, data, movieById, artistById, simNodes]);
+
+  // For a selected hub: list the visible people connected to it
+  const hubConnections = useMemo(() => {
+    if (!selected || !data || selected.startsWith("p-")) return [];
+    const visiblePersonUids = new Set(nodesRef.current.filter((n) => n.kind === "person").map((n) => n.uid));
+    return data.edges
+      .filter((e) => {
+        const hubUid = e.target_type === "movie" ? `m-${e.target_id}` : `a-${e.target_id}`;
+        return hubUid === selected && visiblePersonUids.has(`p-${e.person_id}`);
+      })
+      .map((e) => {
+        const person = personById.get(e.person_id);
+        return person ? { uid: `p-${e.person_id}`, label: person.name, id_: e.person_id } : null;
+      })
+      .filter(Boolean) as Array<{ uid: string; label: string; id_: number }>;
+  }, [selected, data, personById, simNodes]);
+
+  // ─── Legend ──────────────────────────────────────────────────────────────
+
+  const Legend = () => (
+    <div style={{ display: "flex", gap: "1rem", fontSize: "0.78rem", opacity: 0.7 }}>
+      {([["Person", PERSON_COLOR], ["Movie", MOVIE_COLOR], ["Artist", ARTIST_COLOR]] as const).map(([label, color]) => (
+        <span key={label} style={{ display: "flex", alignItems: "center", gap: "0.3rem" }}>
+          <span style={{ display: "inline-block", width: 10, height: 10, borderRadius: "50%", background: color }} />
+          {label}
+        </span>
+      ))}
+    </div>
+  );
+
+  // ─── Render ──────────────────────────────────────────────────────────────
+
+  const selectedPerson = selected?.startsWith("p-") ? personById.get(parseInt(selected.slice(2))) : null;
+  const selectedHub = selected && !selected.startsWith("p-") ? selectedNode : null;
+
+  const KIND_LABELS: Record<SearchKind, string> = { all: "All", person: "People", movie: "Movies", artist: "Artists" };
+  const KIND_COLORS: Partial<Record<SearchKind, string>> = { person: PERSON_COLOR, movie: MOVIE_COLOR, artist: ARTIST_COLOR };
+
+  const overlayMessage = isLoading ? "Loading…"
+    : isError ? "Failed to load graph."
+    : data && data.persons.length === 0 ? "No people to display."
+    : null;
 
   return (
     <section>
-      {/* Filter bar */}
-      <div style={{ display: "flex", gap: "1.5rem", flexWrap: "wrap", marginBottom: "0.75rem", alignItems: "flex-start", fontSize: "0.875rem" }}>
+      {/* Filter + search bar — hidden until data is ready */}
+      <div style={{ display: overlayMessage ? "none" : "flex", gap: "1.5rem", flexWrap: "wrap", marginBottom: "0.75rem", alignItems: "flex-start", fontSize: "0.875rem" }}>
         {/* Movie people filter */}
         <div>
           <label style={{ display: "flex", alignItems: "center", gap: "0.4rem", fontWeight: 500, cursor: "pointer" }}>
-            <input
-              type="checkbox"
-              checked={filterMoviePerson}
-              onChange={(e) => setFilterMoviePerson(e.target.checked)}
-            />
+            <input type="checkbox" checked={filterMoviePerson} onChange={(e) => setFilterMoviePerson(e.target.checked)} />
             Movie people
           </label>
           {filterMoviePerson && (
             <div style={{ marginLeft: "1.4rem", marginTop: "0.3rem", display: "flex", flexDirection: "column", gap: "0.2rem" }}>
               {CAST_ROLES.filter((r) => existingRoles.has(r)).map((role) => (
                 <label key={role} style={{ display: "flex", alignItems: "center", gap: "0.4rem", cursor: "pointer", opacity: 0.85 }}>
-                  <input
-                    type="checkbox"
-                    checked={filterMovieRoles.has(role)}
-                    onChange={() => toggleRole(role)}
-                  />
+                  <input type="checkbox" checked={filterMovieRoles.has(role)} onChange={() => toggleRole(role)} />
                   {ROLE_LABELS[role]}
                 </label>
               ))}
               {filterMovieRoles.size > 0 && (
-                <button
-                  onClick={() => setFilterMovieRoles(new Set())}
-                  style={{ alignSelf: "flex-start", marginTop: "0.2rem", fontSize: "0.78rem", opacity: 0.55, background: "none", border: "none", cursor: "pointer", padding: 0 }}
-                >
+                <button onClick={() => setFilterMovieRoles(new Set())}
+                  style={{ alignSelf: "flex-start", marginTop: "0.2rem", fontSize: "0.78rem", opacity: 0.55, background: "none", border: "none", cursor: "pointer", padding: 0 }}>
                   clear roles
                 </button>
               )}
@@ -291,167 +621,141 @@ export function PeopleGraphPage() {
         {/* Music artist filter */}
         <div>
           <label style={{ display: "flex", alignItems: "center", gap: "0.4rem", fontWeight: 500, cursor: "pointer" }}>
-            <input
-              type="checkbox"
-              checked={filterMusicArtist}
-              onChange={(e) => setFilterMusicArtist(e.target.checked)}
-            />
+            <input type="checkbox" checked={filterMusicArtist} onChange={(e) => setFilterMusicArtist(e.target.checked)} />
             Music artists
           </label>
         </div>
 
-        {/* Count */}
-        <span style={{ opacity: 0.45, alignSelf: "center", marginLeft: "auto" }}>
-          {filteredPersons.length} / {data.persons.length} people
-        </span>
-      </div>
-
-      <div
-        className="genre-tree-canvas"
-        style={{ height: "78vh" }}
-        onMouseDown={onMouseDown}
-        onMouseMove={onMouseMove}
-        onMouseUp={onMouseUp}
-        onMouseLeave={onMouseUp}
-        onWheel={onWheel}
-        onClick={onCanvasClick}
-      >
-        <div
-          style={{
-            transform: `translate(${offset.x}px, ${offset.y}px) scale(${zoom})`,
-            transformOrigin: "0 0",
-            position: "relative",
-            width: canvasW,
-            height: canvasH,
-          }}
-        >
-          {/* SVG edge layer */}
-          <svg
-            style={{ position: "absolute", inset: 0, overflow: "visible", pointerEvents: "none" }}
-            width={canvasW}
-            height={canvasH}
-          >
-            {filteredEdges.map((edge) => {
-              const pa = positions.get(edge.person_a);
-              const pb = positions.get(edge.person_b);
-              if (!pa || !pb) return null;
-              const hl =
-                connectedIds !== null &&
-                connectedIds.has(edge.person_a) &&
-                connectedIds.has(edge.person_b);
-              const dm = connectedIds !== null && !hl;
-              const x1 = pa.x, y1 = pa.y, x2 = pb.x, y2 = pb.y;
-              const label = edgeLabel(
-                edge.via_movie_ids,
-                edge.via_artist_ids,
-                data.movies,
-                data.artists,
-              );
-              return (
-                <line
-                  key={`${edge.person_a}-${edge.person_b}`}
-                  x1={x1} y1={y1} x2={x2} y2={y2}
-                  stroke="currentColor"
-                  strokeOpacity={dm ? 0.06 : hl ? 0.7 : 0.18}
-                  strokeWidth={hl ? 2 : 1.5}
-                >
-                  <title>{label}</title>
-                </line>
-              );
-            })}
-          </svg>
-
-          {/* Node layer */}
-          {filteredPersons.map((person) => {
-            const p = positions.get(person.id);
-            if (!p) return null;
-            const isSelected = selected === person.id;
-            const isConnected = connectedIds !== null && connectedIds.has(person.id);
-            const isDimmed = connectedIds !== null && !isConnected;
-            return (
-              <div
-                key={person.id}
+        {/* Search */}
+        <div style={{ position: "relative", marginLeft: "auto" }}>
+          {/* Type filter pills */}
+          <div style={{ display: "flex", gap: "0.3rem", marginBottom: "0.3rem", justifyContent: "flex-end" }}>
+            {(["all", "person", "movie", "artist"] as SearchKind[]).map((k) => (
+              <button key={k} onClick={() => setSearchKind(k)}
                 style={{
-                  position: "absolute",
-                  left: p.x - NODE_R,
-                  top: p.y - NODE_R,
-                  width: NODE_R * 2,
-                  height: NODE_R * 2,
-                  borderRadius: "50%",
-                  border: `1.5px solid ${isSelected ? "currentColor" : "#8884"}`,
-                  background: isSelected ? "#8883" : "Canvas",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  textAlign: "center",
-                  fontSize: "0.72rem",
-                  fontWeight: isSelected ? 600 : 400,
-                  cursor: "default",
-                  opacity: isDimmed ? 0.2 : 1,
-                  padding: "0.2rem",
-                  boxSizing: "border-box",
-                  lineHeight: 1.2,
-                  userSelect: "none",
-                  transition: "opacity 0.15s",
-                }}
-                onClick={(e) => onNodeClick(person.id, e)}
-                title={person.name}
-              >
-                {person.name}
-              </div>
-            );
-          })}
+                  fontSize: "0.72rem", padding: "0.15rem 0.5rem", borderRadius: 10,
+                  border: `1px solid ${KIND_COLORS[k] ?? "#8884"}`,
+                  background: searchKind === k ? (KIND_COLORS[k] ?? "#8884") : "transparent",
+                  color: searchKind === k ? "#fff" : undefined,
+                  cursor: "pointer", opacity: searchKind === k ? 1 : 0.6,
+                }}>
+                {KIND_LABELS[k]}
+              </button>
+            ))}
+          </div>
+          <input
+            type="search"
+            placeholder={`Search ${KIND_LABELS[searchKind].toLowerCase()}…`}
+            value={searchQuery}
+            onChange={(e) => { setSearchQuery(e.target.value); setSearchOpen(true); }}
+            onFocus={() => setSearchOpen(true)}
+            onBlur={() => setTimeout(() => setSearchOpen(false), 150)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") { setSearchQuery(""); setSearchOpen(false); }
+              if (e.key === "Enter" && searchResults.length > 0) handleSearchSelect(searchResults[0]);
+            }}
+            style={{ fontSize: "0.875rem", padding: "0.3rem 0.6rem", borderRadius: 4, border: "1px solid #8884", width: 200 }}
+          />
+          {searchOpen && searchResults.length > 0 && (
+            <div style={{
+              position: "absolute", top: "100%", left: 0, right: 0, zIndex: 100,
+              background: "Canvas", border: "1px solid #8884", borderRadius: 4,
+              boxShadow: "0 4px 12px #0003", marginTop: 2,
+            }}>
+              {searchResults.map((r) => (
+                <div key={r.uid} onMouseDown={() => handleSearchSelect(r)}
+                  style={{ padding: "0.4rem 0.6rem", cursor: "pointer", fontSize: "0.875rem", display: "flex", alignItems: "center", gap: "0.5rem" }}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = "#8882")}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = "")}>
+                  <span style={{
+                    display: "inline-block", width: 7, height: 7, borderRadius: "50%", flexShrink: 0,
+                    background: r.kind === "person" ? PERSON_COLOR : r.kind === "movie" ? MOVIE_COLOR : ARTIST_COLOR,
+                  }} />
+                  {r.label}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
+
+        {/* Count + legend */}
+        <span style={{ opacity: 0.45, alignSelf: "center" }}>
+          {filteredPersons.length} / {data?.persons.length ?? 0} people
+        </span>
+        <Legend />
       </div>
 
-      {/* Info panel for selected person */}
-      {selected !== null && (() => {
-        const person = personById.get(selected);
-        if (!person) return null;
-        const myEdges = filteredEdges.filter(
-          (e) => e.person_a === selected || e.person_b === selected,
-        );
-        return (
-          <div
-            style={{
-              marginTop: "1rem",
-              padding: "0.75rem 1rem",
-              border: "1px solid #8884",
-              borderRadius: 6,
-              fontSize: "0.875rem",
-            }}
-          >
-            <div style={{ display: "flex", alignItems: "baseline", gap: "1rem", marginBottom: "0.5rem" }}>
-              <strong style={{ fontSize: "1rem" }}>{person.name}</strong>
-              <Link to={`/people/${person.id}`} style={{ opacity: 0.6, fontSize: "0.8rem" }}>
-                view profile →
-              </Link>
-            </div>
-            {myEdges.length === 0 ? (
-              <p style={{ opacity: 0.5, margin: 0 }}>No connections.</p>
-            ) : (
-              <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "flex", flexDirection: "column", gap: "0.3rem" }}>
-                {myEdges.map((edge) => {
-                  const otherId = edge.person_a === selected ? edge.person_b : edge.person_a;
-                  const other = personById.get(otherId);
-                  const label = edgeLabel(edge.via_movie_ids, edge.via_artist_ids, data.movies, data.artists);
-                  return (
-                    <li key={otherId} style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
-                      <span
-                        style={{ fontWeight: 500, cursor: "pointer" }}
-                        onClick={() => setSelected(otherId)}
-                      >
-                        {other?.name ?? otherId}
-                      </span>
-                      <span style={{ opacity: 0.55 }}>via {label}</span>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
+      {/* Canvas — always mounted so ResizeObserver attaches before data loads */}
+      <div ref={containerRef} className="genre-tree-canvas" style={{ height: "78vh", cursor: dragging.current ? "grabbing" : "grab", position: "relative" }}
+        onMouseDown={onMouseDown} onMouseMove={onMouseMove} onMouseUp={onMouseUp} onMouseLeave={onMouseUp} onWheel={onWheel}>
+        <canvas ref={canvasRef} onClick={onCanvasClick} style={{ display: "block" }} />
+        {overlayMessage && (
+          <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", opacity: 0.5, pointerEvents: "none" }}>
+            {overlayMessage}
           </div>
-        );
-      })()}
+        )}
+      </div>
+
+      {/* Info panel — person selected */}
+      {selectedPerson && (
+        <div style={{ marginTop: "1rem", padding: "0.75rem 1rem", border: "1px solid #8884", borderRadius: 6, fontSize: "0.875rem" }}>
+          <div style={{ display: "flex", alignItems: "baseline", gap: "1rem", marginBottom: "0.5rem" }}>
+            <strong style={{ fontSize: "1rem" }}>{selectedPerson.name}</strong>
+            <Link to={`/people/${selectedPerson.id}`} style={{ opacity: 0.6, fontSize: "0.8rem" }}>view profile →</Link>
+            <button onClick={() => centerOn(selected!)}
+              style={{ marginLeft: "auto", opacity: 0.5, background: "none", border: "none", cursor: "pointer", fontSize: "0.78rem" }}>
+              center
+            </button>
+          </div>
+          {personConnections.length === 0 ? (
+            <p style={{ opacity: 0.5, margin: 0 }}>No visible connections.</p>
+          ) : (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "0.4rem 1.2rem" }}>
+              {personConnections.map((conn) => (
+                <span key={conn.uid} style={{ display: "flex", gap: "0.4rem", alignItems: "center" }}>
+                  <span style={{ display: "inline-block", width: 7, height: 7, borderRadius: "50%", flexShrink: 0, background: conn.kind === "movie" ? MOVIE_COLOR : ARTIST_COLOR }} />
+                  <span style={{ opacity: 0.55, fontSize: "0.78rem" }}>{conn.kind}</span>
+                  <button onClick={() => selectNode(conn.uid)}
+                    style={{ fontWeight: 500, background: "none", border: "none", cursor: "pointer", padding: 0, fontSize: "inherit" }}>
+                    {conn.label}
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Info panel — hub (movie/artist) selected */}
+      {selectedHub && (
+        <div style={{ marginTop: "1rem", padding: "0.75rem 1rem", border: "1px solid #8884", borderRadius: 6, fontSize: "0.875rem" }}>
+          <div style={{ display: "flex", alignItems: "baseline", gap: "1rem", marginBottom: "0.5rem" }}>
+            <span style={{ display: "inline-block", width: 9, height: 9, borderRadius: "50%", background: selectedHub.kind === "movie" ? MOVIE_COLOR : ARTIST_COLOR, flexShrink: 0, alignSelf: "center" }} />
+            <strong style={{ fontSize: "1rem" }}>{selectedHub.label}</strong>
+            <Link
+              to={selectedHub.kind === "movie" ? `/movies/${selectedHub.id_}` : `/music/artists/${selectedHub.id_}`}
+              style={{ opacity: 0.6, fontSize: "0.8rem" }}>
+              view {selectedHub.kind} →
+            </Link>
+            <button onClick={() => centerOn(selected!)}
+              style={{ marginLeft: "auto", opacity: 0.5, background: "none", border: "none", cursor: "pointer", fontSize: "0.78rem" }}>
+              center
+            </button>
+          </div>
+          {hubConnections.length === 0 ? (
+            <p style={{ opacity: 0.5, margin: 0 }}>No visible people connected.</p>
+          ) : (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "0.4rem 1.2rem" }}>
+              {hubConnections.map((conn) => (
+                <button key={conn.uid} onClick={() => selectNode(conn.uid)}
+                  style={{ fontWeight: 500, background: "none", border: "none", cursor: "pointer", padding: 0, fontSize: "inherit" }}>
+                  {conn.label}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </section>
   );
 }

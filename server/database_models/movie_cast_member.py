@@ -8,6 +8,7 @@ class CastRole(str, enum.Enum):
     composer = "composer"
     actor = "actor"
     lead_actor = "lead_actor"
+    cameo_actor = "cameo_actor"
 
 
 cast_role_type = Enum(CastRole, name="cast_role")

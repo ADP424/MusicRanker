@@ -1,13 +1,13 @@
-from collections import defaultdict
-
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..api_models import PersonDetail, PersonGraphOut, PersonIn, PersonOut, PersonPatch
 from ..api_models.person import (
+    GraphArtistNode,
     GraphEdge,
-    GraphPersonOut,
+    GraphMovieNode,
+    GraphPersonNode,
     PersonArtistRef,
     PersonMovieRoleRef,
 )
@@ -38,59 +38,37 @@ def _build_out(person: Person) -> PersonOut:
 def get_person_graph(db: Session = Depends(get_database)):
     persons = db.scalars(select(Person).order_by(Person.name)).all()
 
-    # Build lookup: movie_id → [person_id, ...]  and  artist_id → [person_id, ...]
-    movie_persons: dict[int, list[int]] = defaultdict(list)
-    artist_persons: dict[int, list[int]] = defaultdict(list)
+    # Collect movies and artists referenced by at least one person
     movie_names: dict[int, str] = {}
     artist_names: dict[int, str] = {}
 
+    edges: list[GraphEdge] = []
+
+    graph_persons = []
     for person in persons:
         for link in person.movie_links:
-            movie_persons[link.movie_id].append(person.id)
             movie_names[link.movie_id] = link.movie.name
+            edges.append(GraphEdge(person_id=person.id, target_id=link.movie_id, target_type="movie"))
         for link in person.artist_links:
-            artist_persons[link.artist_id].append(person.id)
             artist_names[link.artist_id] = link.artist.name
-
-    # Build edges: pair of person ids → (via_movies, via_artists)
-    edge_map: dict[tuple[int, int], tuple[list[int], list[int]]] = defaultdict(lambda: ([], []))
-
-    for movie_id, pids in movie_persons.items():
-        for i in range(len(pids)):
-            for j in range(i + 1, len(pids)):
-                key = (min(pids[i], pids[j]), max(pids[i], pids[j]))
-                edge_map[key][0].append(movie_id)
-
-    for artist_id, pids in artist_persons.items():
-        for i in range(len(pids)):
-            for j in range(i + 1, len(pids)):
-                key = (min(pids[i], pids[j]), max(pids[i], pids[j]))
-                edge_map[key][1].append(artist_id)
-
-    edges = [
-        GraphEdge(person_a=a, person_b=b, via_movie_ids=via_m, via_artist_ids=via_a)
-        for (a, b), (via_m, via_a) in edge_map.items()
-    ]
-
-    # Only include movies/artists referenced in edges
-    used_movie_ids = {mid for e in edges for mid in e.via_movie_ids}
-    used_artist_ids = {aid for e in edges for aid in e.via_artist_ids}
-
-    graph_persons = [
-        GraphPersonOut(
-            id=p.id,
-            name=p.name,
-            artist_ids=[link.artist_id for link in p.artist_links],
-            movie_roles=list({link.role.value for link in p.movie_links}),
+            edges.append(GraphEdge(person_id=person.id, target_id=link.artist_id, target_type="artist"))
+        graph_persons.append(
+            GraphPersonNode(
+                id=person.id,
+                name=person.name,
+                artist_ids=[link.artist_id for link in person.artist_links],
+                movie_roles=list({link.role.value for link in person.movie_links}),
+            )
         )
-        for p in persons
-    ]
+
+    movies = [GraphMovieNode(id=mid, name=name) for mid, name in movie_names.items()]
+    artists = [GraphArtistNode(id=aid, name=name) for aid, name in artist_names.items()]
 
     return PersonGraphOut(
         persons=graph_persons,
+        movies=movies,
+        artists=artists,
         edges=edges,
-        movies={k: v for k, v in movie_names.items() if k in used_movie_ids},
-        artists={k: v for k, v in artist_names.items() if k in used_artist_ids},
     )
 
 

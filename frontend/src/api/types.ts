@@ -191,15 +191,16 @@ export interface MovieGenre {
   parent_ids: number[];
 }
 
-export type CastRole = "director" | "composer" | "actor" | "lead_actor";
+export type CastRole = "director" | "composer" | "actor" | "lead_actor" | "cameo_actor";
 
-export const CAST_ROLES: CastRole[] = ["director", "composer", "lead_actor", "actor"];
+export const CAST_ROLES: CastRole[] = ["director", "composer", "lead_actor", "actor", "cameo_actor"];
 
 export const CAST_ROLE_LABELS: Record<CastRole, string> = {
   director: "Director",
   composer: "Composer",
   actor: "Actor",
   lead_actor: "Lead Actor",
+  cameo_actor: "Cameo Actor",
 };
 
 export interface MoviePersonRef {
@@ -329,13 +330,6 @@ export interface PersonBody {
   notes: string | null;
 }
 
-export interface PersonGraphEdge {
-  person_a: number;
-  person_b: number;
-  via_movie_ids: number[];
-  via_artist_ids: number[];
-}
-
 export interface GraphPerson {
   id: number;
   name: string;
@@ -343,9 +337,25 @@ export interface GraphPerson {
   movie_roles: CastRole[];
 }
 
+export interface GraphMovieNode {
+  id: number;
+  name: string;
+}
+
+export interface GraphArtistNode {
+  id: number;
+  name: string;
+}
+
+export interface GraphEdge {
+  person_id: number;
+  target_id: number;
+  target_type: "movie" | "artist";
+}
+
 export interface PersonGraph {
   persons: GraphPerson[];
-  edges: PersonGraphEdge[];
-  movies: Record<number, string>;
-  artists: Record<number, string>;
+  movies: GraphMovieNode[];
+  artists: GraphArtistNode[];
+  edges: GraphEdge[];
 }

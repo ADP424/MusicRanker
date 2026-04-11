@@ -3,12 +3,21 @@ import { useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
 import { AlbumForm } from "../components/AlbumForm";
+import { ArtistForm } from "../components/ArtistForm";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { PersonForm } from "../components/PersonForm";
 import { api } from "../api/client";
 import { useGenres, usePeople } from "../api/hooks";
-import type { Album, Artist, ArtistRef, Person } from "../api/types";
+import type { Album, Artist, ArtistDetail, ArtistRef, Person } from "../api/types";
 import { SortableList } from "../components/SortableList";
+
+function fmtRuntime(seconds: number) {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = seconds % 60;
+  if (h > 0) return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
 
 // ── People panel ───────────────────────────────────────────────────────────────
 
@@ -145,8 +154,10 @@ export function ArtistDetailPage() {
   const key = ["artists", aid, "albums"];
 
   const [editing, setEditing] = useState<{ album: Album } | "new" | null>(null);
+  const [editingArtist, setEditingArtist] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<Album | null>(null);
   const [expandedIds, setExpandedIds] = useState<Set<number>>(new Set());
+  const [dupWarning, setDupWarning] = useState<string | null>(null);
 
   const { data: genres = [] } = useGenres();
   const genreMap = Object.fromEntries(genres.map((g) => [g.id, g.name]));
@@ -154,6 +165,12 @@ export function ArtistDetailPage() {
   const { data: artist } = useQuery({
     queryKey: ["artists", aid],
     queryFn: () => api.get<Artist>(`/artists/${aid}`),
+  });
+
+  const { data: detail } = useQuery({
+    queryKey: ["stats", "artist-detail", aid],
+    queryFn: () => api.get<ArtistDetail>(`/stats/artist-detail/${aid}`),
+    enabled: !!artist,
   });
 
   const { data: albums = [] } = useQuery({
@@ -213,6 +230,8 @@ export function ArtistDetailPage() {
 
   const allExpanded = albums.length > 0 && expandedIds.size === albums.length;
 
+  const primaryGenre = artist.primary_genre != null ? genres.find((g) => g.id === artist.primary_genre) : undefined;
+
   return (
     <section>
       <header className="page-head">
@@ -223,8 +242,79 @@ export function ArtistDetailPage() {
             </a>
           ) : artist.name}
         </h1>
-        <button onClick={() => setEditing("new")}>+ Add Album</button>
+        <div style={{ display: "flex", gap: "0.5rem" }}>
+          <button onClick={() => setEditingArtist(true)}>✎ Edit</button>
+          <button onClick={() => setEditing("new")}>+ Add Album</button>
+        </div>
       </header>
+
+      {dupWarning && (
+        <div className="dup-warning">
+          <span>{dupWarning}</span>
+          <button className="icon" onClick={() => setDupWarning(null)}>✕</button>
+        </div>
+      )}
+
+      {detail && (
+        <div className="artist-detail-dropdown" style={{ marginBottom: "1.5rem" }}>
+          <div className="artist-detail-grid">
+            <div><span className="detail-label">Albums</span><span>{detail.album_count}</span></div>
+            <div><span className="detail-label">Total Runtime</span><span>{detail.total_runtime}</span></div>
+            <div><span className="detail-label">Listened Runtime</span><span>{detail.total_listened_runtime}</span></div>
+            <div><span className="detail-label">Avg Runtime</span><span>{detail.avg_runtime}</span></div>
+            <div><span className="detail-label">Avg Album Score</span><span>{detail.avg_album_score?.toFixed(4) ?? "—"}</span></div>
+            <div>
+              <span className="detail-label">Nationality</span>
+              <span>
+                {artist.core_nationality}
+                {artist.birth_nationality !== artist.core_nationality && ` (${artist.birth_nationality})`}
+              </span>
+            </div>
+          </div>
+          {primaryGenre && (
+            <div className="detail-tags" style={{ marginTop: "0.5rem" }}>
+              <span className="detail-label">Primary Genre</span>
+              <Link to={`/music/genres/${primaryGenre.id}`} className="plain-link">{primaryGenre.name}</Link>
+            </div>
+          )}
+          {detail.genres.length > 0 && (
+            <div className="detail-tags">
+              <span className="detail-label">Genres</span>
+              <span>
+                {detail.genres.map((g, i) => (
+                  <span key={g.id}>{i > 0 && ", "}<Link to={`/music/genres/${g.id}`} className="plain-link">{g.name}</Link></span>
+                ))}
+              </span>
+            </div>
+          )}
+          {detail.members.length > 0 && (
+            <div className="detail-tags">
+              <span className="detail-label">Members</span>
+              <span>
+                {detail.members.map((p, i) => (
+                  <span key={p.id}>{i > 0 && ", "}<Link to={`/people/${p.id}`} className="plain-link">{p.name}</Link></span>
+                ))}
+              </span>
+            </div>
+          )}
+          {detail.collaborators.length > 0 && (
+            <div className="detail-tags">
+              <span className="detail-label">Collaborators</span>
+              <span>
+                {detail.collaborators.map((a, i) => (
+                  <span key={a.id}>{i > 0 && ", "}<Link to={`/music/artists/${a.id}`} className="plain-link">{a.name}</Link></span>
+                ))}
+              </span>
+            </div>
+          )}
+          {artist.notes && (
+            <div className="detail-tags">
+              <span className="detail-label">Notes</span>
+              <span>{artist.notes}</span>
+            </div>
+          )}
+        </div>
+      )}
 
       <ArtistPeopleSection artistId={aid} />
 
@@ -378,7 +468,31 @@ export function ArtistDetailPage() {
             <AlbumForm
               artistId={aid}
               initial={editing === "new" ? undefined : editing.album}
-              onClose={() => setEditing(null)}
+              onClose={(savedName, savedId) => {
+                setEditing(null);
+                if (savedName != null) {
+                  const nameLower = savedName.toLowerCase();
+                  const dups = albums.filter(
+                    (a) => a.name.toLowerCase() === nameLower && a.id !== savedId
+                  );
+                  if (dups.length > 0) setDupWarning(`Warning: another album named "${savedName}" already exists in this artist's discography.`);
+                }
+              }}
+            />
+          </div>
+        </div>
+      )}
+
+      {editingArtist && (
+        <div className="modal-backdrop" onClick={() => setEditingArtist(false)}>
+          <div onClick={(e) => e.stopPropagation()}>
+            <ArtistForm
+              initial={artist}
+              onClose={() => {
+                setEditingArtist(false);
+                qc.invalidateQueries({ queryKey: ["artists", aid] });
+                qc.invalidateQueries({ queryKey: ["stats", "artist-detail", aid] });
+              }}
             />
           </div>
         </div>
