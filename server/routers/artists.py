@@ -7,8 +7,9 @@ from sqlalchemy.orm import Session
 
 from ..api_models import AlbumOut, ArtistIn, ArtistOut, ArtistPatch, PositionBody
 from ..api_models.album import AlbumArtistRef
+from ..api_models.person import PersonArtistRef
 from ..database import get_database
-from ..database_models import Album, AlbumArtist, Artist
+from ..database_models import Album, AlbumArtist, Artist, ArtistPerson
 from ..database_models.genre import Genre
 from ..ranking import rank_between
 
@@ -124,6 +125,24 @@ def move_artist(aid: int, body: PositionBody, db: Session = Depends(get_database
     artist.global_rank = _rank_at(db, body.position, exclude=aid)
     db.flush()
     return _attach_position(db, artist)
+
+
+@router.get("/{aid}/persons", response_model=list[PersonArtistRef])
+def artist_persons(aid: int, db: Session = Depends(get_database)):
+    _get(db, aid)
+    links = db.scalars(select(ArtistPerson).where(ArtistPerson.artist_id == aid)).all()
+    return sorted(
+        [
+            PersonArtistRef(
+                id=link.person.id,
+                name=link.person.name,
+                discography_link=link.artist.discography_link or "",
+                role=link.role.value,
+            )
+            for link in links
+        ],
+        key=lambda p: p.name,
+    )
 
 
 @router.get("/{aid}/albums", response_model=list[AlbumOut])

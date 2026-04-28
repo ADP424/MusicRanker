@@ -63,6 +63,7 @@ export function MovieForm(props: {
   const [castLinks, setCastLinks] = useState<Set<string>>(new Set()); // keys: "id:role"
   const [pendingLinks, setPendingLinks] = useState<PendingLink[]>([]);
   const [castSearch, setCastSearch] = useState("");
+  const [searchField, setSearchField] = useState<"all" | "person" | "artist" | "movie">("all");
   const [addRole, setAddRole] = useState<CastRole>("director");
 
   // Soundtrack album links
@@ -96,13 +97,23 @@ export function MovieForm(props: {
   const filteredPeople = useMemo(() => {
     const q = castSearch.trim().toLowerCase();
     return allPeople
-      .filter((p) => !q || p.name.toLowerCase().includes(q))
+      .filter((p) => {
+        if (!q) return true;
+        if (searchField === "person") return p.name.toLowerCase().includes(q);
+        if (searchField === "artist") return p.artist_names.some((n) => n.toLowerCase().includes(q));
+        if (searchField === "movie") return p.movie_names.some((n) => n.toLowerCase().includes(q));
+        return (
+          p.name.toLowerCase().includes(q) ||
+          p.artist_names.some((n) => n.toLowerCase().includes(q)) ||
+          p.movie_names.some((n) => n.toLowerCase().includes(q))
+        );
+      })
       .sort((a, b) => {
         const aKey = linkKey({ personId: a.id, role: addRole });
         const bKey = linkKey({ personId: b.id, role: addRole });
         return (castSortSnap.has(aKey) ? 0 : 1) - (castSortSnap.has(bKey) ? 0 : 1);
       });
-  }, [castSearch, allPeople, castSortSnap, addRole]);
+  }, [castSearch, searchField, allPeople, castSortSnap, addRole]);
 
   function toggleLink(person: Person, role: CastRole) {
     const key = linkKey({ personId: person.id, role });
@@ -302,11 +313,28 @@ export function MovieForm(props: {
                 ))}
               </div>
 
+              <div style={{ display: "flex", gap: "0.5rem", marginBottom: "0.4rem", flexWrap: "wrap" }}>
+                {(["all", "person", "artist", "movie"] as const).map((f) => (
+                  <label
+                    key={f}
+                    className={`chip${searchField === f ? " chip-active" : ""}`}
+                    onClick={() => setSearchField(f)}
+                    style={{ cursor: "pointer" }}
+                  >
+                    {f === "all" ? "All" : f === "person" ? "Person" : f === "artist" ? "Artist" : "Movie"}
+                  </label>
+                ))}
+              </div>
               <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", marginBottom: "0.4rem" }}>
                 <input
                   className="genre-search"
                   type="search"
-                  placeholder="Search people…"
+                  placeholder={
+                    searchField === "person" ? "Search by person name…" :
+                    searchField === "artist" ? "Search by artist name…" :
+                    searchField === "movie" ? "Search by movie name…" :
+                    "Search people, artists, movies…"
+                  }
                   value={castSearch}
                   onChange={(e) => setCastSearch(e.target.value)}
                   style={{ margin: 0, flex: 1 }}

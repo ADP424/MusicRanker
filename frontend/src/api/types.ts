@@ -292,6 +292,15 @@ export interface MovieGenreRow {
 
 // ─── People ────────────────────────────────────────────────────────────────
 
+export type BandRole = "core_member" | "member";
+
+export const BAND_ROLES: BandRole[] = ["core_member", "member"];
+
+export const BAND_ROLE_LABELS: Record<BandRole, string> = {
+  core_member: "Core Member",
+  member: "Member",
+};
+
 export interface Person {
   id: number;
   name: string;
@@ -299,12 +308,15 @@ export interface Person {
   core_nationality: string;
   notes: string | null;
   artist_ids: number[];
+  artist_names: string[];
+  movie_names: string[];
 }
 
 export interface PersonArtistRef {
   id: number;
   name: string;
   discography_link: string;
+  role: BandRole;
 }
 
 export interface PersonMovieRoleRef {
@@ -334,6 +346,7 @@ export interface GraphPerson {
   id: number;
   name: string;
   artist_ids: number[];
+  artist_roles: BandRole[];
   movie_roles: CastRole[];
 }
 

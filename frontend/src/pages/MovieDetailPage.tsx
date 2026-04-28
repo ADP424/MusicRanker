@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
 import { api } from "../api/client";
@@ -26,6 +26,7 @@ function MoviePeopleSection({ movie }: { movie: Movie }) {
   const [editing, setEditing] = useState(false);
   const [confirmUnlink, setConfirmUnlink] = useState<MoviePersonRef | null>(null);
   const [castSearch, setCastSearch] = useState("");
+  const [searchField, setSearchField] = useState<"all" | "person" | "artist" | "movie">("all");
   const [addRole, setAddRole] = useState<CastRole>("director");
   const [creatingPerson, setCreatingPerson] = useState(false);
   const [dupWarning, setDupWarning] = useState<string | null>(null);
@@ -39,9 +40,20 @@ function MoviePeopleSection({ movie }: { movie: Movie }) {
     setCastKeys(new Set(movie.persons.map((p) => `${p.id}:${p.role}`)));
   }, [movie.persons]);
 
-  const filteredPeople = allPeople.filter((p) =>
-    !castSearch.trim() || p.name.toLowerCase().includes(castSearch.trim().toLowerCase())
-  );
+  const filteredPeople = useMemo(() => {
+    const q = castSearch.trim().toLowerCase();
+    if (!q) return allPeople;
+    return allPeople.filter((p) => {
+      if (searchField === "person") return p.name.toLowerCase().includes(q);
+      if (searchField === "artist") return p.artist_names.some((n) => n.toLowerCase().includes(q));
+      if (searchField === "movie") return p.movie_names.some((n) => n.toLowerCase().includes(q));
+      return (
+        p.name.toLowerCase().includes(q) ||
+        p.artist_names.some((n) => n.toLowerCase().includes(q)) ||
+        p.movie_names.some((n) => n.toLowerCase().includes(q))
+      );
+    });
+  }, [castSearch, searchField, allPeople]);
 
   const link = useMutation({
     mutationFn: ({ personId, role }: { personId: number; role: CastRole }) =>
@@ -111,11 +123,28 @@ function MoviePeopleSection({ movie }: { movie: Movie }) {
             ))}
           </div>
 
+          <div style={{ display: "flex", gap: "0.5rem", marginBottom: "0.4rem", flexWrap: "wrap" }}>
+            {(["all", "person", "artist", "movie"] as const).map((f) => (
+              <label
+                key={f}
+                className={`chip${searchField === f ? " chip-active" : ""}`}
+                onClick={() => setSearchField(f)}
+                style={{ cursor: "pointer" }}
+              >
+                {f === "all" ? "All" : f === "person" ? "Person" : f === "artist" ? "Artist" : "Movie"}
+              </label>
+            ))}
+          </div>
           <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", marginBottom: "0.4rem" }}>
             <input
               className="genre-search"
               type="search"
-              placeholder="Search people…"
+              placeholder={
+                searchField === "person" ? "Search by person name…" :
+                searchField === "artist" ? "Search by artist name…" :
+                searchField === "movie" ? "Search by movie name…" :
+                "Search people, artists, movies…"
+              }
               value={castSearch}
               onChange={(e) => setCastSearch(e.target.value)}
               style={{ margin: 0, flex: 1 }}

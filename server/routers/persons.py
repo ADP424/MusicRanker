@@ -12,7 +12,7 @@ from ..api_models.person import (
     PersonMovieRoleRef,
 )
 from ..database import get_database
-from ..database_models import Artist, ArtistPerson, Person
+from ..database_models import Artist, ArtistPerson, BandRole, Person
 
 router = APIRouter(prefix="/persons", tags=["persons"])
 
@@ -31,6 +31,8 @@ def _build_out(person: Person) -> PersonOut:
         core_nationality=person.core_nationality,
         notes=person.notes,
         artist_ids=[link.artist_id for link in person.artist_links],
+        artist_names=[link.artist.name for link in person.artist_links],
+        movie_names=[link.movie.name for link in person.movie_links],
     )
 
 
@@ -57,6 +59,7 @@ def get_person_graph(db: Session = Depends(get_database)):
                 id=person.id,
                 name=person.name,
                 artist_ids=[link.artist_id for link in person.artist_links],
+                artist_roles=list({link.role.value for link in person.artist_links}),
                 movie_roles=list({link.role.value for link in person.movie_links}),
             )
         )
@@ -92,6 +95,7 @@ def get_person_detail(pid: int, db: Session = Depends(get_database)):
                 id=link.artist.id,
                 name=link.artist.name,
                 discography_link=link.artist.discography_link,
+                role=link.role.value,
             )
             for link in person.artist_links
         ],
@@ -143,16 +147,16 @@ def delete_person(pid: int, db: Session = Depends(get_database)):
 # ── Artist links ───────────────────────────────────────────────────────────────
 
 
-@router.put("/{pid}/artists/{aid}", status_code=204)
-def link_artist(pid: int, aid: int, db: Session = Depends(get_database)):
+@router.put("/{pid}/artists/{aid}/{role}", status_code=204)
+def link_artist(pid: int, aid: int, role: BandRole, db: Session = Depends(get_database)):
     _get(db, pid)
     if not db.get(Artist, aid):
         raise HTTPException(404, "Artist not found")
-    if not db.get(ArtistPerson, (aid, pid)):
-        db.add(ArtistPerson(artist_id=aid, person_id=pid))
+    if not db.get(ArtistPerson, (aid, pid, role)):
+        db.add(ArtistPerson(artist_id=aid, person_id=pid, role=role))
 
 
-@router.delete("/{pid}/artists/{aid}", status_code=204)
-def unlink_artist(pid: int, aid: int, db: Session = Depends(get_database)):
-    if link := db.get(ArtistPerson, (aid, pid)):
+@router.delete("/{pid}/artists/{aid}/{role}", status_code=204)
+def unlink_artist(pid: int, aid: int, role: BandRole, db: Session = Depends(get_database)):
+    if link := db.get(ArtistPerson, (aid, pid, role)):
         db.delete(link)

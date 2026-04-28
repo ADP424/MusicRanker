@@ -3,6 +3,7 @@ from .album_artist import AlbumArtist
 from .album_genre import album_genres
 from .album_movie_soundtrack import album_movie_soundtrack
 from .artist import Artist
+from .artist_band_role import BandRole, band_role_type
 from .artist_person import ArtistPerson
 from .base import Base
 from .genre import Genre
@@ -22,6 +23,8 @@ __all__ = [
     "genre_parents",
     "Artist",
     "ArtistPerson",
+    "BandRole",
+    "band_role_type",
     "Album",
     "album_genres",
     "album_movie_soundtrack",

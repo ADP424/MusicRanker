@@ -24,12 +24,15 @@ class PersonOut(ORMSchema):
     core_nationality: str
     notes: str | None
     artist_ids: list[int] = []
+    artist_names: list[str] = []
+    movie_names: list[str] = []
 
 
 class PersonArtistRef(BaseModel):
     id: int
     name: str
     discography_link: str
+    role: str
 
 
 class PersonMovieRoleRef(BaseModel):
@@ -52,6 +55,7 @@ class GraphPersonNode(BaseModel):
     id: int
     name: str
     artist_ids: list[int] = []
+    artist_roles: list[str] = []  # distinct band roles across all artists
     movie_roles: list[str] = []  # distinct roles across all movies
 
 

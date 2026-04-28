@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
 import { AlbumForm } from "../components/AlbumForm";
@@ -8,7 +8,8 @@ import { ConfirmDialog } from "../components/ConfirmDialog";
 import { PersonForm } from "../components/PersonForm";
 import { api } from "../api/client";
 import { useGenres, usePeople } from "../api/hooks";
-import type { Album, Artist, ArtistDetail, ArtistRef, Person } from "../api/types";
+import type { Album, Artist, ArtistDetail, ArtistRef, BandRole, Person, PersonArtistRef } from "../api/types";
+import { BAND_ROLES, BAND_ROLE_LABELS } from "../api/types";
 import { SortableList } from "../components/SortableList";
 
 function fmtRuntime(seconds: number) {
@@ -23,36 +24,88 @@ function fmtRuntime(seconds: number) {
 
 function ArtistPeopleSection({ artistId }: { artistId: number }) {
   const qc = useQueryClient();
-  const { data: people = [] } = usePeople();
+  const { data: allPeople = [] } = usePeople();
   const [search, setSearch] = useState("");
+  const [searchField, setSearchField] = useState<"all" | "person" | "artist" | "movie">("all");
   const [chooserOpen, setChooserOpen] = useState(false);
   const [creatingPerson, setCreatingPerson] = useState(false);
   const [dupWarning, setDupWarning] = useState<string | null>(null);
+  const [addRole, setAddRole] = useState<BandRole>("member");
 
-  const linked = people.filter((p: Person) => p.artist_ids.includes(artistId));
+  // Fetch role-aware person links for this artist
+  const { data: artistPersons = [] } = useQuery({
+    queryKey: ["artists", artistId, "persons"],
+    queryFn: () => api.get<PersonArtistRef[]>(`/artists/${artistId}/persons`),
+  });
 
+  // Track current (personId, role) links as "id:role" keys
+  const [castKeys, setCastKeys] = useState<Set<string>>(
+    () => new Set(artistPersons.map((p) => `${p.id}:${p.role}`)),
+  );
+  useEffect(() => {
+    setCastKeys(new Set(artistPersons.map((p) => `${p.id}:${p.role}`)));
+  }, [artistPersons]);
+
+  const linkedIds = useMemo(
+    () => new Set(artistPersons.map((p) => p.id)),
+    [artistPersons],
+  );
+
+  // Linked people floated to the top, then alphabetical
   const filteredPeople = useMemo(() => {
     const q = search.trim().toLowerCase();
-    return q ? people.filter((p: Person) => p.name.toLowerCase().includes(q)) : people;
-  }, [search, people]);
+    const filtered = q
+      ? allPeople.filter((p: Person) => {
+          if (searchField === "person") return p.name.toLowerCase().includes(q);
+          if (searchField === "artist") return p.artist_names.some((n) => n.toLowerCase().includes(q));
+          if (searchField === "movie") return p.movie_names.some((n) => n.toLowerCase().includes(q));
+          return (
+            p.name.toLowerCase().includes(q) ||
+            p.artist_names.some((n) => n.toLowerCase().includes(q)) ||
+            p.movie_names.some((n) => n.toLowerCase().includes(q))
+          );
+        })
+      : allPeople;
+    return [...filtered].sort((a, b) => {
+      const aLinked = linkedIds.has(a.id) ? 0 : 1;
+      const bLinked = linkedIds.has(b.id) ? 0 : 1;
+      if (aLinked !== bLinked) return aLinked - bLinked;
+      return a.name.localeCompare(b.name);
+    });
+  }, [search, searchField, allPeople, linkedIds]);
+
+  const invalidate = () => {
+    qc.invalidateQueries({ queryKey: ["people"] });
+    qc.invalidateQueries({ queryKey: ["artists", artistId, "persons"] });
+    qc.invalidateQueries({ queryKey: ["stats", "artist-detail", artistId] });
+  };
 
   const link = useMutation({
-    mutationFn: (pid: number) => api.put(`/persons/${pid}/artists/${artistId}`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["people"] }),
+    mutationFn: ({ pid, role }: { pid: number; role: BandRole }) =>
+      api.put(`/persons/${pid}/artists/${artistId}/${role}`),
+    onSuccess: invalidate,
   });
 
   const unlink = useMutation({
-    mutationFn: (pid: number) => api.delete(`/persons/${pid}/artists/${artistId}`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["people"] }),
+    mutationFn: ({ pid, role }: { pid: number; role: BandRole }) =>
+      api.delete(`/persons/${pid}/artists/${artistId}/${role}`),
+    onSuccess: invalidate,
   });
 
-  function togglePerson(p: Person) {
-    if (p.artist_ids.includes(artistId)) {
-      unlink.mutate(p.id);
+  function toggleLink(person: Person, role: BandRole) {
+    const key = `${person.id}:${role}`;
+    if (castKeys.has(key)) {
+      unlink.mutate({ pid: person.id, role });
+      setCastKeys((prev) => { const next = new Set(prev); next.delete(key); return next; });
     } else {
-      link.mutate(p.id);
+      link.mutate({ pid: person.id, role });
+      setCastKeys((prev) => new Set([...prev, key]));
     }
   }
+
+  // Group linked persons by role for display
+  const byRole: Record<BandRole, PersonArtistRef[]> = { core_member: [], member: [] };
+  for (const p of artistPersons) byRole[p.role].push(p);
 
   return (
     <section style={{ marginBottom: "1.5rem" }}>
@@ -71,11 +124,43 @@ function ArtistPeopleSection({ artistId }: { artistId: number }) {
               <button className="icon" onClick={() => setDupWarning(null)}>✕</button>
             </div>
           )}
+
+          {/* Role selector */}
+          <div style={{ display: "flex", gap: "0.5rem", marginBottom: "0.5rem", flexWrap: "wrap" }}>
+            {BAND_ROLES.map((role) => (
+              <label
+                key={role}
+                className={`chip${addRole === role ? " chip-active" : ""}`}
+                onClick={() => setAddRole(role)}
+                style={{ cursor: "pointer" }}
+              >
+                {BAND_ROLE_LABELS[role]}
+              </label>
+            ))}
+          </div>
+
+          <div style={{ display: "flex", gap: "0.5rem", marginBottom: "0.4rem", flexWrap: "wrap" }}>
+            {(["all", "person", "artist", "movie"] as const).map((f) => (
+              <label
+                key={f}
+                className={`chip${searchField === f ? " chip-active" : ""}`}
+                onClick={() => setSearchField(f)}
+                style={{ cursor: "pointer" }}
+              >
+                {f === "all" ? "All" : f === "person" ? "Person" : f === "artist" ? "Artist" : "Movie"}
+              </label>
+            ))}
+          </div>
           <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", marginBottom: "0.4rem" }}>
             <input
               className="genre-search"
               type="search"
-              placeholder="Search people…"
+              placeholder={
+                searchField === "person" ? "Search by person name…" :
+                searchField === "artist" ? "Search by artist name…" :
+                searchField === "movie" ? "Search by movie name…" :
+                "Search people, artists, movies…"
+              }
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               style={{ margin: 0, flex: 1 }}
@@ -85,41 +170,40 @@ function ArtistPeopleSection({ artistId }: { artistId: number }) {
             </button>
           </div>
           <div className="chips" style={{ marginBottom: "0.75rem" }}>
-            {filteredPeople.map((p: Person) => (
-              <label key={p.id} className="chip">
-                <input
-                  type="checkbox"
-                  checked={p.artist_ids.includes(artistId)}
-                  onChange={() => togglePerson(p)}
-                />
-                {p.name}
-              </label>
-            ))}
+            {filteredPeople.map((p: Person) => {
+              const key = `${p.id}:${addRole}`;
+              return (
+                <label key={p.id} className="chip">
+                  <input
+                    type="checkbox"
+                    checked={castKeys.has(key)}
+                    onChange={() => toggleLink(p, addRole)}
+                  />
+                  {p.name}
+                </label>
+              );
+            })}
           </div>
         </>
       )}
 
-      {linked.length > 0 ? (
-        <ul className="sortable plain-list">
-          {linked.map((p) => (
-            <li key={p.id} className="sortable-item">
-              <div className="row" style={{ gridTemplateColumns: "1fr auto auto auto" }}>
-                <Link className="name" to={`/people/${p.id}`}>{p.name}</Link>
-                <span className="meta">
-                  {p.core_nationality}
-                  {p.birth_nationality !== p.core_nationality && (
-                    <> ({p.birth_nationality})</>
-                  )}
-                </span>
-                <button
-                  className="icon"
-                  title="Unlink person"
-                  onClick={() => unlink.mutate(p.id)}
-                >✕</button>
-              </div>
-            </li>
-          ))}
-        </ul>
+      {artistPersons.length > 0 ? (
+        BAND_ROLES.filter((r) => byRole[r].length > 0).map((role) => (
+          <div key={role} style={{ marginBottom: "0.75rem" }}>
+            <div className="detail-label" style={{ marginBottom: "0.25rem" }}>
+              {BAND_ROLE_LABELS[role]}
+            </div>
+            <ul className="sortable plain-list">
+              {byRole[role].map((p) => (
+                <li key={`${p.id}:${p.role}`} className="sortable-item">
+                  <div className="row" style={{ gridTemplateColumns: "1fr auto" }}>
+                    <Link className="name" to={`/people/${p.id}`}>{p.name}</Link>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ))
       ) : (
         <p style={{ opacity: 0.5, margin: "0.25rem 0 0" }}>No people linked.</p>
       )}
@@ -130,10 +214,14 @@ function ArtistPeopleSection({ artistId }: { artistId: number }) {
             <PersonForm
               onClose={(savedName, savedId) => {
                 setCreatingPerson(false);
-                if (savedId != null) link.mutate(savedId);
+                if (savedId != null) {
+                  qc.invalidateQueries({ queryKey: ["people"] });
+                  link.mutate({ pid: savedId, role: addRole });
+                  setCastKeys((prev) => new Set([...prev, `${savedId}:${addRole}`]));
+                }
                 if (savedName != null) {
                   const nameLower = savedName.toLowerCase();
-                  const dups = people.filter((p) => p.name.toLowerCase() === nameLower && p.id !== savedId);
+                  const dups = allPeople.filter((p) => p.name.toLowerCase() === nameLower && p.id !== savedId);
                   if (dups.length > 0) setDupWarning(`Warning: another person named "${savedName}" already exists.`);
                 }
               }}

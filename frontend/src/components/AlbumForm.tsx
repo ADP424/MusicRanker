@@ -54,15 +54,15 @@ export function AlbumForm(props: {
     queryKey: ["artists"],
     queryFn: () => api.get<ArtistRef[]>("/artists"),
   });
-  const [artistIds, setArtistIds] = useState<Set<number>>(new Set());
+  const [artistIds, setArtistIds] = useState<Set<number>>(
+    () => editing ? new Set() : new Set([artistId])
+  );
   const [artistSearch, setArtistSearch] = useState("");
   useEffect(() => {
     if (currentArtists.length) {
       setArtistIds(new Set(currentArtists.map((a) => a.id)));
-    } else if (!editing) {
-      setArtistIds(new Set([artistId]));
     }
-  }, [currentArtists, editing, artistId]);
+  }, [currentArtists]);
 
   const save = useMutation({
     mutationFn: async () => {

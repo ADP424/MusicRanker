@@ -5,8 +5,9 @@ import { useParams, Link } from "react-router-dom";
 import { api } from "../api/client";
 import { PersonForm } from "../components/PersonForm";
 import type { Person, PersonDetail } from "../api/types";
+import { BAND_ROLE_LABELS } from "../api/types";
 
-const ROLE_LABEL: Record<string, string> = {
+const MOVIE_ROLE_LABEL: Record<string, string> = {
   director:   "Director",
   composer:   "Composer",
   actor:       "Actor",
@@ -63,8 +64,9 @@ export function PersonDetailPage() {
           <ul className="sortable plain-list">
             {data.artists.map((a) => (
               <li key={a.id} className="sortable-item">
-                <div className="row" style={{ gridTemplateColumns: "1fr auto" }}>
+                <div className="row" style={{ gridTemplateColumns: "1fr auto auto" }}>
                   <Link className="name" to={`/music/artists/${a.id}`}>{a.name}</Link>
+                  <span className="meta">{BAND_ROLE_LABELS[a.role] ?? a.role}</span>
                   {a.discography_link && (
                     <a href={a.discography_link} target="_blank" rel="noreferrer" className="meta plain-link">
                       discography ↗
@@ -85,7 +87,7 @@ export function PersonDetailPage() {
               <li key={i} className="sortable-item">
                 <div className="row" style={{ gridTemplateColumns: "1fr auto" }}>
                   <Link className="name" to={`/movies/${r.movie_id}`}>{r.movie_name}</Link>
-                  <span className="meta">{ROLE_LABEL[r.role] ?? r.role}</span>
+                  <span className="meta">{MOVIE_ROLE_LABEL[r.role] ?? r.role}</span>
                 </div>
               </li>
             ))}
