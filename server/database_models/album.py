@@ -22,6 +22,7 @@ class Album(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(Text)
+    name_en: Mapped[str | None] = mapped_column(Text)
     runtime: Mapped[timedelta] = mapped_column(Interval)
     release_year: Mapped[int]
     alias: Mapped[str | None] = mapped_column(Text)

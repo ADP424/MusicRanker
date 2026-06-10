@@ -35,6 +35,7 @@ def _attach_persons(movie: Movie) -> list[MoviePersonRef]:
         MoviePersonRef(
             id=link.person.id,
             name=link.person.name,
+            name_en=link.person.name_en,
             role=link.role,
         )
         for link in movie.person_links
@@ -48,6 +49,7 @@ def _attach_soundtracks(movie: Movie) -> list[MovieSoundtrackAlbumRef]:
         MovieSoundtrackAlbumRef(
             id=album.id,
             name=album.name,
+            name_en=album.name_en,
             artist_ids=[link.artist_id for link in album.artist_links],
         )
         for album in movie.soundtrack_albums
@@ -71,6 +73,7 @@ def list_movies(db: Session = Depends(get_database)):
             MovieIndex(
                 id=movie.id,
                 name=movie.name,
+                name_en=movie.name_en,
                 person_ids=[link.person_id for link in movie.person_links],
                 genre_ids=[g.id for g in movie.genres],
             )

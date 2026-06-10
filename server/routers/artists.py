@@ -40,7 +40,9 @@ def search_artists(
     matching_ids: set[int] = set()
 
     if by in ("artist", "all"):
-        rows = db.scalars(select(Artist.id).where(Artist.name.ilike(f"%{needle}%"))).all()
+        rows = db.scalars(select(Artist.id).where(
+            Artist.name.ilike(f"%{needle}%") | Artist.name_en.ilike(f"%{needle}%")
+        )).all()
         matching_ids.update(rows)
 
     if by in ("genre", "all"):
@@ -69,7 +71,7 @@ def search_artists(
             db.execute(
                 select(AlbumArtist.artist_id)
                 .join(Album, Album.id == AlbumArtist.album_id)
-                .where(Album.name.ilike(f"%{needle}%"))
+                .where(Album.name.ilike(f"%{needle}%") | Album.name_en.ilike(f"%{needle}%"))
             )
             .scalars()
             .all()
@@ -136,6 +138,7 @@ def artist_persons(aid: int, db: Session = Depends(get_database)):
             PersonArtistRef(
                 id=link.person.id,
                 name=link.person.name,
+                name_en=link.person.name_en,
                 discography_link=link.artist.discography_link or "",
                 role=link.role.value,
             )
@@ -157,7 +160,7 @@ def artist_albums(aid: int, db: Session = Depends(get_database)):
     for i, (album, rank) in enumerate(db.execute(stmt), start=1):
         album.album_rank, album.position = rank, i
         album.artists = [
-            AlbumArtistRef(id=link.artist.id, name=link.artist.name, discography_link=link.artist.discography_link)
+            AlbumArtistRef(id=link.artist.id, name=link.artist.name, name_en=link.artist.name_en, discography_link=link.artist.discography_link)
             for link in album.artist_links
         ]
         album.genre_ids = [g.id for g in album.genres]

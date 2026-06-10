@@ -9,7 +9,7 @@ import { CAST_ROLE_LABELS } from "../api/types";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { PersonForm } from "../components/PersonForm";
 
-type PeopleSearchBy = "all" | "name" | "nationality";
+type PeopleSearchBy = "all" | "name" | "nationality" | "artist" | "movie";
 
 function PersonRow({ person }: { person: Person }) {
   const { data: artists = [] } = useArtists();
@@ -59,17 +59,43 @@ export function PeoplePage() {
   const [expandedIds, setExpandedIds] = useState<Set<number>>(new Set());
   const [searchQ, setSearchQ] = useState("");
   const [searchBy, setSearchBy] = useState<PeopleSearchBy>("all");
+  const [showDupsOnly, setShowDupsOnly] = useState(false);
   const [dupWarning, setDupWarning] = useState<string | null>(null);
 
   const { data: people = [] } = usePeople();
 
-  const visiblePeople = useMemo(() => {
-    const needle = searchQ.trim().toLowerCase();
-    if (!needle) return people;
+  const dupNameSet = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const p of people) {
+      const key = p.name.toLowerCase();
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+      if (p.name_en) {
+        const keyEn = p.name_en.toLowerCase();
+        counts.set(keyEn, (counts.get(keyEn) ?? 0) + 1);
+      }
+    }
+    const dups = new Set<string>();
+    for (const [name, count] of counts) {
+      if (count > 1) dups.add(name);
+    }
+    return dups;
+  }, [people]);
 
-    return people.filter((p) => {
+  const visiblePeople = useMemo(() => {
+    let result = people;
+
+    if (showDupsOnly) {
+      result = result.filter(
+        (p) => dupNameSet.has(p.name.toLowerCase()) || (p.name_en != null && dupNameSet.has(p.name_en.toLowerCase()))
+      );
+    }
+
+    const needle = searchQ.trim().toLowerCase();
+    if (!needle) return result;
+
+    return result.filter((p) => {
       if (searchBy === "name" || searchBy === "all") {
-        if (p.name.toLowerCase().includes(needle)) return true;
+        if (p.name.toLowerCase().includes(needle) || p.name_en?.toLowerCase().includes(needle)) return true;
       }
       if (searchBy === "nationality" || searchBy === "all") {
         if (
@@ -77,9 +103,15 @@ export function PeoplePage() {
           p.birth_nationality.toLowerCase().includes(needle)
         ) return true;
       }
+      if (searchBy === "artist" || searchBy === "all") {
+        if (p.artist_names.some((n) => n.toLowerCase().includes(needle))) return true;
+      }
+      if (searchBy === "movie" || searchBy === "all") {
+        if (p.movie_names.some((n) => n.toLowerCase().includes(needle))) return true;
+      }
       return false;
     });
-  }, [searchQ, searchBy, people]);
+  }, [searchQ, searchBy, showDupsOnly, dupNameSet, people]);
 
   const allExpanded = visiblePeople.length > 0 && visiblePeople.every((p) => expandedIds.has(p.id));
 
@@ -136,7 +168,7 @@ export function PeoplePage() {
           onChange={(e) => setSearchQ(e.target.value)}
         />
         <div className="search-by-chips">
-          {(["all", "name", "nationality"] as PeopleSearchBy[]).map((opt) => (
+          {(["all", "name", "nationality", "artist", "movie"] as PeopleSearchBy[]).map((opt) => (
             <button
               key={opt}
               className={`chip${searchBy === opt ? " chip-active" : ""}`}
@@ -146,7 +178,13 @@ export function PeoplePage() {
             </button>
           ))}
         </div>
-        {searchQ.trim().length > 0 && (
+        <button
+          className={`chip${showDupsOnly ? " chip-active" : ""}`}
+          onClick={() => setShowDupsOnly((v) => !v)}
+        >
+          Duplicates
+        </button>
+        {(searchQ.trim().length > 0 || showDupsOnly) && (
           <span className="search-count">{visiblePeople.length} result{visiblePeople.length !== 1 ? "s" : ""}</span>
         )}
       </div>
@@ -155,7 +193,9 @@ export function PeoplePage() {
         {visiblePeople.map((person) => (
           <li key={person.id} className="sortable-item">
             <div className="row" style={{ gridTemplateColumns: "1fr auto auto auto auto" }}>
-              <Link className="name" to={`/people/${person.id}`}>{person.name}</Link>
+              <Link className="name" to={`/people/${person.id}`}>
+                {person.name}{person.name_en && <span style={{ opacity: 0.6 }}> ({person.name_en})</span>}
+              </Link>
               <span className="meta">
                 {person.core_nationality}
                 {person.birth_nationality !== person.core_nationality && (

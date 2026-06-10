@@ -33,7 +33,7 @@ export function ArtistsPage() {
 
     if (searchBy === "artist" || searchBy === "all") {
       for (const a of artists) {
-        if (a.name.toLowerCase().includes(needle)) matchingIds.add(a.id);
+        if (a.name.toLowerCase().includes(needle) || a.name_en?.toLowerCase().includes(needle)) matchingIds.add(a.id);
       }
     }
 
@@ -64,7 +64,7 @@ export function ArtistsPage() {
 
     if (searchBy === "album" || searchBy === "all") {
       for (const album of albumIndex) {
-        if (album.name.toLowerCase().includes(needle)) {
+        if (album.name.toLowerCase().includes(needle) || album.name_en?.toLowerCase().includes(needle)) {
           for (const aid of album.artist_ids) matchingIds.add(aid);
         }
       }
@@ -153,7 +153,9 @@ export function ArtistsPage() {
         }
         render={(a) => (
           <>
-            <Link className="name" to={`/music/artists/${a.id}`}>{a.name}</Link>
+            <Link className="name" to={`/music/artists/${a.id}`}>
+              {a.name}{a.name_en && <span style={{ opacity: 0.6 }}> ({a.name_en})</span>}
+            </Link>
             <span className="meta">
               {a.core_nationality}
               {a.birth_nationality !== a.core_nationality && (

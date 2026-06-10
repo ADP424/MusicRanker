@@ -21,6 +21,7 @@ export function ArtistForm(props: {
 
   const [f, setF] = useState({
     name:              initial?.name              ?? "",
+    name_en:           initial?.name_en           ?? "",
     discography_link:  initial?.discography_link  ?? "",
     birth_nationality: initial?.birth_nationality ?? "",
     core_nationality:  initial?.core_nationality  ?? "",
@@ -36,6 +37,7 @@ export function ArtistForm(props: {
       const [genreId] = primaryGenreSet;
       const body: ArtistBody = {
         name: f.name,
+        name_en: orNull(f.name_en),
         discography_link: f.discography_link,
         birth_nationality: f.birth_nationality,
         core_nationality: f.core_nationality,
@@ -64,6 +66,10 @@ export function ArtistForm(props: {
 
         <label>Name
           <input required value={f.name} onChange={bind("name")} />
+        </label>
+
+        <label>English name <span style={{ opacity: 0.5, fontWeight: "normal", fontSize: 12 }}>(optional)</span>
+          <input value={f.name_en} onChange={bind("name_en")} />
         </label>
 
         <label>Discography link

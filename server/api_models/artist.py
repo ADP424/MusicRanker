@@ -7,6 +7,7 @@ from .base import ORMSchema
 
 class ArtistIn(BaseModel):
     name: str
+    name_en: str | None = None
     discography_link: str
     birth_nationality: str
     core_nationality: str
@@ -17,6 +18,7 @@ class ArtistIn(BaseModel):
 
 class ArtistPatch(BaseModel):
     name: str | None = None
+    name_en: str | None = None
     discography_link: str | None = None
     birth_nationality: str | None = None
     core_nationality: str | None = None
@@ -27,6 +29,7 @@ class ArtistPatch(BaseModel):
 class ArtistOut(ORMSchema):
     id: int
     name: str
+    name_en: str | None
     global_rank: Decimal | None
     position: int | None = None
     discography_link: str

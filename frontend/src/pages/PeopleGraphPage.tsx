@@ -171,7 +171,7 @@ export function PeopleGraphPage() {
 
     for (const p of filteredPersons) {
       const uid = `p-${p.id}`;
-      nodeMap.set(uid, { uid, label: p.name, kind: "person", id_: p.id });
+      nodeMap.set(uid, { uid, label: p.name_en ? `${p.name} (${p.name_en})` : p.name, kind: "person", id_: p.id });
     }
 
     const links: Array<{ sourceUid: string; targetUid: string }> = [];
@@ -495,7 +495,7 @@ export function PeopleGraphPage() {
   const searchPool = useMemo((): SearchResult[] => {
     if (!data) return [];
     const results: SearchResult[] = [];
-    for (const p of data.persons) results.push({ uid: `p-${p.id}`, label: p.name, kind: "person", id_: p.id });
+    for (const p of data.persons) results.push({ uid: `p-${p.id}`, label: p.name_en ? `${p.name} (${p.name_en})` : p.name, kind: "person", id_: p.id });
     for (const m of data.movies) results.push({ uid: `m-${m.id}`, label: m.name, kind: "movie", id_: m.id });
     for (const a of data.artists) results.push({ uid: `a-${a.id}`, label: a.name, kind: "artist", id_: a.id });
     return results;
@@ -559,7 +559,7 @@ export function PeopleGraphPage() {
       })
       .map((e) => {
         const person = personById.get(e.person_id);
-        return person ? { uid: `p-${e.person_id}`, label: person.name, id_: e.person_id } : null;
+        return person ? { uid: `p-${e.person_id}`, label: person.name_en ? `${person.name} (${person.name_en})` : person.name, id_: e.person_id } : null;
       })
       .filter(Boolean) as Array<{ uid: string; label: string; id_: number }>;
   }, [selected, data, personById, simNodes]);
@@ -700,7 +700,7 @@ export function PeopleGraphPage() {
       {selectedPerson && (
         <div style={{ marginTop: "1rem", padding: "0.75rem 1rem", border: "1px solid #8884", borderRadius: 6, fontSize: "0.875rem" }}>
           <div style={{ display: "flex", alignItems: "baseline", gap: "1rem", marginBottom: "0.5rem" }}>
-            <strong style={{ fontSize: "1rem" }}>{selectedPerson.name}</strong>
+            <strong style={{ fontSize: "1rem" }}>{selectedPerson.name}{selectedPerson.name_en && <span style={{ opacity: 0.6, fontWeight: "normal" }}> ({selectedPerson.name_en})</span>}</strong>
             <Link to={`/people/${selectedPerson.id}`} style={{ opacity: 0.6, fontSize: "0.8rem" }}>view profile →</Link>
             <button onClick={() => centerOn(selected!)}
               style={{ marginLeft: "auto", opacity: 0.5, background: "none", border: "none", cursor: "pointer", fontSize: "0.78rem" }}>

@@ -18,6 +18,7 @@ class Person(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(Text)
+    name_en: Mapped[str | None] = mapped_column(Text)
     birth_nationality: Mapped[str] = mapped_column(nationality)
     core_nationality: Mapped[str] = mapped_column(nationality)
     notes: Mapped[str | None] = mapped_column(Text)

@@ -23,6 +23,7 @@ class Artist(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(Text)
+    name_en: Mapped[str | None] = mapped_column(Text)
     global_rank: Mapped[Decimal | None] = mapped_column(Numeric, unique=True)
     discography_link: Mapped[str] = mapped_column(Text)
     birth_nationality: Mapped[str] = mapped_column(nationality)

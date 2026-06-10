@@ -8,8 +8,8 @@ def resolve(arg: str) -> Path:
     p = Path(arg)
     if p.exists():
         return p
-    # try relative to snapshots/
-    candidate = Path(__file__).parent / "snapshots" / p
+    # try relative to MediaRankingSnapshots/
+    candidate = Path(__file__).parent / "MediaRankingSnapshots" / p
     if candidate.exists():
         return candidate
     raise FileNotFoundError(f"Cannot find snapshot: {arg}")
@@ -20,7 +20,7 @@ if len(sys.argv) > 1:
 else:
     snapshots = list_snapshots()
     if not snapshots:
-        print("No snapshots found in snapshots/ directory.")
+        print("No snapshots found in MediaRankingSnapshots/ directory.")
         sys.exit(1)
     path = snapshots[0]
     print(f"No file specified — using most recent: {path.name}")

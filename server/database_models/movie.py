@@ -32,6 +32,7 @@ class Movie(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(Text)
+    name_en: Mapped[str | None] = mapped_column(Text)
     runtime_minutes: Mapped[int]
     release_year: Mapped[int]
     watches: Mapped[int] = mapped_column(server_default="1")

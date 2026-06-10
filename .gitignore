@@ -22,9 +22,12 @@ node_modules
 *.csv
 *.tsv
 
+# Scripts
+scripts/*.txt
+
 # Snapshots
-server/snapshots/
-!server/snapshots/.gitkeep
+server/MediaRankingSnapshots/
+!server/MediaRankingSnapshots/.gitkeep
 
 # TMDB Import
 tmdb_cache.json

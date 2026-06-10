@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { api } from "../api/client";
 import { useNationalities } from "../api/hooks";
@@ -12,9 +12,15 @@ export function PersonForm(props: { initial?: Person; onClose: (savedName?: stri
   const editing = initial !== undefined;
   const qc = useQueryClient();
   const { data: nats = [] } = useNationalities();
+  const ref = useRef<HTMLDialogElement>(null);
+
+  useEffect(() => {
+    ref.current?.showModal();
+  }, []);
 
   const [f, setF] = useState({
     name:              initial?.name              ?? "",
+    name_en:           initial?.name_en           ?? "",
     birth_nationality: initial?.birth_nationality ?? "",
     core_nationality:  initial?.core_nationality  ?? "",
     notes:             initial?.notes             ?? "",
@@ -24,6 +30,7 @@ export function PersonForm(props: { initial?: Person; onClose: (savedName?: stri
     mutationFn: () => {
       const body: PersonBody = {
         name: f.name,
+        name_en: orNull(f.name_en),
         birth_nationality: f.birth_nationality,
         core_nationality: f.core_nationality,
         notes: orNull(f.notes),
@@ -44,12 +51,16 @@ export function PersonForm(props: { initial?: Person; onClose: (savedName?: stri
       setF({ ...f, [k]: e.target.value });
 
   return (
-    <dialog open className="modal">
+    <dialog ref={ref} className="modal" onClose={() => onClose()}>
       <form onSubmit={(e) => { e.preventDefault(); save.mutate(); }}>
         <h2>{editing ? "Edit" : "New"} Person</h2>
 
         <label>Name
           <input required value={f.name} onChange={bind("name")} />
+        </label>
+
+        <label>English name <span style={{ opacity: 0.5, fontWeight: "normal", fontSize: 12 }}>(optional)</span>
+          <input value={f.name_en} onChange={bind("name_en")} placeholder="e.g. Ken Watanabe" />
         </label>
 
         <div className="grid-2">

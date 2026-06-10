@@ -44,11 +44,12 @@ function MoviePeopleSection({ movie }: { movie: Movie }) {
     const q = castSearch.trim().toLowerCase();
     if (!q) return allPeople;
     return allPeople.filter((p) => {
-      if (searchField === "person") return p.name.toLowerCase().includes(q);
+      if (searchField === "person") return p.name.toLowerCase().includes(q) || !!p.name_en?.toLowerCase().includes(q);
       if (searchField === "artist") return p.artist_names.some((n) => n.toLowerCase().includes(q));
       if (searchField === "movie") return p.movie_names.some((n) => n.toLowerCase().includes(q));
       return (
         p.name.toLowerCase().includes(q) ||
+        !!p.name_en?.toLowerCase().includes(q) ||
         p.artist_names.some((n) => n.toLowerCase().includes(q)) ||
         p.movie_names.some((n) => n.toLowerCase().includes(q))
       );
@@ -164,7 +165,7 @@ function MoviePeopleSection({ movie }: { movie: Movie }) {
                     checked={castKeys.has(key)}
                     onChange={() => toggleLink(p, addRole)}
                   />
-                  {p.name}
+                  {p.name}{p.name_en && <span style={{ opacity: 0.6 }}> ({p.name_en})</span>}
                 </label>
               );
             })}
@@ -182,7 +183,9 @@ function MoviePeopleSection({ movie }: { movie: Movie }) {
               {byRole[role].map((p) => (
                 <li key={`${p.id}:${p.role}`} className="sortable-item">
                   <div className="row" style={{ gridTemplateColumns: "1fr auto" }}>
-                    <Link className="name" to={`/people/${p.id}`}>{p.name}</Link>
+                    <Link className="name" to={`/people/${p.id}`}>
+                      {p.name}{p.name_en && <span style={{ opacity: 0.6 }}> ({p.name_en})</span>}
+                    </Link>
                     {editing && (
                       <button
                         className="icon"
@@ -363,7 +366,7 @@ export function MovieDetailPage() {
     <section>
       <header className="page-head">
         <h1>
-          {movie.name}
+          {movie.name}{movie.name_en && <span style={{ opacity: 0.6, fontWeight: "normal" }}> ({movie.name_en})</span>}
           {movie.watch_link && (
             <> <a href={movie.watch_link} target="_blank" rel="noreferrer" style={{ textDecoration: "none", fontStyle: "italic", fontSize: "0.6em", opacity: 0.7, fontWeight: "normal", color: "inherit" }}>(link)</a></>
           )}
@@ -392,7 +395,9 @@ export function MovieDetailPage() {
                 {movie.soundtrack_albums.map((a, i) => (
                   <span key={a.id}>
                     {i > 0 && ", "}
-                    <Link to={`/music/albums/${a.id}`}>{a.name}</Link>
+                    <Link to={`/music/albums/${a.id}`}>
+                      {a.name}{a.name_en && <span style={{ opacity: 0.6 }}> ({a.name_en})</span>}
+                    </Link>
                   </span>
                 ))}
               </span>

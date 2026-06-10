@@ -38,6 +38,7 @@ export function MovieForm(props: {
 
   const [f, setF] = useState({
     name:            initial?.name            ?? "",
+    name_en:         initial?.name_en         ?? "",
     runtime_minutes: initial?.runtime_minutes ?? 0,
     release_year:    initial?.release_year    ?? new Date().getFullYear(),
     watches:         initial?.watches         ?? 1,
@@ -78,7 +79,7 @@ export function MovieForm(props: {
 
   const filteredAlbums = useMemo(() => {
     const q = albumSearch.trim().toLowerCase();
-    return (q ? allAlbums.filter((a: AlbumIndex) => a.name.toLowerCase().includes(q)) : allAlbums)
+    return (q ? allAlbums.filter((a: AlbumIndex) => a.name.toLowerCase().includes(q) || !!a.name_en?.toLowerCase().includes(q)) : allAlbums)
       .sort((a: AlbumIndex, b: AlbumIndex) => (albumSortSnap.has(a.id) ? 0 : 1) - (albumSortSnap.has(b.id) ? 0 : 1))
       .slice(0, 50);
   }, [albumSearch, allAlbums, albumSortSnap]);
@@ -99,11 +100,12 @@ export function MovieForm(props: {
     return allPeople
       .filter((p) => {
         if (!q) return true;
-        if (searchField === "person") return p.name.toLowerCase().includes(q);
+        if (searchField === "person") return p.name.toLowerCase().includes(q) || !!p.name_en?.toLowerCase().includes(q);
         if (searchField === "artist") return p.artist_names.some((n) => n.toLowerCase().includes(q));
         if (searchField === "movie") return p.movie_names.some((n) => n.toLowerCase().includes(q));
         return (
           p.name.toLowerCase().includes(q) ||
+          !!p.name_en?.toLowerCase().includes(q) ||
           p.artist_names.some((n) => n.toLowerCase().includes(q)) ||
           p.movie_names.some((n) => n.toLowerCase().includes(q))
         );
@@ -135,6 +137,7 @@ export function MovieForm(props: {
     mutationFn: async () => {
       const body: MovieBody = {
         name: f.name,
+        name_en: orNull(f.name_en),
         runtime_minutes: f.runtime_minutes,
         release_year: f.release_year,
         watches: f.watches,
@@ -194,7 +197,7 @@ export function MovieForm(props: {
 
   const num = (k: "runtime_minutes" | "release_year" | "watches") =>
     (e: React.ChangeEvent<HTMLInputElement>) => setF({ ...f, [k]: Number(e.target.value) });
-  const txt = (k: "name" | "watch_link" | "notes") =>
+  const txt = (k: "name" | "name_en" | "watch_link" | "notes") =>
     (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => setF({ ...f, [k]: e.target.value });
 
   // Grouped summary of selected persons
@@ -232,6 +235,10 @@ export function MovieForm(props: {
 
         <label>Name
           <input required value={f.name} onChange={txt("name")} />
+        </label>
+
+        <label>English name <span style={{ opacity: 0.5, fontWeight: "normal", fontSize: 12 }}>(optional)</span>
+          <input value={f.name_en} onChange={txt("name_en")} />
         </label>
 
         <div className="grid-2">

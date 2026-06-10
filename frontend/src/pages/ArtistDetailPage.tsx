@@ -56,11 +56,12 @@ function ArtistPeopleSection({ artistId }: { artistId: number }) {
     const q = search.trim().toLowerCase();
     const filtered = q
       ? allPeople.filter((p: Person) => {
-          if (searchField === "person") return p.name.toLowerCase().includes(q);
+          if (searchField === "person") return p.name.toLowerCase().includes(q) || !!p.name_en?.toLowerCase().includes(q);
           if (searchField === "artist") return p.artist_names.some((n) => n.toLowerCase().includes(q));
           if (searchField === "movie") return p.movie_names.some((n) => n.toLowerCase().includes(q));
           return (
             p.name.toLowerCase().includes(q) ||
+            !!p.name_en?.toLowerCase().includes(q) ||
             p.artist_names.some((n) => n.toLowerCase().includes(q)) ||
             p.movie_names.some((n) => n.toLowerCase().includes(q))
           );
@@ -179,7 +180,7 @@ function ArtistPeopleSection({ artistId }: { artistId: number }) {
                     checked={castKeys.has(key)}
                     onChange={() => toggleLink(p, addRole)}
                   />
-                  {p.name}
+                  {p.name}{p.name_en && <span style={{ opacity: 0.6 }}> ({p.name_en})</span>}
                 </label>
               );
             })}
@@ -197,7 +198,9 @@ function ArtistPeopleSection({ artistId }: { artistId: number }) {
               {byRole[role].map((p) => (
                 <li key={`${p.id}:${p.role}`} className="sortable-item">
                   <div className="row" style={{ gridTemplateColumns: "1fr auto" }}>
-                    <Link className="name" to={`/people/${p.id}`}>{p.name}</Link>
+                    <Link className="name" to={`/people/${p.id}`}>
+                      {p.name}{p.name_en && <span style={{ opacity: 0.6 }}> ({p.name_en})</span>}
+                    </Link>
                   </div>
                 </li>
               ))}
@@ -329,6 +332,7 @@ export function ArtistDetailPage() {
               {artist.name}
             </a>
           ) : artist.name}
+          {artist.name_en && <span style={{ opacity: 0.6, fontWeight: "normal" }}> ({artist.name_en})</span>}
         </h1>
         <div style={{ display: "flex", gap: "0.5rem" }}>
           <button onClick={() => setEditingArtist(true)}>✎ Edit</button>
@@ -461,8 +465,8 @@ export function ArtistDetailPage() {
                       <span key={ar.id}>
                         {i > 0 && ", "}
                         {ar.discography_link
-                          ? <a href={ar.discography_link} target="_blank" rel="noreferrer" className="plain-link">{ar.name}</a>
-                          : ar.name}
+                          ? <a href={ar.discography_link} target="_blank" rel="noreferrer" className="plain-link">{ar.name}{ar.name_en && <span style={{ opacity: 0.6 }}> ({ar.name_en})</span>}</a>
+                          : <>{ar.name}{ar.name_en && <span style={{ opacity: 0.6 }}> ({ar.name_en})</span>}</>}
                       </span>
                     ))}
                   </span>
@@ -475,7 +479,9 @@ export function ArtistDetailPage() {
                     {a.soundtrack_movies.map((m, i) => (
                       <span key={m.id}>
                         {i > 0 && ", "}
-                        <Link to={`/movies/${m.id}`}>{m.name}</Link>
+                        <Link to={`/movies/${m.id}`}>
+                          {m.name}{m.name_en && <span style={{ opacity: 0.6 }}> ({m.name_en})</span>}
+                        </Link>
                       </span>
                     ))}
                   </span>
@@ -502,7 +508,9 @@ export function ArtistDetailPage() {
         render={(a) => (
           <>
             <span className="name">
-              <Link to={`/music/albums/${a.id}`} className="plain-link">{a.name}</Link>
+              <Link to={`/music/albums/${a.id}`} className="plain-link">
+                {a.name}{a.name_en && <span style={{ opacity: 0.6 }}> ({a.name_en})</span>}
+              </Link>
               {a.listen_link && (
                 <> <a href={a.listen_link} target="_blank" rel="noreferrer" style={{ textDecoration: "none", fontStyle: "italic", fontSize: "0.85em", opacity: 0.7, color: "inherit" }}>(link)</a></>
               )}

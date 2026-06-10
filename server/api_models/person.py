@@ -5,6 +5,7 @@ from .base import ORMSchema
 
 class PersonIn(BaseModel):
     name: str
+    name_en: str | None = None
     birth_nationality: str
     core_nationality: str
     notes: str | None = None
@@ -12,6 +13,7 @@ class PersonIn(BaseModel):
 
 class PersonPatch(BaseModel):
     name: str | None = None
+    name_en: str | None = None
     birth_nationality: str | None = None
     core_nationality: str | None = None
     notes: str | None = None
@@ -20,6 +22,7 @@ class PersonPatch(BaseModel):
 class PersonOut(ORMSchema):
     id: int
     name: str
+    name_en: str | None
     birth_nationality: str
     core_nationality: str
     notes: str | None
@@ -31,6 +34,7 @@ class PersonOut(ORMSchema):
 class PersonArtistRef(BaseModel):
     id: int
     name: str
+    name_en: str | None = None
     discography_link: str
     role: str
 
@@ -44,6 +48,7 @@ class PersonMovieRoleRef(BaseModel):
 class PersonDetail(BaseModel):
     id: int
     name: str
+    name_en: str | None
     birth_nationality: str
     core_nationality: str
     notes: str | None
@@ -54,6 +59,7 @@ class PersonDetail(BaseModel):
 class GraphPersonNode(BaseModel):
     id: int
     name: str
+    name_en: str | None = None
     artist_ids: list[int] = []
     artist_roles: list[str] = []  # distinct band roles across all artists
     movie_roles: list[str] = []  # distinct roles across all movies

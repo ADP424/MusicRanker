@@ -33,7 +33,7 @@ export function PersonDetailPage() {
   return (
     <section>
       <header className="page-head">
-        <h1>{data.name}</h1>
+        <h1>{data.name}{data.name_en && <span style={{ opacity: 0.6, fontWeight: "normal" }}> ({data.name_en})</span>}</h1>
         <button onClick={() => setEditing(true)}>✎ Edit</button>
       </header>
 

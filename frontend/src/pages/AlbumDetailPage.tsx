@@ -34,7 +34,7 @@ function AlbumArtistsSection({ albumId }: { albumId: number }) {
   const linkedIds = new Set(albumArtists.map((a) => a.id));
 
   const filteredArtists = allArtists.filter((a) =>
-    !search.trim() || a.name.toLowerCase().includes(search.trim().toLowerCase())
+    !search.trim() || a.name.toLowerCase().includes(search.trim().toLowerCase()) || !!a.name_en?.toLowerCase().includes(search.trim().toLowerCase())
   );
 
   const link = useMutation({
@@ -94,7 +94,7 @@ function AlbumArtistsSection({ albumId }: { albumId: number }) {
                     }
                   }}
                 />
-                {a.name}
+                {a.name}{a.name_en && <span style={{ opacity: 0.6 }}> ({a.name_en})</span>}
               </label>
             ))}
           </div>
@@ -106,7 +106,9 @@ function AlbumArtistsSection({ albumId }: { albumId: number }) {
           {albumArtists.map((a) => (
             <li key={a.id} className="sortable-item">
               <div className="row" style={{ gridTemplateColumns: "1fr" }}>
-                <Link className="name" to={`/music/artists/${a.id}`}>{a.name}</Link>
+                <Link className="name" to={`/music/artists/${a.id}`}>
+                  {a.name}{a.name_en && <span style={{ opacity: 0.6 }}> ({a.name_en})</span>}
+                </Link>
               </div>
             </li>
           ))}
@@ -261,7 +263,7 @@ export function AlbumDetailPage() {
     <section>
       <header className="page-head">
         <h1>
-          {album.name}
+          {album.name}{album.name_en && <span style={{ opacity: 0.6, fontWeight: "normal" }}> ({album.name_en})</span>}
           {album.listen_link && (
             <> <a href={album.listen_link} target="_blank" rel="noreferrer" style={{ textDecoration: "none", fontStyle: "italic", fontSize: "0.6em", opacity: 0.7, fontWeight: "normal", color: "inherit" }}>(link)</a></>
           )}
@@ -307,7 +309,9 @@ export function AlbumDetailPage() {
                 {album.soundtrack_movies.map((m, i) => (
                   <span key={m.id}>
                     {i > 0 && ", "}
-                    <Link to={`/movies/${m.id}`}>{m.name}</Link>
+                    <Link to={`/movies/${m.id}`}>
+                      {m.name}{m.name_en && <span style={{ opacity: 0.6 }}> ({m.name_en})</span>}
+                    </Link>
                   </span>
                 ))}
               </span>

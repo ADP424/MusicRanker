@@ -2,6 +2,7 @@
 export interface ArtistRef {
   id: number;
   name: string;
+  name_en: string | null;
 }
 
 export interface Genre {
@@ -15,6 +16,7 @@ export interface Genre {
 export interface Artist {
   id: number;
   name: string;
+  name_en: string | null;
   global_rank: string | null;      // NUMERIC → JSON string
   position: number | null;
   discography_link: string;
@@ -27,23 +29,27 @@ export interface Artist {
 export interface AlbumArtistRef {
   id: number;
   name: string;
+  name_en: string | null;
   discography_link: string;
 }
 
 export interface SoundtrackMovieRef {
   id: number;
   name: string;
+  name_en: string | null;
 }
 
 export interface SoundtrackAlbumRef {
   id: number;
   name: string;
+  name_en: string | null;
   artist_ids: number[];
 }
 
 export interface Album {
   id: number;
   name: string;
+  name_en: string | null;
   runtime_seconds: number;
   release_year: number;
   alias: string | null;
@@ -72,6 +78,7 @@ export interface GenreIn {
 
 export interface ArtistBody {
   name: string;
+  name_en: string | null;
   discography_link: string;
   birth_nationality: string;
   core_nationality: string;
@@ -166,12 +173,14 @@ export interface ScatterPoint { [key: string]: number | string }
 export interface AlbumIndex {
   id: number;
   name: string;
+  name_en: string | null;
   artist_ids: number[];
   genre_ids: number[];
 }
 
 export interface AlbumBody {
   name: string;
+  name_en: string | null;
   runtime_seconds: number;
   release_year: number;
   alias: string | null;
@@ -206,12 +215,14 @@ export const CAST_ROLE_LABELS: Record<CastRole, string> = {
 export interface MoviePersonRef {
   id: number;
   name: string;
+  name_en: string | null;
   role: CastRole;
 }
 
 export interface Movie {
   id: number;
   name: string;
+  name_en: string | null;
   runtime_minutes: number;
   release_year: number;
   watches: number;
@@ -227,12 +238,14 @@ export interface Movie {
 export interface MovieIndex {
   id: number;
   name: string;
+  name_en: string | null;
   person_ids: number[];
   genre_ids: number[];
 }
 
 export interface MovieBody {
   name: string;
+  name_en: string | null;
   runtime_minutes: number;
   release_year: number;
   watches: number;
@@ -304,6 +317,7 @@ export const BAND_ROLE_LABELS: Record<BandRole, string> = {
 export interface Person {
   id: number;
   name: string;
+  name_en: string | null;
   birth_nationality: string;
   core_nationality: string;
   notes: string | null;
@@ -315,6 +329,7 @@ export interface Person {
 export interface PersonArtistRef {
   id: number;
   name: string;
+  name_en: string | null;
   discography_link: string;
   role: BandRole;
 }
@@ -328,6 +343,7 @@ export interface PersonMovieRoleRef {
 export interface PersonDetail {
   id: number;
   name: string;
+  name_en: string | null;
   birth_nationality: string;
   core_nationality: string;
   notes: string | null;
@@ -337,6 +353,7 @@ export interface PersonDetail {
 
 export interface PersonBody {
   name: string;
+  name_en: string | null;
   birth_nationality: string;
   core_nationality: string;
   notes: string | null;
@@ -345,6 +362,7 @@ export interface PersonBody {
 export interface GraphPerson {
   id: number;
   name: string;
+  name_en: string | null;
   artist_ids: number[];
   artist_roles: BandRole[];
   movie_roles: CastRole[];

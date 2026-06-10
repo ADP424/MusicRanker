@@ -50,7 +50,7 @@ npm run build
 
 ## Database Snapshots
 
-Snapshots are plain-text SQL files stored in `snapshots/`, named by UTC timestamp.
+Snapshots are plain-text SQL files stored in `MediaRankingSnapshots/`, named by UTC timestamp.
 
 **Save a snapshot:**
 ```bash
@@ -71,7 +71,7 @@ Restoring a snapshot drops and recreates all objects in-place — no need to run
 from server.snapshot import save_snapshot, load_snapshot, list_snapshots
 
 save_snapshot("before-migration")
-load_snapshot("snapshots/2026-03-27T14-30-00_before-migration.sql")
+load_snapshot("MediaRankingSnapshots/2026-03-27T14-30-00_before-migration.sql")
 snapshots = list_snapshots()  # sorted newest-first
 ```
 

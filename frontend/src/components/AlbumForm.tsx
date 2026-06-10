@@ -25,6 +25,7 @@ export function AlbumForm(props: {
 
   const [f, setF] = useState({
     name:         initial?.name         ?? "",
+    name_en:      initial?.name_en      ?? "",
     min:          initMin,
     sec:          initSec,
     release_year: initial?.release_year ?? new Date().getFullYear(),
@@ -68,6 +69,7 @@ export function AlbumForm(props: {
     mutationFn: async () => {
       const body: AlbumBody = {
         name: f.name,
+        name_en: orNull(f.name_en),
         runtime_seconds: f.min * 60 + f.sec,
         release_year: f.release_year,
         alias: orNull(f.alias),
@@ -119,7 +121,7 @@ export function AlbumForm(props: {
     (e: React.ChangeEvent<HTMLInputElement>) =>
       setF({ ...f, [k]: Number(e.target.value) });
   const txt =
-    (k: "name" | "alias" | "alias_link" | "listen_link" | "notes") =>
+    (k: "name" | "name_en" | "alias" | "alias_link" | "listen_link" | "notes") =>
     (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>
       setF({ ...f, [k]: e.target.value });
 
@@ -129,7 +131,7 @@ export function AlbumForm(props: {
   const filteredArtists = useMemo(() => {
     const q = artistSearch.trim().toLowerCase();
     return allArtists
-      .filter((a) => !q || a.name.toLowerCase().includes(q))
+      .filter((a) => !q || a.name.toLowerCase().includes(q) || !!a.name_en?.toLowerCase().includes(q))
       .sort((a, b) => (artistSortSnap.has(a.id) ? 0 : 1) - (artistSortSnap.has(b.id) ? 0 : 1));
   }, [artistSearch, allArtists, artistSortSnap]);
 
@@ -140,6 +142,10 @@ export function AlbumForm(props: {
 
         <label>Name
           <input required value={f.name} onChange={txt("name")} />
+        </label>
+
+        <label>English name <span style={{ opacity: 0.5, fontWeight: "normal", fontSize: 12 }}>(optional)</span>
+          <input value={f.name_en} onChange={txt("name_en")} />
         </label>
 
         <div className="grid-2">
@@ -210,7 +216,7 @@ export function AlbumForm(props: {
                         setArtistIds(next);
                       }}
                     />
-                    {a.name}
+                    {a.name}{a.name_en && <span style={{ opacity: 0.6 }}> ({a.name_en})</span>}
                   </label>
                 ))}
               </div>

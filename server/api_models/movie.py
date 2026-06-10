@@ -9,17 +9,20 @@ from .base import ORMSchema
 class MoviePersonRef(BaseModel):
     id: int
     name: str
+    name_en: str | None = None
     role: CastRole
 
 
 class MovieSoundtrackAlbumRef(BaseModel):
     id: int
     name: str
+    name_en: str | None = None
     artist_ids: list[int] = []
 
 
 class MovieIn(BaseModel):
     name: str
+    name_en: str | None = None
     runtime_minutes: int = Field(ge=0)
     release_year: int
     watches: int = Field(default=1, ge=1)
@@ -30,6 +33,7 @@ class MovieIn(BaseModel):
 
 class MoviePatch(BaseModel):
     name: str | None = None
+    name_en: str | None = None
     runtime_minutes: int | None = Field(default=None, ge=0)
     release_year: int | None = None
     watches: int | None = Field(default=None, ge=1)
@@ -43,6 +47,7 @@ class MovieOut(ORMSchema):
 
     id: int
     name: str
+    name_en: str | None = None
     runtime_minutes: int
     release_year: int
     watches: int
@@ -60,5 +65,6 @@ class MovieIndex(ORMSchema):
 
     id: int
     name: str
+    name_en: str | None = None
     person_ids: list[int] = []
     genre_ids: list[int] = []

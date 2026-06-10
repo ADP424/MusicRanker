@@ -27,6 +27,7 @@ def _build_out(person: Person) -> PersonOut:
     return PersonOut(
         id=person.id,
         name=person.name,
+        name_en=person.name_en,
         birth_nationality=person.birth_nationality,
         core_nationality=person.core_nationality,
         notes=person.notes,
@@ -58,6 +59,7 @@ def get_person_graph(db: Session = Depends(get_database)):
             GraphPersonNode(
                 id=person.id,
                 name=person.name,
+                name_en=person.name_en,
                 artist_ids=[link.artist_id for link in person.artist_links],
                 artist_roles=list({link.role.value for link in person.artist_links}),
                 movie_roles=list({link.role.value for link in person.movie_links}),
@@ -115,6 +117,7 @@ def get_person_detail(pid: int, db: Session = Depends(get_database)):
     return PersonDetail(
         id=person.id,
         name=person.name,
+        name_en=person.name_en,
         birth_nationality=person.birth_nationality,
         core_nationality=person.core_nationality,
         notes=person.notes,

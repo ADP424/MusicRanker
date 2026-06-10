@@ -32,6 +32,7 @@ def list_albums(db: Session = Depends(get_database)):
             AlbumIndex(
                 id=album.id,
                 name=album.name,
+                name_en=album.name_en,
                 artist_ids=[link.artist_id for link in album.artist_links],
                 genre_ids=[g.id for g in album.genres],
             )

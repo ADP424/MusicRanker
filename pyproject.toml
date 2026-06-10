@@ -22,7 +22,7 @@ package-dir = {"" = "."}
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["server*"]
+include = ["server*", "scripts*"]
 
 [tool.black]
 line-length = 120

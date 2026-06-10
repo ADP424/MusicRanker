@@ -8,16 +8,19 @@ from .base import ORMSchema
 class AlbumArtistRef(BaseModel):
     id: int
     name: str
+    name_en: str | None = None
     discography_link: str
 
 
 class AlbumSoundtrackMovieRef(BaseModel):
     id: int
     name: str
+    name_en: str | None = None
 
 
 class AlbumIn(BaseModel):
     name: str
+    name_en: str | None = None
     runtime_seconds: int = Field(gt=0)
     release_year: int
     alias: str | None = None
@@ -29,6 +32,7 @@ class AlbumIn(BaseModel):
 
 class AlbumPatch(BaseModel):
     name: str | None = None
+    name_en: str | None = None
     runtime_seconds: int | None = Field(default=None, gt=0)
     release_year: int | None = None
     alias: str | None = None
@@ -41,6 +45,7 @@ class AlbumPatch(BaseModel):
 class AlbumOut(ORMSchema):
     id: int
     name: str
+    name_en: str | None = None
     runtime_seconds: int
     release_year: int
     alias: str | None
@@ -60,5 +65,6 @@ class AlbumIndex(ORMSchema):
 
     id: int
     name: str
+    name_en: str | None = None
     artist_ids: list[int] = []
     genre_ids: list[int] = []

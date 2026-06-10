@@ -48,7 +48,7 @@ export function MoviesPage() {
 
     if (searchBy === "title" || searchBy === "all") {
       for (const m of movies) {
-        if (m.name.toLowerCase().includes(needle)) matchingIds.add(m.id);
+        if (m.name.toLowerCase().includes(needle) || m.name_en?.toLowerCase().includes(needle)) matchingIds.add(m.id);
       }
     }
 
@@ -68,7 +68,7 @@ export function MoviesPage() {
 
     if (searchBy === "person" || searchBy === "all") {
       const matchingPersonIds = new Set(
-        people.filter((p) => p.name.toLowerCase().includes(needle)).map((p) => p.id)
+        people.filter((p) => p.name.toLowerCase().includes(needle) || p.name_en?.toLowerCase().includes(needle)).map((p) => p.id)
       );
       for (const m of movies) {
         if (m.persons.some((p) => matchingPersonIds.has(p.id))) matchingIds.add(m.id);
@@ -196,7 +196,9 @@ export function MoviesPage() {
                         {byRole[role].map((p, i) => (
                           <span key={p.id}>
                             {i > 0 && ", "}
-                            <Link className="plain-link" to={`/people/${p.id}`}>{p.name}</Link>
+                            <Link className="plain-link" to={`/people/${p.id}`}>
+                              {p.name}{p.name_en && <span style={{ opacity: 0.6 }}> ({p.name_en})</span>}
+                            </Link>
                           </span>
                         ))}
                       </span>
@@ -226,7 +228,9 @@ export function MoviesPage() {
                     {m.soundtrack_albums.map((a, i) => (
                       <span key={a.id}>
                         {i > 0 && ", "}
-                        <Link to={`/music/albums/${a.id}`}>{a.name}</Link>
+                        <Link to={`/music/albums/${a.id}`}>
+                          {a.name}{a.name_en && <span style={{ opacity: 0.6 }}> ({a.name_en})</span>}
+                        </Link>
                       </span>
                     ))}
                   </span>
@@ -253,7 +257,9 @@ export function MoviesPage() {
         render={(m) => (
           <>
             <span className="name">
-              <Link to={`/movies/${m.id}`} className="plain-link">{m.name}</Link>
+              <Link to={`/movies/${m.id}`} className="plain-link">
+                {m.name}{m.name_en && <span style={{ opacity: 0.6 }}> ({m.name_en})</span>}
+              </Link>
               {m.watch_link && (
                 <> <a href={m.watch_link} target="_blank" rel="noreferrer" style={{ textDecoration: "none", fontStyle: "italic", fontSize: "0.85em", opacity: 0.7, color: "inherit" }}>(link)</a></>
               )}
