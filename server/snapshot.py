@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-SNAPSHOTS_DIR = Path(__file__).parent / "MediaRankingSnapshots"
+SNAPSHOTS_DIR = Path(__file__).parent / "snapshots"
 
 
 def _db_env() -> dict[str, str]:

@@ -26,8 +26,9 @@ node_modules
 scripts/*.txt
 
 # Snapshots
-server/MediaRankingSnapshots/
-!server/MediaRankingSnapshots/.gitkeep
+server/snapshots/
+!server/snapshots/.gitkeep
+server/MediaRankingSnapshots
 
 # TMDB Import
 tmdb_cache.json
