@@ -20,7 +20,6 @@ import server.database as _db
 from server.database import dispose_engine, init_engine
 from server.database_models import Movie, MoviePerson, Person
 
-
 load_dotenv()
 
 TMDB_BEARER = os.environ["TMDB_BEARER_TOKEN"]
@@ -39,6 +38,7 @@ SESSION.headers.update(
 # Name matching helpers
 # --------------------------------------------------------------------------- #
 
+
 def normalize(name: str) -> str:
     """Case-fold + strip diacritics for forgiving name comparisons."""
     nfkd = unicodedata.normalize("NFKD", name)
@@ -55,15 +55,13 @@ def person_name_keys(person: Person) -> set[str]:
 
 def person_db_movies(person: Person) -> set[tuple[str, int]]:
     """The (normalized title, year) set of movies a DB person is linked to."""
-    return {
-        (normalize(pl.movie.name), pl.movie.release_year)
-        for pl in person.movie_links
-    }
+    return {(normalize(pl.movie.name), pl.movie.release_year) for pl in person.movie_links}
 
 
 # --------------------------------------------------------------------------- #
 # TMDB
 # --------------------------------------------------------------------------- #
+
 
 def tmdb_get(path: str, **params) -> dict:
     """GET wrapper with very light rate-limit handling."""
@@ -122,8 +120,7 @@ def find_tmdb_movie_id(movie: Movie) -> int | None:
         # Fallback: search without year, then filter by year ourselves.
         data = tmdb_get("/search/movie", query=movie.name, include_adult="true")
         results = [
-            r for r in data.get("results", [])
-            if (r.get("release_date") or "").startswith(str(movie.release_year))
+            r for r in data.get("results", []) if (r.get("release_date") or "").startswith(str(movie.release_year))
         ]
         if not results:
             return None
@@ -191,10 +188,7 @@ def resolve_person(
     current_key = (normalize(current_movie.name), current_movie.release_year)
     tmdb_movies = tmdb_movies | {current_key}
 
-    matches = [
-        person for person in candidates
-        if person_db_movies(person).issubset(tmdb_movies)
-    ]
+    matches = [person for person in candidates if person_db_movies(person).issubset(tmdb_movies)]
 
     if len(matches) == 1:
         return matches[0]
@@ -213,6 +207,7 @@ def resolve_person(
 # Main
 # --------------------------------------------------------------------------- #
 
+
 def main() -> None:
     init_engine()
     try:
@@ -220,9 +215,7 @@ def main() -> None:
             # Eager-load each person's other movies so we can disambiguate
             # namesakes without lazy-load surprises.
             people = db.scalars(
-                select(Person).options(
-                    selectinload(Person.movie_links).selectinload(MoviePerson.movie)
-                )
+                select(Person).options(selectinload(Person.movie_links).selectinload(MoviePerson.movie))
             ).all()
 
             people_by_name: dict[str, list[Person]] = {}
@@ -231,9 +224,7 @@ def main() -> None:
                     people_by_name.setdefault(key, []).append(p)
 
             movies = db.scalars(
-                select(Movie).options(
-                    selectinload(Movie.person_links).selectinload(MoviePerson.person)
-                )
+                select(Movie).options(selectinload(Movie.person_links).selectinload(MoviePerson.person))
             ).all()
 
             print(f"Scanning {len(movies)} movies against TMDB...\n")
@@ -286,10 +277,7 @@ def main() -> None:
                     missing_for_movie.append((person, member.get("character", "")))
 
                 if missing_for_movie:
-                    print(
-                        f"\n{movie.name} ({movie.release_year}) "
-                        f"[movie_id={movie.id}]"
-                    )
+                    print(f"\n{movie.name} ({movie.release_year}) " f"[movie_id={movie.id}]")
                     for person, character in missing_for_movie:
                         extra = f" as {character}" if character else ""
                         print(f"  - {person.name} (person_id={person.id}){extra}")

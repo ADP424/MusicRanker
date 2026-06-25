@@ -8,7 +8,6 @@ Both processes share stdout/stderr with the parent.  Ctrl-C (or SIGTERM on
 Unix) shuts both down cleanly.
 """
 
-import os
 import signal
 import subprocess
 import sys

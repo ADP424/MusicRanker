@@ -97,9 +97,7 @@ def save_snapshot(label: str | None = None) -> Path:
                 break
         return "\n".join(out)
 
-    content = re.sub(
-        r"CREATE TYPE \S+ AS ENUM \(.*?\);", _dedup_enum, content, flags=re.DOTALL
-    )
+    content = re.sub(r"CREATE TYPE \S+ AS ENUM \(.*?\);", _dedup_enum, content, flags=re.DOTALL)
     path.write_text(content, encoding="utf-8")
 
     size_kb = path.stat().st_size // 1024
@@ -128,9 +126,7 @@ def load_snapshot(path: str | Path) -> None:
     # PG18 has a bug where DROP TYPE ... CASCADE leaves stale pg_enum entries,
     # causing the subsequent CREATE TYPE to fail with a duplicate key error.
     # Pre-drop all enum types found in the snapshot before running it.
-    enum_types = re.findall(
-        r"CREATE TYPE (\S+) AS ENUM", path.read_text(encoding="utf-8")
-    )
+    enum_types = re.findall(r"CREATE TYPE (\S+) AS ENUM", path.read_text(encoding="utf-8"))
     if enum_types:
         pre_drop = " ".join(f"DROP TYPE IF EXISTS {t} CASCADE;" for t in enum_types)
         subprocess.run(
