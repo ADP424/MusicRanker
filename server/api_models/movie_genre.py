@@ -1,23 +1,13 @@
-from pydantic import BaseModel
-
-from .base import ORMSchema
+from .genre_base import GenreInBase, GenreOutBase, GenrePatchBase
 
 
-class MovieGenreIn(BaseModel):
-    name: str
-    synonyms: list[str] | None = None
-    notes: str | None = None
+class MovieGenreIn(GenreInBase):
+    pass
 
 
-class MovieGenrePatch(BaseModel):
-    name: str | None = None
-    synonyms: list[str] | None = None
-    notes: str | None = None
+class MovieGenrePatch(GenrePatchBase):
+    pass
 
 
-class MovieGenreOut(ORMSchema):
-    id: int
-    name: str
-    synonyms: list[str] | None
-    notes: str | None
-    parent_ids: list[int] = []
+class MovieGenreOut(GenreOutBase):
+    pass

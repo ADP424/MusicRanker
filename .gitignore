@@ -32,4 +32,7 @@ server/MediaRankingSnapshots
 
 # TMDB Import
 tmdb_cache.json
+tmdb_cache.sqlite3
+tmdb_cache.sqlite3-wal
+tmdb_cache.sqlite3-shm
 tmdb_import_report.txt

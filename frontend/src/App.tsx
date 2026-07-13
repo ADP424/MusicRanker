@@ -1,14 +1,14 @@
 import { NavLink, Route, Routes } from "react-router-dom";
 import { usePrefetchAll, usePrefetchMovies, usePrefetchPeople } from "./api/hooks";
+import { GenreDetailPage } from "./genre/GenreDetailPage";
+import { GenresPage } from "./genre/GenresPage";
+import { MOVIE_GENRES, MUSIC_GENRES } from "./genre/config";
 import { AlbumDetailPage } from "./pages/AlbumDetailPage";
 import { ArtistsPage } from "./pages/ArtistsPage";
 import { ArtistDetailPage } from "./pages/ArtistDetailPage";
-import { GenreDetailPage } from "./pages/GenreDetailPage";
-import { GenresPage } from "./pages/GenresPage";
 import { HomePage } from "./pages/HomePage";
 import { MovieDetailPage } from "./pages/MovieDetailPage";
-import { MovieGenreDetailPage } from "./pages/MovieGenreDetailPage";
-import { MovieGenresPage } from "./pages/MovieGenresPage";
+import { MoviePersonScanPage } from "./pages/MoviePersonScanPage";
 import { MoviesPage } from "./pages/MoviesPage";
 import { MovieStatsPage } from "./pages/MovieStatsPage";
 import { PeopleGraphPage } from "./pages/PeopleGraphPage";
@@ -29,8 +29,8 @@ function MusicSection() {
       <main>
         <Routes>
           <Route path="/" element={<ArtistsPage />} />
-          <Route path="/genres" element={<GenresPage />} />
-          <Route path="/genres/:id" element={<GenreDetailPage />} />
+          <Route path="/genres" element={<GenresPage domain={MUSIC_GENRES} />} />
+          <Route path="/genres/:id" element={<GenreDetailPage domain={MUSIC_GENRES} />} />
           <Route path="/artists/:id" element={<ArtistDetailPage />} />
           <Route path="/albums/:id" element={<AlbumDetailPage />} />
           <Route path="/stats" element={<StatsPage />} />
@@ -48,15 +48,17 @@ function MoviesSection() {
         <NavLink to="/movies">Movies</NavLink>
         <NavLink to="/movies/genres">Genres</NavLink>
         <NavLink to="/movies/stats">Stats</NavLink>
+        <NavLink to="/movies/tmdb-scan">TMDB Scan</NavLink>
         <NavLink to="/" className="nav-home">← Home</NavLink>
       </nav>
       <main>
         <Routes>
           <Route path="/" element={<MoviesPage />} />
-          <Route path="/genres" element={<MovieGenresPage />} />
-          <Route path="/genres/:id" element={<MovieGenreDetailPage />} />
-          <Route path="/:id" element={<MovieDetailPage />} />
+          <Route path="/genres" element={<GenresPage domain={MOVIE_GENRES} />} />
+          <Route path="/genres/:id" element={<GenreDetailPage domain={MOVIE_GENRES} />} />
           <Route path="/stats" element={<MovieStatsPage />} />
+          <Route path="/tmdb-scan" element={<MoviePersonScanPage />} />
+          <Route path="/:id" element={<MovieDetailPage />} />
         </Routes>
       </main>
     </>

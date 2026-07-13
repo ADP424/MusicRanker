@@ -11,7 +11,7 @@ from ..api_models.person import PersonArtistRef
 from ..database import get_database
 from ..database_models import Album, AlbumArtist, Artist, ArtistPerson
 from ..database_models.genre import Genre
-from ..ranking import rank_between
+from ..ranking import rank_at
 
 router = APIRouter(prefix="/artists", tags=["artists"])
 
@@ -174,14 +174,4 @@ def artist_albums(aid: int, db: Session = Depends(get_database)):
 
 
 def _rank_at(db: Session, position: int | None, exclude: int | None) -> Decimal:
-    base = select(Artist.global_rank)
-    if exclude is not None:
-        base = base.where(Artist.id != exclude)
-
-    if position is None:
-        return rank_between(db.scalar(select(func.max(base.subquery().c.global_rank))), None)
-
-    ranked = base.add_columns(func.row_number().over(order_by=Artist.global_rank).label("pos")).subquery()
-    prev = db.scalar(select(ranked.c.global_rank).where(ranked.c.pos == position - 1))
-    nxt = db.scalar(select(ranked.c.global_rank).where(ranked.c.pos == position))
-    return rank_between(prev, nxt)
+    return rank_at(db, Artist.global_rank, position, exclude_col=Artist.id, exclude=exclude)

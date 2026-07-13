@@ -1,15 +1,16 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 
 import { api } from "../api/client";
-import { useMovieGenres, usePeople } from "../api/hooks";
+import { useMovieGenres, usePeople, useStartScan } from "../api/hooks";
 import type { CastRole, Movie, MovieGenre, MoviePersonRef, Person } from "../api/types";
 import { CAST_ROLES, CAST_ROLE_LABELS } from "../api/types";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { MovieForm } from "../components/MovieForm";
 import { MovieGenreChooser } from "../components/MovieGenreChooser";
 import { PersonForm } from "../components/PersonForm";
+import { PersonPicker, type PersonSearchField } from "../components/PersonPicker";
 
 function fmtRuntime(minutes: number) {
   const h = Math.floor(minutes / 60);
@@ -26,7 +27,7 @@ function MoviePeopleSection({ movie }: { movie: Movie }) {
   const [editing, setEditing] = useState(false);
   const [confirmUnlink, setConfirmUnlink] = useState<MoviePersonRef | null>(null);
   const [castSearch, setCastSearch] = useState("");
-  const [searchField, setSearchField] = useState<"all" | "person" | "artist" | "movie">("all");
+  const [searchField, setSearchField] = useState<PersonSearchField>("all");
   const [addRole, setAddRole] = useState<CastRole>("director");
   const [creatingPerson, setCreatingPerson] = useState(false);
   const [dupWarning, setDupWarning] = useState<string | null>(null);
@@ -110,65 +111,21 @@ function MoviePeopleSection({ movie }: { movie: Movie }) {
             </div>
           )}
 
-          {/* Role selector */}
-          <div style={{ display: "flex", gap: "0.5rem", marginBottom: "0.5rem", flexWrap: "wrap" }}>
-            {CAST_ROLES.map((role) => (
-              <label
-                key={role}
-                className={`chip${addRole === role ? " chip-active" : ""}`}
-                onClick={() => setAddRole(role)}
-                style={{ cursor: "pointer" }}
-              >
-                {CAST_ROLE_LABELS[role]}
-              </label>
-            ))}
-          </div>
-
-          <div style={{ display: "flex", gap: "0.5rem", marginBottom: "0.4rem", flexWrap: "wrap" }}>
-            {(["all", "person", "artist", "movie"] as const).map((f) => (
-              <label
-                key={f}
-                className={`chip${searchField === f ? " chip-active" : ""}`}
-                onClick={() => setSearchField(f)}
-                style={{ cursor: "pointer" }}
-              >
-                {f === "all" ? "All" : f === "person" ? "Person" : f === "artist" ? "Artist" : "Movie"}
-              </label>
-            ))}
-          </div>
-          <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", marginBottom: "0.4rem" }}>
-            <input
-              className="genre-search"
-              type="search"
-              placeholder={
-                searchField === "person" ? "Search by person name…" :
-                searchField === "artist" ? "Search by artist name…" :
-                searchField === "movie" ? "Search by movie name…" :
-                "Search people, artists, movies…"
-              }
-              value={castSearch}
-              onChange={(e) => setCastSearch(e.target.value)}
-              style={{ margin: 0, flex: 1 }}
+          <div style={{ marginBottom: "0.75rem" }}>
+            <PersonPicker
+              roles={CAST_ROLES}
+              roleLabels={CAST_ROLE_LABELS}
+              activeRole={addRole}
+              onRole={setAddRole}
+              searchField={searchField}
+              onSearchField={setSearchField}
+              search={castSearch}
+              onSearch={setCastSearch}
+              onNewPerson={() => setCreatingPerson(true)}
+              people={filteredPeople}
+              isChecked={(p, role) => castKeys.has(`${p.id}:${role}`)}
+              onToggle={toggleLink}
             />
-            <button style={{ whiteSpace: "nowrap" }} onClick={() => setCreatingPerson(true)}>
-              + New Person
-            </button>
-          </div>
-
-          <div className="chips" style={{ marginBottom: "0.75rem" }}>
-            {filteredPeople.map((p) => {
-              const key = `${p.id}:${addRole}`;
-              return (
-                <label key={p.id} className="chip">
-                  <input
-                    type="checkbox"
-                    checked={castKeys.has(key)}
-                    onChange={() => toggleLink(p, addRole)}
-                  />
-                  {p.name}{p.name_en && <span style={{ opacity: 0.6 }}> ({p.name_en})</span>}
-                </label>
-              );
-            })}
           </div>
         </>
       )}
@@ -351,7 +308,9 @@ export function MovieDetailPage() {
   const { id } = useParams<{ id: string }>();
   const movieId = Number(id);
   const qc = useQueryClient();
+  const navigate = useNavigate();
   const [editing, setEditing] = useState(false);
+  const startScan = useStartScan();
 
   const { data: movie, isLoading, isError } = useQuery({
     queryKey: ["movies", movieId],
@@ -371,8 +330,20 @@ export function MovieDetailPage() {
             <> <a href={movie.watch_link} target="_blank" rel="noreferrer" style={{ textDecoration: "none", fontStyle: "italic", fontSize: "0.6em", opacity: 0.7, fontWeight: "normal", color: "inherit" }}>(link)</a></>
           )}
         </h1>
+        <button
+          onClick={() =>
+            startScan.mutate(
+              { movie_ids: [movie.id] },
+              { onSuccess: (job) => navigate(`/movies/tmdb-scan?job=${job.id}`) },
+            )
+          }
+          disabled={startScan.isPending}
+        >
+          {startScan.isPending ? "Starting…" : "Scan TMDB for missing credits"}
+        </button>
         <button onClick={() => setEditing(true)}>✎ Edit</button>
       </header>
+      {startScan.error && <p className="err">{(startScan.error as Error).message}</p>}
 
       <div className="artist-detail-dropdown" style={{ marginBottom: "1.5rem" }}>
         <div className="artist-detail-grid">

@@ -9,6 +9,9 @@ import { ArtistDetailDropdown } from "../components/ArtistDetailDropdown";
 import { ArtistForm } from "../components/ArtistForm";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { SortableList } from "../components/SortableList";
+import { DupWarningBanner, useDupWarning } from "../hooks/useDupWarning";
+import { useExpandAll } from "../hooks/useExpandAll";
+import { useOptimisticDelete } from "../hooks/useOptimisticDelete";
 
 type SearchBy = "all" | "artist" | "genre" | "album";
 
@@ -16,14 +19,14 @@ export function ArtistsPage() {
   const qc = useQueryClient();
   const [editing, setEditing] = useState<{ artist: Artist } | "new" | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<Artist | null>(null);
-  const [expandedIds, setExpandedIds] = useState<Set<number>>(new Set());
   const [searchQ, setSearchQ] = useState("");
   const [searchBy, setSearchBy] = useState<SearchBy>("all");
-  const [dupWarning, setDupWarning] = useState<string | null>(null);
+  const { dupWarning, clear: clearDup, checkAfterSave } = useDupWarning("artist");
 
   const { data: artists = [] } = useArtists();
   const { data: albumIndex = [] } = useAlbumIndex();
   const { data: genres = [] } = useGenres();
+  const { expandedIds, toggle: toggleExpand, allExpanded, toggleAll } = useExpandAll(artists);
 
   const visibleArtists = useMemo(() => {
     const needle = searchQ.trim().toLowerCase();
@@ -79,44 +82,24 @@ export function ArtistsPage() {
     onSettled: () => qc.invalidateQueries({ queryKey: ["artists"] }),
   });
 
-  const remove = useMutation({
-    mutationFn: (id: number) => api.delete(`/artists/${id}`),
-    onMutate: async (id) => {
-      await qc.cancelQueries({ queryKey: ["artists"] });
-      const prev = qc.getQueryData<Artist[]>(["artists"]);
-      qc.setQueryData<Artist[]>(["artists"], (old = []) => old.filter((a) => a.id !== id));
-      return { prev };
-    },
-    onError: (_err, _id, ctx) => qc.setQueryData(["artists"], ctx?.prev),
-    onSettled: () => qc.invalidateQueries({ queryKey: ["artists"] }),
+  const remove = useOptimisticDelete<Artist>({
+    queryKey: ["artists"],
+    endpoint: (id) => `/artists/${id}`,
   });
-
-  const allExpanded = artists.length > 0 && expandedIds.size === artists.length;
 
   return (
     <section>
       <header className="page-head">
         <h1>Artists</h1>
         <div style={{ display: "flex", gap: "0.5rem" }}>
-          <button onClick={() => {
-            if (allExpanded) {
-              setExpandedIds(new Set());
-            } else {
-              setExpandedIds(new Set(artists.map((a) => a.id)));
-            }
-          }}>
+          <button onClick={toggleAll}>
             {allExpanded ? "Collapse all" : "Expand all"}
           </button>
           <button onClick={() => setEditing("new")}>+ Add</button>
         </div>
       </header>
 
-      {dupWarning && (
-        <div className="dup-warning">
-          <span>{dupWarning}</span>
-          <button className="icon" onClick={() => setDupWarning(null)}>✕</button>
-        </div>
-      )}
+      {dupWarning && <DupWarningBanner message={dupWarning} onDismiss={clearDup} />}
 
       <div className="search-bar">
         <input
@@ -165,13 +148,7 @@ export function ArtistsPage() {
             <button
               className="icon"
               title="Show details"
-              onClick={() => {
-                setExpandedIds((prev) => {
-                  const next = new Set(prev);
-                  next.has(a.id) ? next.delete(a.id) : next.add(a.id);
-                  return next;
-                });
-              }}
+              onClick={() => toggleExpand(a.id)}
             >{expandedIds.has(a.id) ? "▲" : "▼"}</button>
             <button
               className="icon"
@@ -200,13 +177,7 @@ export function ArtistsPage() {
               initial={editing === "new" ? undefined : editing.artist}
               onClose={(savedName, savedId) => {
                 setEditing(null);
-                if (savedName != null) {
-                  const nameLower = savedName.toLowerCase();
-                  const dups = artists.filter(
-                    (a) => a.name.toLowerCase() === nameLower && a.id !== savedId
-                  );
-                  if (dups.length > 0) setDupWarning(`Warning: another artist named "${savedName}" already exists.`);
-                }
+                checkAfterSave(artists, savedName, savedId);
               }}
             />
           </div>

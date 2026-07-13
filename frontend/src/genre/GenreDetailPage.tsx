@@ -3,30 +3,30 @@ import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
 import { api } from "../api/client";
-import { MovieGenreForm } from "../components/MovieGenreForm";
-import type { MovieGenre } from "../api/types";
+import { GenreForm } from "./GenreForm";
+import type { GenreDomain, GenreLike } from "./config";
 
-export function MovieGenreDetailPage() {
+export function GenreDetailPage({ domain }: { domain: GenreDomain }) {
   const { id } = useParams<{ id: string }>();
   const gid = Number(id);
   const qc = useQueryClient();
   const [editing, setEditing] = useState(false);
 
   const { data: genre, isLoading, isError } = useQuery({
-    queryKey: ["movie-genres", gid],
-    queryFn: () => api.get<MovieGenre>(`/movie-genres/${gid}`),
+    queryKey: [domain.key, gid],
+    queryFn: () => api.get<GenreLike>(`${domain.apiBase}/${gid}`),
     enabled: !isNaN(gid),
   });
 
   const { data: parents = [] } = useQuery({
-    queryKey: ["movie-genres", gid, "parents"],
-    queryFn: () => api.get<MovieGenre[]>(`/movie-genres/${gid}/parents`),
+    queryKey: [domain.key, gid, "parents"],
+    queryFn: () => api.get<GenreLike[]>(`${domain.apiBase}/${gid}/parents`),
     enabled: !isNaN(gid),
   });
 
   const { data: children = [] } = useQuery({
-    queryKey: ["movie-genres", gid, "children"],
-    queryFn: () => api.get<MovieGenre[]>(`/movie-genres/${gid}/children`),
+    queryKey: [domain.key, gid, "children"],
+    queryFn: () => api.get<GenreLike[]>(`${domain.apiBase}/${gid}/children`),
     enabled: !isNaN(gid),
   });
 
@@ -65,7 +65,7 @@ export function MovieGenreDetailPage() {
             {parents.map((g) => (
               <li key={g.id} className="sortable-item">
                 <div className="row" style={{ gridTemplateColumns: "1fr" }}>
-                  <Link className="name" to={`/movies/genres/${g.id}`}>{g.name}</Link>
+                  <Link className="name" to={`${domain.routeBase}/${g.id}`}>{g.name}</Link>
                 </div>
               </li>
             ))}
@@ -80,7 +80,7 @@ export function MovieGenreDetailPage() {
             {children.map((g) => (
               <li key={g.id} className="sortable-item">
                 <div className="row" style={{ gridTemplateColumns: "1fr" }}>
-                  <Link className="name" to={`/movies/genres/${g.id}`}>{g.name}</Link>
+                  <Link className="name" to={`${domain.routeBase}/${g.id}`}>{g.name}</Link>
                 </div>
               </li>
             ))}
@@ -95,13 +95,14 @@ export function MovieGenreDetailPage() {
       {editing && (
         <div className="modal-backdrop" onClick={() => setEditing(false)}>
           <div onClick={(e) => e.stopPropagation()}>
-            <MovieGenreForm
+            <GenreForm
+              domain={domain}
               initial={genre}
               onClose={() => {
                 setEditing(false);
-                qc.invalidateQueries({ queryKey: ["movie-genres", gid] });
-                qc.invalidateQueries({ queryKey: ["movie-genres", gid, "parents"] });
-                qc.invalidateQueries({ queryKey: ["movie-genres", gid, "children"] });
+                qc.invalidateQueries({ queryKey: [domain.key, gid] });
+                qc.invalidateQueries({ queryKey: [domain.key, gid, "parents"] });
+                qc.invalidateQueries({ queryKey: [domain.key, gid, "children"] });
               }}
             />
           </div>

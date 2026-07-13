@@ -1,6 +1,7 @@
 from sqlalchemy import Enum
 
 NATIONALITIES: tuple[str, ...] = (
+    "Algerian",
     "American",
     "Andorran",
     "Argentinian",
@@ -14,13 +15,14 @@ NATIONALITIES: tuple[str, ...] = (
     "Channel Islander",
     "Chilean",
     "Chinese",
-    "Columbian",
+    "Colombian",
     "Croatian",
     "Cuban",
     "Cypriot",
     "Czech",
     "Danish",
     "Dutch",
+    "Ecuadorian",
     "Egyptian",
     "English",
     "Filipino",
@@ -82,7 +84,7 @@ NATIONALITIES: tuple[str, ...] = (
     "Vietnamese",
     "Welsh",
     "Yugoslav",
-    "Zimbabween",
+    "Zimbabwean",
 )
 
 nationality = Enum(*NATIONALITIES, name="nationality", native_enum=True)

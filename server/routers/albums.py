@@ -2,7 +2,7 @@ from datetime import timedelta
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..api_models import (
@@ -17,7 +17,7 @@ from ..api_models import (
 )
 from ..database import get_database
 from ..database_models import Album, AlbumArtist, Genre, Movie
-from ..ranking import rank_between
+from ..ranking import rank_at
 
 router = APIRouter(prefix="/albums", tags=["albums"])
 
@@ -156,14 +156,11 @@ def unlink_soundtrack(aid: int, mid: int, db: Session = Depends(get_database)):
 
 
 def _rank_at(db: Session, artist_id: int, position: int | None, exclude: int | None) -> Decimal:
-    base = select(AlbumArtist.album_rank).where(AlbumArtist.artist_id == artist_id)
-    if exclude is not None:
-        base = base.where(AlbumArtist.album_id != exclude)
-
-    if position is None:
-        return rank_between(db.scalar(select(func.max(base.subquery().c.album_rank))), None)
-
-    ranked = base.add_columns(func.row_number().over(order_by=AlbumArtist.album_rank).label("pos")).subquery()
-    prev = db.scalar(select(ranked.c.album_rank).where(ranked.c.pos == position - 1))
-    nxt = db.scalar(select(ranked.c.album_rank).where(ranked.c.pos == position))
-    return rank_between(prev, nxt)
+    return rank_at(
+        db,
+        AlbumArtist.album_rank,
+        position,
+        exclude_col=AlbumArtist.album_id,
+        exclude=exclude,
+        scope=AlbumArtist.artist_id == artist_id,
+    )

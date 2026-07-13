@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState } from "react";
-import type { Genre } from "../api/types";
+import type { GenreLike } from "./config";
 
 // ─── Layout ────────────────────────────────────────────────────────────────
 
@@ -13,10 +13,10 @@ interface NodeLayout {
   x: number;
   y: number;
   depth: number;
-  genre: Genre;
+  genre: GenreLike;
 }
 
-function computeLayout(genres: Genre[]): {
+function computeLayout(genres: GenreLike[]): {
   nodes: NodeLayout[];
   edges: { from: number; to: number }[];
   width: number;
@@ -43,7 +43,7 @@ function computeLayout(genres: Genre[]): {
   }
 
   // Group by depth, sort alphabetically within each column
-  const byDepth = new Map<number, Genre[]>();
+  const byDepth = new Map<number, GenreLike[]>();
   for (const g of genres) {
     const d = depth.get(g.id)!;
     if (!byDepth.has(d)) byDepth.set(d, []);
@@ -110,8 +110,8 @@ export function GenreTree({
   genres,
   onEdit,
 }: {
-  genres: Genre[];
-  onEdit: (g: Genre) => void;
+  genres: GenreLike[];
+  onEdit: (g: GenreLike) => void;
 }) {
   const { nodes, edges, width, height } = useMemo(() => computeLayout(genres), [genres]);
   const nodeMap = useMemo(() => new Map(nodes.map((n) => [n.id, n])), [nodes]);

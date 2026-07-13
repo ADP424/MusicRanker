@@ -12,10 +12,12 @@ from .routers import (
     artists,
     genres,
     movie_genres,
+    movie_person_scan,
     movie_stats,
     movies,
     persons,
     stats,
+    tmdb_import,
 )
 from .snapshot import save_snapshot
 
@@ -44,7 +46,9 @@ app.include_router(stats.router)
 app.include_router(movie_genres.router)
 app.include_router(movies.router)
 app.include_router(movie_stats.router)
+app.include_router(movie_person_scan.router)
 app.include_router(persons.router)
+app.include_router(tmdb_import.router)
 
 
 @app.exception_handler(IntegrityError)

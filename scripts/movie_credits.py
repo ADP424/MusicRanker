@@ -1,20 +1,3 @@
-"""
-movie_credits_db.py
-
-
-Tkinter UI for reviewing movie cast, writing to PostgreSQL.
-- Director & composer auto-included; cast classified by the user.
-- Full cast is shown (no limit); a "Skip Rest" button finishes a movie early.
-- Genre selection step between cast review and save, with live TMDB→DB
-  matching, synonym mapping, and on-the-fly genre creation.
-- Buttons are pinned to the bottom of the window.
-- Ends with a summary of all newly created people and their nationalities.
-
-
-Usage:
-    python movie_credits_db.py
-"""
-
 import os
 import re
 import threading
@@ -31,17 +14,13 @@ from server.database_models import CastRole, Movie, MovieGenre, MoviePerson, Per
 
 load_dotenv()
 
-
 TMDB_BEARER = os.environ["TMDB_BEARER_TOKEN"]
 TMDB_BASE = "https://api.themoviedb.org/3"
-
 
 SESSION = requests.Session()
 SESSION.headers.update({"Authorization": f"Bearer {TMDB_BEARER}", "accept": "application/json"})
 
-
 TOP_CREDITS = 5
-
 
 CATEGORIES = ["Lead Actor", "Actor", "Cameo Actor"]
 CATEGORY_TO_ROLE = {
@@ -49,7 +28,6 @@ CATEGORY_TO_ROLE = {
     "Actor": CastRole.actor,
     "Cameo Actor": CastRole.cameo_actor,
 }
-
 
 NATIONALITIES = (
     "American",
@@ -135,7 +113,6 @@ NATIONALITIES = (
     "Zimbabween",
 )
 KNOWN_NATIONALITIES = set(NATIONALITIES)
-
 
 COUNTRY_TO_NATIONALITY = {
     "usa": "American",
@@ -272,7 +249,6 @@ COUNTRY_TO_NATIONALITY = {
     "бельгия": "Belgian",
 }
 
-
 CAMEO_CHARACTER_PATTERNS = re.compile(
     r"(uncredited|himself|herself|themselves|self\b|cameo|"
     r"^(man|woman|guy|girl|guest|patron|customer|waiter|waitress|"
@@ -285,23 +261,25 @@ CAMEO_CHARACTER_PATTERNS = re.compile(
 # TMDB helpers
 # ----------------------------------------------------------------------
 def parse_input_line(line):
-    """Parse: title [year] [rank]  — year is 4 digits, rank is any other integer."""
-    line = line.strip()
-    if not line:
-        return None
+    """Parse: title [year] [rank]  — year is 4 digits, rank is any other integer.
+    Returns ``(candidates, rank)`` where *candidates* is an ordered list of
+    ``(title, year)`` interpretations to try, or ``None`` for a blank line.
+    A trailing 4-digit number may be a release year *or* part of the title
+    (e.g. "Fantasia 2000", "1917"), so both readings are kept and the search
+    picks whichever actually matches on TMDB.
+    """
     parts = line.split()
-    year = None
     rank = None
-    if parts and parts[-1].isdigit() and len(parts[-1]) != 4:
+    if len(parts) > 1 and parts[-1].isdigit() and len(parts[-1]) != 4:
         rank = int(parts[-1])
         parts = parts[:-1]
-    if parts and parts[-1].isdigit() and len(parts[-1]) == 4:
-        year = parts[-1]
-        parts = parts[:-1]
-    title = " ".join(parts)
-    if not title:
+    if not parts:
         return None
-    return title, year, rank
+    candidates = []
+    if len(parts) > 1 and parts[-1].isdigit() and len(parts[-1]) == 4:
+        candidates.append((" ".join(parts[:-1]), parts[-1]))
+    candidates.append((" ".join(parts), None))
+    return candidates, rank
 
 
 def search_movie(title, year):
@@ -312,12 +290,39 @@ def search_movie(title, year):
     resp.raise_for_status()
     results = resp.json().get("results", [])
     if not results:
-        return None, False
+        return None, False, False
     exact = [r for r in results if r.get("title", "").lower() == title.lower()]
     candidates = exact if exact else results
     ambiguous = len(candidates) > 1
     best = max(candidates, key=lambda r: r.get("popularity", 0))
-    return best, ambiguous
+    return best, ambiguous, bool(exact)
+
+
+def search_movie_candidates(candidates):
+    """Try each (title, year) interpretation in order.
+    An interpretation that yields an exact title match wins immediately;
+    otherwise the first interpretation with any result is used as a fallback.
+    Year-carrying interpretations are retried without the year as a last
+    resort, since TMDB's primary release year can differ from the year the
+    user wrote (e.g. a December premiere).
+    Returns ``(movie, ambiguous, (title, year))`` or ``(None, False, None)``.
+    """
+    attempts = list(candidates) + [(t, None) for t, y in candidates if y]
+    tried = set()
+    fallback = None
+    for title, year in attempts:
+        key = (title.lower(), year)
+        if key in tried:
+            continue
+        tried.add(key)
+        movie, ambiguous, exact = search_movie(title, year)
+        if movie is None:
+            continue
+        if exact:
+            return movie, ambiguous, (title, year)
+        if fallback is None:
+            fallback = (movie, ambiguous, (title, year))
+    return fallback or (None, False, None)
 
 
 def get_movie_details(movie_id):
@@ -437,7 +442,6 @@ def build_movie_data(movie):
         seen.add(key)
         role = CastRole.director if member["job"] == "Director" else CastRole.composer
         auto_crew.append(build_person(member, {"db_role": role}))
-
     cast_list = []
     for member in credits.get("cast", []):
         suggestion, reason = suggest_category(member)
@@ -548,14 +552,12 @@ def find_or_create_person(db, person_data):
     for candidate in candidates:
         if _db_person_matches_tmdb(candidate, person_data["filmography_keys"]):
             return candidate, False, None
-
     guess = person_data["nationality_guess"]
     place = person_data["birth_place"]
     if guess in KNOWN_NATIONALITIES:
         nationality, pending = guess, None
     else:
         nationality, pending = "Unknown", (guess, place)
-
     person = Person(
         name=tmdb_name,
         name_en=None,
@@ -585,12 +587,10 @@ def find_existing_movie(db, matched_tmdb_movie):
 def write_movie_to_db(movie_entry, overwrite_existing=False):
     matched = movie_entry["matched"]
     details = movie_entry["details"]
-
     with _db.SessionLocal() as db:
         existing = find_existing_movie(db, matched)
         if existing and not overwrite_existing:
             return {"status": "exists", "db_movie_id": existing.id}
-
         if existing and overwrite_existing:
             db.query(MoviePerson).filter(MoviePerson.movie_id == existing.id).delete()
             db_movie = existing
@@ -605,15 +605,12 @@ def write_movie_to_db(movie_entry, overwrite_existing=False):
             db.add(db_movie)
             db.flush()
             status = "written"
-
         new_people, reused_people, pending = [], [], []
         linked = set()
-
         people_to_link = [(c, c["db_role"]) for c in movie_entry["crew"]]
         people_to_link += [
             (c, CATEGORY_TO_ROLE[c["category"]]) for c in movie_entry["cast"] if c["category"] is not None
         ]
-
         for person_data, role in people_to_link:
             person, created, pend = find_or_create_person(db, person_data)
             if created:
@@ -633,10 +630,8 @@ def write_movie_to_db(movie_entry, overwrite_existing=False):
                 continue
             linked.add(key)
             db.add(MoviePerson(movie_id=db_movie.id, person_id=person.id, role=role))
-
         genre_ids = movie_entry.get("genre_ids", [])
         db_movie.genres = db.query(MovieGenre).filter(MovieGenre.id.in_(genre_ids)).all() if genre_ids else []
-
         movie_id = db_movie.id
         db.commit()
         return {
@@ -740,6 +735,40 @@ class CreditsReviewApp:
         self._genre_parent_search_var = tk.BooleanVar(value=True)
         self._build_start_screen()
 
+    # ---------- Scrollable-frame helper ----------
+    def _make_scrollable(self, parent):
+        """Pack a vertically scrollable area into *parent*; return (canvas, inner).
+        Content packed into *inner* scrolls with the scrollbar and the mouse
+        wheel. Callers must pack any bottom-pinned buttons into *parent*
+        (side="bottom") *before* calling this so they keep the bottom edge.
+        """
+        container = ttk.Frame(parent)
+        container.pack(side="top", fill="both", expand=True)
+        canvas = tk.Canvas(container, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
+        inner = ttk.Frame(canvas)
+        inner.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all")),
+        )
+        win_id = canvas.create_window((0, 0), window=inner, anchor="nw")
+        canvas.bind(
+            "<Configure>",
+            lambda e: canvas.itemconfigure(win_id, width=e.width),
+        )
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        def _scroll(units):
+            if canvas.winfo_exists():
+                canvas.yview_scroll(units, "units")
+
+        canvas.bind_all("<MouseWheel>", lambda e: _scroll(int(-e.delta / 120)))
+        canvas.bind_all("<Button-4>", lambda e: _scroll(-1))
+        canvas.bind_all("<Button-5>", lambda e: _scroll(1))
+        return canvas, inner
+
     # ---------- Ancestor cache ----------
     def _build_ancestor_cache(self):
         """Precompute the set of lowercased ancestor names for every genre."""
@@ -822,12 +851,11 @@ class CreditsReviewApp:
             db_genres = load_db_genres()
         except Exception:
             db_genres = []
-
         movies = []
-        for title, year, desired_rank in parsed:
+        for candidates, desired_rank in parsed:
             entry = {
-                "title": title,
-                "year": year,
+                "title": candidates[-1][0],
+                "year": candidates[0][1],
                 "desired_rank": desired_rank,
                 "matched": None,
                 "details": None,
@@ -838,8 +866,9 @@ class CreditsReviewApp:
                 "tmdb_genres": [],
             }
             try:
-                movie, ambiguous = search_movie(title, year)
+                movie, ambiguous, used = search_movie_candidates(candidates)
                 if movie:
+                    entry["title"], entry["year"] = used
                     entry["matched"] = movie
                     entry["ambiguous"] = ambiguous
                     entry["details"] = get_movie_details(movie["id"])
@@ -864,24 +893,19 @@ class CreditsReviewApp:
     def _build_review_screen(self):
         self.review_frame = ttk.Frame(self.root)
         self.review_frame.pack(expand=True, fill="both")
-
         # --- Bottom action bar (packed first so it claims the bottom edge) ---
         bottom_bar = ttk.Frame(self.review_frame, padding=(20, 10, 20, 16))
         bottom_bar.pack(side="bottom", fill="x")
-
         self.db_status_label = ttk.Label(bottom_bar, foreground="#2e7d32", wraplength=640)
         self.db_status_label.pack(side="bottom", pady=(8, 0))
-
         # ── Person-mode bottom controls ──────────────────────────
         self.person_bottom = ttk.Frame(bottom_bar)
         self.person_bottom.pack(side="bottom")
-
         ttk.Label(
             self.person_bottom,
             text="Shortcuts:  1 = Lead   2 = Actor   3 = Cameo   4 / ← = Skip",
             foreground="gray",
         ).pack(side="bottom")
-
         tk.Button(
             self.person_bottom,
             text="⏭ Skip Rest of Cast",
@@ -890,7 +914,6 @@ class CreditsReviewApp:
             fg="white",
             command=self._skip_rest,
         ).pack(side="bottom", pady=(6, 8))
-
         btn_frame = ttk.Frame(self.person_bottom)
         btn_frame.pack(side="bottom")
         self.buttons = {}
@@ -905,16 +928,13 @@ class CreditsReviewApp:
             )
             btn.grid(row=0, column=i, padx=8)
             self.buttons[label] = btn
-
         # ── Genre-mode bottom controls (hidden until needed) ─────
         self.genre_bottom = ttk.Frame(bottom_bar)
-
         ttk.Label(
             self.genre_bottom,
             text="Toggle genres, then confirm.  Shortcut: Enter",
             foreground="gray",
         ).pack(side="bottom")
-
         tk.Button(
             self.genre_bottom,
             text="✓ Confirm Genres & Save",
@@ -924,18 +944,15 @@ class CreditsReviewApp:
             fg="white",
             command=self._confirm_genres,
         ).pack(side="bottom", pady=(6, 8))
-
         # --- Top content area ---
         content = ttk.Frame(self.review_frame, padding=20)
         content.pack(side="top", fill="both", expand=True)
-
         self.movie_label = ttk.Label(content, font=("Helvetica", 14, "bold"), wraplength=640)
         self.movie_label.pack(pady=(0, 4))
         self.note_label = ttk.Label(content, foreground="#b06000", wraplength=640)
         self.note_label.pack()
         self.progress_label = ttk.Label(content, foreground="gray")
         self.progress_label.pack(pady=(0, 12))
-
         # ── Person card ──────────────────────────────────────────
         self.person_card = ttk.Frame(content, relief="solid", borderwidth=1, padding=20)
         self.person_card.pack(fill="x", pady=8)
@@ -957,10 +974,8 @@ class CreditsReviewApp:
             foreground="#1565c0",
         )
         self.suggestion_label.pack(anchor="w")
-
         # ── Genre card (hidden until needed) ─────────────────────
         self.genre_card = ttk.Frame(content, relief="solid", borderwidth=1, padding=20)
-
         # Key bindings
         self.root.bind("1", lambda e: self._decide("Lead Actor"))
         self.root.bind("2", lambda e: self._decide("Actor"))
@@ -973,7 +988,6 @@ class CreditsReviewApp:
 
     def _show_current_person(self):
         self._in_genre_mode = False
-
         while self.movie_idx < len(self.movies):
             movie = self._current_movie()
             if movie["cast"] and self.person_idx < len(movie["cast"]):
@@ -983,17 +997,14 @@ class CreditsReviewApp:
                 return
             self.movie_idx += 1
             self.person_idx = 0
-
         if self.movie_idx >= len(self.movies):
             self._finish()
             return
-
         # ── Ensure person mode is visible ────────────────────────
         self.genre_card.pack_forget()
         self.genre_bottom.pack_forget()
         self.person_card.pack(fill="x", pady=8)
         self.person_bottom.pack(side="bottom")
-
         movie = self._current_movie()
         person = movie["cast"][self.person_idx]
         matched = movie.get("matched")
@@ -1042,29 +1053,24 @@ class CreditsReviewApp:
         """Switch to genre-selection mode for *movie*."""
         self._in_genre_mode = True
         self._genre_movie = movie
-
         matched = movie.get("matched")
         match_year = (matched.get("release_date") or "")[:4] if matched else ""
         self.movie_label.config(text=f"{matched['title']} ({match_year})" if matched else movie["title"])
         self.note_label.config(text="Select or map genres for this movie.")
         self.progress_label.config(text=f"Movie {self.movie_idx + 1}/{len(self.movies)}" f"  •  Genre selection")
-
         self.person_card.pack_forget()
         self.person_bottom.pack_forget()
         self.genre_card.pack(fill="both", expand=True, pady=8)
         self.genre_bottom.pack(side="bottom")
-
         self._render_genre_card(movie)
         self.root.bind("<Return>", lambda e: self._confirm_genres())
 
     def _render_genre_card(self, movie, extra_checked=None):
         """(Re)build the genre card contents.
-
         TMDB→DB matching is recomputed from the *current* ``self.db_genres``
         so that synonyms/genres created mid-session are picked up immediately.
         """
         extra_checked = set(extra_checked or [])
-
         suggested, unmapped = set(), []
         for tg in movie.get("tmdb_genres", []):
             gid = match_tmdb_genre(tg["name"], self.db_genres)
@@ -1073,10 +1079,8 @@ class CreditsReviewApp:
             else:
                 unmapped.append(tg)
         checked = suggested | extra_checked
-
         for w in self.genre_card.winfo_children():
             w.destroy()
-
         # ── Filter row (fixed top) ───────────────────────────────
         filter_row = ttk.Frame(self.genre_card)
         filter_row.pack(side="top", fill="x", pady=(0, 8))
@@ -1092,7 +1096,6 @@ class CreditsReviewApp:
             variable=self._genre_parent_search_var,
             command=lambda: self._filter_genres(),
         ).pack(side="left", padx=(8, 0))
-
         # ── Create-new-genre button (fixed bottom) ───────────────
         add_row = ttk.Frame(self.genre_card)
         add_row.pack(side="bottom", fill="x", pady=(8, 0))
@@ -1101,7 +1104,6 @@ class CreditsReviewApp:
             text="+ Create new genre…",
             command=lambda: self._create_genre_for_tmdb(None),
         ).pack(side="left")
-
         # ── Unmatched TMDB genres (fixed bottom) ─────────────────
         if unmapped:
             uf = ttk.Frame(self.genre_card)
@@ -1137,39 +1139,8 @@ class CreditsReviewApp:
                     text="+ Create",
                     command=lambda tg=tg: self._create_genre_for_tmdb(tg),
                 ).pack(side="left", padx=2)
-
         # ── Scrollable checklist (middle, expands) ───────────────
-        canvas_frame = ttk.Frame(self.genre_card)
-        canvas_frame.pack(side="top", fill="both", expand=True)
-        self._genre_canvas = tk.Canvas(canvas_frame, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(canvas_frame, orient="vertical", command=self._genre_canvas.yview)
-        self._genre_inner = ttk.Frame(self._genre_canvas)
-        self._genre_inner.bind(
-            "<Configure>",
-            lambda e: self._genre_canvas.configure(scrollregion=self._genre_canvas.bbox("all")),
-        )
-        win_id = self._genre_canvas.create_window((0, 0), window=self._genre_inner, anchor="nw")
-        self._genre_canvas.bind(
-            "<Configure>",
-            lambda e: self._genre_canvas.itemconfigure(win_id, width=e.width),
-        )
-        self._genre_canvas.configure(yscrollcommand=scrollbar.set)
-        self._genre_canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-
-        def _wheel(event):
-            self._genre_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-
-        self._genre_canvas.bind_all("<MouseWheel>", _wheel)
-        self._genre_canvas.bind_all(
-            "<Button-4>",
-            lambda e: self._genre_canvas.yview_scroll(-1, "units"),
-        )
-        self._genre_canvas.bind_all(
-            "<Button-5>",
-            lambda e: self._genre_canvas.yview_scroll(1, "units"),
-        )
-
+        self._genre_canvas, self._genre_inner = self._make_scrollable(self.genre_card)
         self._genre_vars = []
         ordered = sorted(
             self.db_genres,
@@ -1242,7 +1213,6 @@ class CreditsReviewApp:
 
     def _prompt_create_genre(self, default_name="", default_synonym=""):
         """Open a modal dialog for creating a genre.
-
         Returns the lightweight genre dict, or ``None`` if cancelled.
         """
         dialog = tk.Toplevel(self.root)
@@ -1250,20 +1220,19 @@ class CreditsReviewApp:
         dialog.transient(self.root)
         dialog.grab_set()
         dialog.geometry("460x500")
-
         frame = ttk.Frame(dialog, padding=20)
         frame.pack(fill="both", expand=True)
-
+        # Bottom-pinned first so the parent-genre list can never push it off-screen.
+        btn_row = ttk.Frame(frame)
+        btn_row.pack(side="bottom", fill="x", pady=(10, 0))
         ttk.Label(frame, text="Genre name:").pack(anchor="w")
         name_var = tk.StringVar(value=default_name)
         name_entry = ttk.Entry(frame, textvariable=name_var, width=40)
         name_entry.pack(fill="x", pady=(0, 10))
         name_entry.focus_set()
-
         ttk.Label(frame, text="Synonyms (comma-separated, optional):").pack(anchor="w")
         syn_var = tk.StringVar(value=default_synonym)
         ttk.Entry(frame, textvariable=syn_var, width=40).pack(fill="x", pady=(0, 10))
-
         ttk.Label(frame, text="Parent genres (optional, multi-select):").pack(anchor="w")
         list_frame = ttk.Frame(frame)
         list_frame.pack(fill="both", expand=True, pady=(0, 10))
@@ -1279,7 +1248,6 @@ class CreditsReviewApp:
         sb.config(command=parent_list.yview)
         for g in self.db_genres:
             parent_list.insert("end", g["name"])
-
         result = {"genre": None}
 
         def on_ok():
@@ -1304,12 +1272,9 @@ class CreditsReviewApp:
                 return
             dialog.destroy()
 
-        btn_row = ttk.Frame(frame)
-        btn_row.pack(fill="x")
         ttk.Button(btn_row, text="Create", command=on_ok).pack(side="right", padx=4)
         ttk.Button(btn_row, text="Cancel", command=dialog.destroy).pack(side="right")
         dialog.bind("<Return>", lambda e: on_ok())
-
         dialog.wait_window()
         return result["genre"]
 
@@ -1319,7 +1284,6 @@ class CreditsReviewApp:
             return
         movie = self._genre_movie
         movie["genre_ids"] = [gid for gid, var, _, _ in self._genre_vars if var.get()]
-
         self.root.unbind("<Return>")
         try:
             self._genre_canvas.unbind_all("<MouseWheel>")
@@ -1328,7 +1292,6 @@ class CreditsReviewApp:
         except Exception:
             pass
         self._in_genre_mode = False
-
         if movie.get("desired_rank") is None:
             title = movie["matched"]["title"]
             pos = simpledialog.askinteger(
@@ -1339,7 +1302,6 @@ class CreditsReviewApp:
             )
             if pos is not None:
                 movie["desired_rank"] = pos
-
         self._save_movie(movie)
         self.movie_idx += 1
         self.person_idx = 0
@@ -1404,26 +1366,26 @@ class CreditsReviewApp:
         frame = ttk.Frame(self.root, padding=30)
         frame.pack(expand=True, fill="both")
         self._overwrite_frame = frame
+        # Bottom-pinned first so a long movie list can never push it off-screen.
+        ttk.Button(frame, text="Apply", command=self._apply_overwrites).pack(side="bottom", pady=(16, 0))
         ttk.Label(
             frame,
             text="These movies already exist in the database.",
             font=("Helvetica", 14, "bold"),
         ).pack(pady=(0, 6))
         ttk.Label(frame, text="Choose what to do for each:").pack(pady=(0, 14))
-
+        _canvas, inner = self._make_scrollable(frame)
         self.overwrite_vars = []
         for movie in self.existing_movies:
             matched = movie["matched"]
             year = (matched.get("release_date") or "")[:4]
-
-            block = ttk.Frame(frame)
+            block = ttk.Frame(inner)
             block.pack(anchor="w", padx=20, pady=4, fill="x")
             ttk.Label(
                 block,
                 text=f"{matched['title']} ({year})",
                 font=("Helvetica", 11, "bold"),
             ).pack(anchor="w")
-
             action_var = tk.IntVar(value=0)
             radio_row = ttk.Frame(block)
             radio_row.pack(anchor="w", padx=20)
@@ -1440,7 +1402,6 @@ class CreditsReviewApp:
                 variable=action_var,
                 value=2,
             ).pack(side="left", padx=(10, 0))
-
             rank_row = ttk.Frame(block)
             rank_row.pack(anchor="w", padx=20)
             ttk.Label(rank_row, text="Rank:").pack(side="left")
@@ -1448,10 +1409,7 @@ class CreditsReviewApp:
             if movie.get("desired_rank") is not None:
                 rank_entry.insert(0, str(movie["desired_rank"]))
             rank_entry.pack(side="left", padx=4)
-
             self.overwrite_vars.append((movie, action_var, rank_entry))
-
-        ttk.Button(frame, text="Apply", command=self._apply_overwrites).pack(pady=20)
 
     def _apply_overwrites(self):
         errors = []
@@ -1494,6 +1452,10 @@ class CreditsReviewApp:
         frame = ttk.Frame(self.root, padding=30)
         frame.pack(expand=True, fill="both")
         self._nationality_frame = frame
+        # Bottom-pinned first so a long list can never push it off-screen.
+        ttk.Button(frame, text="Save nationalities", command=self._apply_nationalities).pack(
+            side="bottom", pady=(16, 0)
+        )
         ttk.Label(
             frame,
             text="New nationalities needed",
@@ -1509,7 +1471,7 @@ class CreditsReviewApp:
             wraplength=600,
             justify="center",
         ).pack(pady=(0, 16))
-
+        _canvas, inner = self._make_scrollable(frame)
         self.nationality_entries = []
         for guess, info in self.pending_nationalities.items():
             auto = None
@@ -1518,8 +1480,7 @@ class CreditsReviewApp:
                 auto = guess
             elif g_lower in COUNTRY_TO_NATIONALITY:
                 auto = COUNTRY_TO_NATIONALITY[g_lower]
-
-            block = ttk.Frame(frame, relief="solid", borderwidth=1, padding=12)
+            block = ttk.Frame(inner, relief="solid", borderwidth=1, padding=12)
             block.pack(fill="x", pady=6)
             people_names = ", ".join(name for _id, name in info["people"])
             place = info["place"] or "unknown birthplace"
@@ -1540,8 +1501,6 @@ class CreditsReviewApp:
                 entry.insert(0, guess)
                 entry.pack(side="left", padx=8)
                 self.nationality_entries.append((guess, info, entry))
-
-        ttk.Button(frame, text="Save nationalities", command=self._apply_nationalities).pack(pady=20)
 
     def _apply_nationalities(self):
         errors = []
@@ -1565,9 +1524,9 @@ class CreditsReviewApp:
     def _show_summary(self):
         frame = ttk.Frame(self.root, padding=30)
         frame.pack(expand=True, fill="both")
-
+        # Bottom-pinned first so a long list can never push it off-screen.
+        ttk.Button(frame, text="Close", command=self.root.destroy).pack(side="bottom", pady=(16, 0))
         ttk.Label(frame, text="All done!", font=("Helvetica", 16, "bold")).pack(pady=(0, 10))
-
         if not self.new_people:
             ttk.Label(
                 frame,
@@ -1579,7 +1538,6 @@ class CreditsReviewApp:
                 text=f"{len(self.new_people)} new people added:",
                 font=("Helvetica", 12, "bold"),
             ).pack(anchor="w", pady=(0, 8))
-
             list_frame = ttk.Frame(frame)
             list_frame.pack(fill="both", expand=True)
             scrollbar = ttk.Scrollbar(list_frame)
@@ -1591,11 +1549,8 @@ class CreditsReviewApp:
             )
             listbox.pack(side="left", fill="both", expand=True)
             scrollbar.config(command=listbox.yview)
-
             for p in sorted(self.new_people.values(), key=lambda x: x["name"]):
                 listbox.insert("end", f"{p['name']}  —  {p['nationality']}")
-
-        ttk.Button(frame, text="Close", command=self.root.destroy).pack(pady=16)
 
 
 def main():

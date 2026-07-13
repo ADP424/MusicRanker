@@ -17,7 +17,7 @@ from ..api_models.movie import MovieSoundtrackAlbumRef
 from ..database import get_database
 from ..database_models import Album, Movie, MovieGenre, MoviePerson, Person
 from ..database_models.movie_cast_member import CastRole
-from ..ranking import rank_between
+from ..ranking import rank_at
 
 router = APIRouter(prefix="/movies", tags=["movies"])
 
@@ -226,14 +226,4 @@ def unlink_soundtrack(mid: int, aid: int, db: Session = Depends(get_database)):
 
 
 def _rank_at(db: Session, position: int | None, exclude: int | None) -> Decimal:
-    base = select(Movie.global_rank)
-    if exclude is not None:
-        base = base.where(Movie.id != exclude)
-
-    if position is None:
-        return rank_between(db.scalar(select(func.max(base.subquery().c.global_rank))), None)
-
-    ranked = base.add_columns(func.row_number().over(order_by=Movie.global_rank).label("pos")).subquery()
-    prev = db.scalar(select(ranked.c.global_rank).where(ranked.c.pos == position - 1))
-    nxt = db.scalar(select(ranked.c.global_rank).where(ranked.c.pos == position))
-    return rank_between(prev, nxt)
+    return rank_at(db, Movie.global_rank, position, exclude_col=Movie.id, exclude=exclude)

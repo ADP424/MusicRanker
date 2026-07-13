@@ -6,6 +6,7 @@ import { AlbumForm } from "../components/AlbumForm";
 import { ArtistForm } from "../components/ArtistForm";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { PersonForm } from "../components/PersonForm";
+import { PersonPicker, type PersonSearchField } from "../components/PersonPicker";
 import { api } from "../api/client";
 import { useGenres, usePeople } from "../api/hooks";
 import type { Album, Artist, ArtistDetail, ArtistRef, BandRole, Person, PersonArtistRef } from "../api/types";
@@ -26,7 +27,7 @@ function ArtistPeopleSection({ artistId }: { artistId: number }) {
   const qc = useQueryClient();
   const { data: allPeople = [] } = usePeople();
   const [search, setSearch] = useState("");
-  const [searchField, setSearchField] = useState<"all" | "person" | "artist" | "movie">("all");
+  const [searchField, setSearchField] = useState<PersonSearchField>("all");
   const [chooserOpen, setChooserOpen] = useState(false);
   const [creatingPerson, setCreatingPerson] = useState(false);
   const [dupWarning, setDupWarning] = useState<string | null>(null);
@@ -126,64 +127,21 @@ function ArtistPeopleSection({ artistId }: { artistId: number }) {
             </div>
           )}
 
-          {/* Role selector */}
-          <div style={{ display: "flex", gap: "0.5rem", marginBottom: "0.5rem", flexWrap: "wrap" }}>
-            {BAND_ROLES.map((role) => (
-              <label
-                key={role}
-                className={`chip${addRole === role ? " chip-active" : ""}`}
-                onClick={() => setAddRole(role)}
-                style={{ cursor: "pointer" }}
-              >
-                {BAND_ROLE_LABELS[role]}
-              </label>
-            ))}
-          </div>
-
-          <div style={{ display: "flex", gap: "0.5rem", marginBottom: "0.4rem", flexWrap: "wrap" }}>
-            {(["all", "person", "artist", "movie"] as const).map((f) => (
-              <label
-                key={f}
-                className={`chip${searchField === f ? " chip-active" : ""}`}
-                onClick={() => setSearchField(f)}
-                style={{ cursor: "pointer" }}
-              >
-                {f === "all" ? "All" : f === "person" ? "Person" : f === "artist" ? "Artist" : "Movie"}
-              </label>
-            ))}
-          </div>
-          <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", marginBottom: "0.4rem" }}>
-            <input
-              className="genre-search"
-              type="search"
-              placeholder={
-                searchField === "person" ? "Search by person name…" :
-                searchField === "artist" ? "Search by artist name…" :
-                searchField === "movie" ? "Search by movie name…" :
-                "Search people, artists, movies…"
-              }
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              style={{ margin: 0, flex: 1 }}
+          <div style={{ marginBottom: "0.75rem" }}>
+            <PersonPicker
+              roles={BAND_ROLES}
+              roleLabels={BAND_ROLE_LABELS}
+              activeRole={addRole}
+              onRole={setAddRole}
+              searchField={searchField}
+              onSearchField={setSearchField}
+              search={search}
+              onSearch={setSearch}
+              onNewPerson={() => setCreatingPerson(true)}
+              people={filteredPeople}
+              isChecked={(p, role) => castKeys.has(`${p.id}:${role}`)}
+              onToggle={toggleLink}
             />
-            <button style={{ whiteSpace: "nowrap" }} onClick={() => setCreatingPerson(true)}>
-              + New Person
-            </button>
-          </div>
-          <div className="chips" style={{ marginBottom: "0.75rem" }}>
-            {filteredPeople.map((p: Person) => {
-              const key = `${p.id}:${addRole}`;
-              return (
-                <label key={p.id} className="chip">
-                  <input
-                    type="checkbox"
-                    checked={castKeys.has(key)}
-                    onChange={() => toggleLink(p, addRole)}
-                  />
-                  {p.name}{p.name_en && <span style={{ opacity: 0.6 }}> ({p.name_en})</span>}
-                </label>
-              );
-            })}
           </div>
         </>
       )}

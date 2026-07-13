@@ -10,6 +10,10 @@ import type {
   MovieDecadeRow, MovieGenreRow, MovieNatRow,
   MovieStatsSummary, MovieYearRow, ScatterPoint,
 } from "../api/types";
+import {
+  C1, SCATTER_FILL, ChartWrap, Section, Stat, StatGrid, Table, fmt2,
+  type ColDef,
+} from "../stats/shared";
 
 const useSummary  = () => useQuery({ queryKey: ["movie-stats", "summary"],   queryFn: () => api.get<MovieStatsSummary>("/movie-stats/summary") });
 const useByYear   = () => useQuery({ queryKey: ["movie-stats", "by-year"],   queryFn: () => api.get<MovieYearRow[]>("/movie-stats/by-year") });
@@ -20,79 +24,6 @@ const useScatter  = () => useQuery({ queryKey: ["movie-stats", "scatter"],   que
   movie_score_vs_runtime: ScatterPoint[];
   cast_member_score_vs_runtime: ScatterPoint[];
 }>("/movie-stats/scatter") });
-
-const C1 = "#c8d8e8";
-const C2 = "#d8c8e0";
-const SCATTER_FILL = "#c0ccd8";
-
-function StatGrid({ children }: { children: React.ReactNode }) {
-  return <div className="stat-grid">{children}</div>;
-}
-function Stat({ label, value }: { label: string; value: React.ReactNode }) {
-  return (
-    <div className="stat-cell">
-      <span className="stat-label">{label}</span>
-      <span className="stat-value">{value ?? "—"}</span>
-    </div>
-  );
-}
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
-  return <section className="stats-section"><h2>{title}</h2>{children}</section>;
-}
-function ChartWrap({ title, children }: { title: string; children: React.ReactNode }) {
-  return <div className="chart-wrap"><h3>{title}</h3>{children}</div>;
-}
-function fmt2(n: number | null | undefined): string {
-  if (n == null) return "—";
-  return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
-}
-
-type ColDef = { key: string; label: string; fmt?: (v: any) => string; numeric?: boolean };
-
-function Table({ cols, rows }: { cols: ColDef[]; rows: Record<string, any>[] }) {
-  const [sortKey, setSortKey] = useState<string>(cols[0].key);
-  const [sortAsc, setSortAsc] = useState(true);
-
-  function handleSort(key: string) {
-    if (key === sortKey) setSortAsc((a) => !a);
-    else { setSortKey(key); setSortAsc(true); }
-  }
-
-  const sorted = [...rows].sort((a, b) => {
-    const av = a[sortKey], bv = b[sortKey];
-    if (av == null && bv == null) return 0;
-    if (av == null) return 1;
-    if (bv == null) return -1;
-    const cmp = typeof av === "string" ? av.localeCompare(bv) : av - bv;
-    return sortAsc ? cmp : -cmp;
-  });
-
-  return (
-    <div className="stats-table-wrap">
-      <table className="stats-table">
-        <thead>
-          <tr>
-            {cols.map((c) => (
-              <th key={c.key} className="sortable-th" onClick={() => handleSort(c.key)}>
-                {c.label}
-                <span className="sort-arrow">{sortKey === c.key ? (sortAsc ? " ▲" : " ▼") : " ⇅"}</span>
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {sorted.map((r, i) => (
-            <tr key={i}>
-              {cols.map((c) => (
-                <td key={c.key}>{c.fmt ? c.fmt(r[c.key]) : (r[c.key] ?? "—")}</td>
-              ))}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
 
 const TABS = ["Stats", "Graphs"] as const;
 type Tab = typeof TABS[number];

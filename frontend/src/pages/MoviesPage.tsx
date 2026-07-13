@@ -1,6 +1,6 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 
 import { api } from "../api/client";
 import { useMovieGenres, useMoviesRanked, usePeople } from "../api/hooks";
@@ -8,6 +8,10 @@ import type { Movie, MoviePersonRef } from "../api/types";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { MovieForm } from "../components/MovieForm";
 import { SortableList } from "../components/SortableList";
+import { TmdbImportDialog } from "../components/TmdbImportDialog";
+import { DupWarningBanner, useDupWarning } from "../hooks/useDupWarning";
+import { useExpandAll } from "../hooks/useExpandAll";
+import { useOptimisticDelete } from "../hooks/useOptimisticDelete";
 
 type MovieSearchBy = "all" | "title" | "genre" | "person";
 
@@ -28,17 +32,19 @@ const ROLE_LABEL: Record<string, string> = {
 
 export function MoviesPage() {
   const qc = useQueryClient();
+  const navigate = useNavigate();
   const [editing, setEditing] = useState<{ movie: Movie } | "new" | null>(null);
+  const [showTmdbImport, setShowTmdbImport] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<Movie | null>(null);
-  const [expandedIds, setExpandedIds] = useState<Set<number>>(new Set());
   const [searchQ, setSearchQ] = useState("");
   const [searchBy, setSearchBy] = useState<MovieSearchBy>("all");
-  const [dupWarning, setDupWarning] = useState<string | null>(null);
+  const { dupWarning, clear: clearDup, checkAfterSave } = useDupWarning("movie");
 
   const { data: movies = [] } = useMoviesRanked();
   const { data: genres = [] } = useMovieGenres();
   const { data: people = [] } = usePeople();
   const genreMap = Object.fromEntries(genres.map((g) => [g.id, g.name]));
+  const { expandedIds, toggle: toggleExpand, allExpanded, toggleAll } = useExpandAll(movies);
 
   const visibleMovies = useMemo(() => {
     const needle = searchQ.trim().toLowerCase();
@@ -95,30 +101,11 @@ export function MoviesPage() {
     },
   });
 
-  const remove = useMutation({
-    mutationFn: (id: number) => api.delete(`/movies/${id}`),
-    onMutate: async (id) => {
-      await qc.cancelQueries({ queryKey: ["movies", "ranked"] });
-      const prev = qc.getQueryData<Movie[]>(["movies", "ranked"]);
-      qc.setQueryData<Movie[]>(["movies", "ranked"], (old = []) => old.filter((m) => m.id !== id));
-      return { prev };
-    },
-    onError: (_err, _id, ctx) => qc.setQueryData(["movies", "ranked"], ctx?.prev),
-    onSettled: () => {
-      qc.invalidateQueries({ queryKey: ["movies", "ranked"] });
-      qc.invalidateQueries({ queryKey: ["movies", "index"] });
-    },
+  const remove = useOptimisticDelete<Movie>({
+    queryKey: ["movies", "ranked"],
+    endpoint: (id) => `/movies/${id}`,
+    invalidateKeys: [["movies", "ranked"], ["movies", "index"]],
   });
-
-  function toggleExpand(id: number) {
-    setExpandedIds((prev) => {
-      const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
-      return next;
-    });
-  }
-
-  const allExpanded = movies.length > 0 && expandedIds.size === movies.length;
 
   // Group persons by role for display
   function groupPersons(persons: MoviePersonRef[]) {
@@ -135,22 +122,15 @@ export function MoviesPage() {
       <header className="page-head">
         <h1>Movies</h1>
         <div style={{ display: "flex", gap: "0.5rem" }}>
-          <button onClick={() => {
-            if (allExpanded) setExpandedIds(new Set());
-            else setExpandedIds(new Set(movies.map((m) => m.id)));
-          }}>
+          <button onClick={toggleAll}>
             {allExpanded ? "Collapse all" : "Expand all"}
           </button>
           <button onClick={() => setEditing("new")}>+ Add</button>
+          <button onClick={() => setShowTmdbImport(true)}>Import from TMDB</button>
         </div>
       </header>
 
-      {dupWarning && (
-        <div className="dup-warning">
-          <span>{dupWarning}</span>
-          <button className="icon" onClick={() => setDupWarning(null)}>✕</button>
-        </div>
-      )}
+      {dupWarning && <DupWarningBanner message={dupWarning} onDismiss={clearDup} />}
 
       <div className="search-bar">
         <input
@@ -311,14 +291,19 @@ export function MoviesPage() {
               initial={editing === "new" ? undefined : editing.movie}
               onClose={(savedName, savedId) => {
                 setEditing(null);
-                if (savedName != null) {
-                  const nameLower = savedName.toLowerCase();
-                  const dups = movies.filter(
-                    (m) => m.name.toLowerCase() === nameLower && m.id !== savedId
-                  );
-                  if (dups.length > 0) setDupWarning(`Warning: another movie named "${savedName}" already exists.`);
-                }
+                checkAfterSave(movies, savedName, savedId);
               }}
+            />
+          </div>
+        </div>
+      )}
+
+      {showTmdbImport && (
+        <div className="modal-backdrop" onClick={() => setShowTmdbImport(false)}>
+          <div onClick={(e) => e.stopPropagation()}>
+            <TmdbImportDialog
+              onClose={() => setShowTmdbImport(false)}
+              onSuccess={(movieId) => navigate(`/movies/${movieId}`)}
             />
           </div>
         </div>

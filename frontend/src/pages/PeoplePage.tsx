@@ -1,13 +1,14 @@
-import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
-import { api } from "../api/client";
 import { useArtists, useMoviesRanked, usePeople } from "../api/hooks";
 import type { Person } from "../api/types";
 import { CAST_ROLE_LABELS } from "../api/types";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { PersonForm } from "../components/PersonForm";
+import { DupWarningBanner, useDupWarning } from "../hooks/useDupWarning";
+import { useExpandAll } from "../hooks/useExpandAll";
+import { useOptimisticDelete } from "../hooks/useOptimisticDelete";
 
 type PeopleSearchBy = "all" | "name" | "nationality" | "artist" | "movie";
 
@@ -53,14 +54,12 @@ function PersonRow({ person }: { person: Person }) {
 }
 
 export function PeoplePage() {
-  const qc = useQueryClient();
   const [editing, setEditing] = useState<{ person: Person } | "new" | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<Person | null>(null);
-  const [expandedIds, setExpandedIds] = useState<Set<number>>(new Set());
   const [searchQ, setSearchQ] = useState("");
   const [searchBy, setSearchBy] = useState<PeopleSearchBy>("all");
   const [showDupsOnly, setShowDupsOnly] = useState(false);
-  const [dupWarning, setDupWarning] = useState<string | null>(null);
+  const { dupWarning, clear: clearDup, checkAfterSave } = useDupWarning("person");
 
   const { data: people = [] } = usePeople();
 
@@ -113,52 +112,26 @@ export function PeoplePage() {
     });
   }, [searchQ, searchBy, showDupsOnly, dupNameSet, people]);
 
-  const allExpanded = visiblePeople.length > 0 && visiblePeople.every((p) => expandedIds.has(p.id));
+  const { expandedIds, toggle: toggleExpand, allExpanded, toggleAll } = useExpandAll(visiblePeople);
 
-  const remove = useMutation({
-    mutationFn: (id: number) => api.delete(`/persons/${id}`),
-    onMutate: async (id) => {
-      await qc.cancelQueries({ queryKey: ["people"] });
-      const prev = qc.getQueryData<Person[]>(["people"]);
-      qc.setQueryData<Person[]>(["people"], (old = []) => old.filter((p) => p.id !== id));
-      return { prev };
-    },
-    onError: (_err, _id, ctx) => qc.setQueryData(["people"], ctx?.prev),
-    onSettled: () => qc.invalidateQueries({ queryKey: ["people"] }),
+  const remove = useOptimisticDelete<Person>({
+    queryKey: ["people"],
+    endpoint: (id) => `/persons/${id}`,
   });
-
-  function toggleExpand(id: number) {
-    setExpandedIds((prev) => {
-      const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
-      return next;
-    });
-  }
 
   return (
     <section>
       <header className="page-head">
         <h1>People</h1>
         <div style={{ display: "flex", gap: "0.5rem" }}>
-          <button onClick={() => {
-            if (allExpanded) {
-              setExpandedIds(new Set());
-            } else {
-              setExpandedIds(new Set(visiblePeople.map((p) => p.id)));
-            }
-          }}>
+          <button onClick={toggleAll}>
             {allExpanded ? "Collapse all" : "Expand all"}
           </button>
           <button onClick={() => setEditing("new")}>+ Add</button>
         </div>
       </header>
 
-      {dupWarning && (
-        <div className="dup-warning">
-          <span>{dupWarning}</span>
-          <button className="icon" onClick={() => setDupWarning(null)}>✕</button>
-        </div>
-      )}
+      {dupWarning && <DupWarningBanner message={dupWarning} onDismiss={clearDup} />}
 
       <div className="search-bar">
         <input
@@ -231,13 +204,7 @@ export function PeoplePage() {
               initial={editing === "new" ? undefined : editing.person}
               onClose={(savedName, savedId) => {
                 setEditing(null);
-                if (savedName != null) {
-                  const nameLower = savedName.toLowerCase();
-                  const dups = people.filter(
-                    (p) => p.name.toLowerCase() === nameLower && p.id !== savedId
-                  );
-                  if (dups.length > 0) setDupWarning(`Warning: another person named "${savedName}" already exists.`);
-                }
+                checkAfterSave(people, savedName, savedId);
               }}
             />
           </div>

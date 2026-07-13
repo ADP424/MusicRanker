@@ -2,11 +2,15 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 
 import { api } from "../api/client";
-import type { MovieGenre } from "../api/types";
-import { MovieGenreChooser } from "./MovieGenreChooser";
+import { GenreChooser } from "./GenreChooser";
+import type { GenreDomain, GenreLike } from "./config";
 
-export function MovieGenreForm(props: { initial?: MovieGenre; onClose: () => void }) {
-  const { initial, onClose } = props;
+export function GenreForm(props: {
+  domain: GenreDomain;
+  initial?: GenreLike;
+  onClose: () => void;
+}) {
+  const { domain, initial, onClose } = props;
   const editing = initial !== undefined;
   const qc = useQueryClient();
   const [parentsOpen, setParentsOpen] = useState(false);
@@ -18,8 +22,8 @@ export function MovieGenreForm(props: { initial?: MovieGenre; onClose: () => voi
   });
 
   const { data: parents } = useQuery({
-    queryKey: ["movie-genres", initial?.id, "parents"],
-    queryFn: () => api.get<MovieGenre[]>(`/movie-genres/${initial!.id}/parents`),
+    queryKey: [domain.key, initial?.id, "parents"],
+    queryFn: () => api.get<GenreLike[]>(`${domain.apiBase}/${initial!.id}/parents`),
     enabled: editing,
   });
   const [parentIds, setParentIds] = useState<Set<number>>(new Set());
@@ -38,19 +42,19 @@ export function MovieGenreForm(props: { initial?: MovieGenre; onClose: () => voi
       };
 
       const genre = editing
-        ? await api.patch<MovieGenre>(`/movie-genres/${initial.id}`, body)
-        : await api.post<MovieGenre>("/movie-genres", body);
+        ? await api.patch<GenreLike>(`${domain.apiBase}/${initial.id}`, body)
+        : await api.post<GenreLike>(domain.apiBase, body);
 
       const before = new Set((parents ?? []).map((p) => p.id));
       for (const id of parentIds)
-        if (!before.has(id)) await api.put(`/movie-genres/${genre.id}/parents/${id}`);
+        if (!before.has(id)) await api.put(`${domain.apiBase}/${genre.id}/parents/${id}`);
       for (const id of before)
-        if (!parentIds.has(id)) await api.delete(`/movie-genres/${genre.id}/parents/${id}`);
+        if (!parentIds.has(id)) await api.delete(`${domain.apiBase}/${genre.id}/parents/${id}`);
 
       return genre;
     },
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["movie-genres"] });
+      qc.invalidateQueries({ queryKey: [domain.key] });
       onClose();
     },
   });
@@ -58,29 +62,39 @@ export function MovieGenreForm(props: { initial?: MovieGenre; onClose: () => voi
   return (
     <dialog open className="modal">
       <form onSubmit={(e) => { e.preventDefault(); save.mutate(); }}>
-        <h2>{editing ? "Edit" : "New"} Movie Genre</h2>
+        <h2>{editing ? "Edit" : "New"} {domain.heading}</h2>
 
         <label>Name
-          <input required value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} />
+          <input required value={f.name}
+                 onChange={(e) => setF({ ...f, name: e.target.value })} />
         </label>
 
-        <label>Synonyms <small>(comma-separated)</small>
+        <label>Synonyms <small>(comma‑separated)</small>
           <input value={f.synonyms}
                  onChange={(e) => setF({ ...f, synonyms: e.target.value })}
-                 placeholder="Sci-Fi, Science Fiction" />
+                 placeholder="Prog Rock, Prog" />
         </label>
 
         <label>Notes
-          <textarea rows={3} value={f.notes} onChange={(e) => setF({ ...f, notes: e.target.value })} />
+          <textarea rows={3} value={f.notes}
+                    onChange={(e) => setF({ ...f, notes: e.target.value })} />
         </label>
 
         <fieldset>
-          <legend className="collapsible-legend" onClick={() => setParentsOpen((o) => !o)}>
+          <legend
+            className="collapsible-legend"
+            onClick={() => setParentsOpen((o) => !o)}
+          >
             Parent genres
             <span className="collapse-arrow">{parentsOpen ? "▲" : "▼"}</span>
           </legend>
           {parentsOpen && (
-            <MovieGenreChooser selected={parentIds} onChange={setParentIds} excludeId={initial?.id} />
+            <GenreChooser
+              domain={domain}
+              selected={parentIds}
+              onChange={setParentIds}
+              excludeId={initial?.id}
+            />
           )}
           {!parentsOpen && (
             <span className="collapsed-summary" onClick={() => setParentsOpen(true)}>
@@ -91,7 +105,9 @@ export function MovieGenreForm(props: { initial?: MovieGenre; onClose: () => voi
 
         <footer>
           <button type="button" onClick={onClose}>Cancel</button>
-          <button type="submit" disabled={save.isPending}>{editing ? "Save" : "Create"}</button>
+          <button type="submit" disabled={save.isPending}>
+            {editing ? "Save" : "Create"}
+          </button>
         </footer>
         {save.isError && <p className="err">{(save.error as Error).message}</p>}
       </form>

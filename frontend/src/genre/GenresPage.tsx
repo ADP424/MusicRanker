@@ -3,37 +3,36 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 
 import { api } from "../api/client";
-import { useMovieGenres } from "../api/hooks";
-import type { MovieGenre } from "../api/types";
 import { ConfirmDialog } from "../components/ConfirmDialog";
-import { MovieGenreForm } from "../components/MovieGenreForm";
-import { MovieGenreTree } from "../components/MovieGenreTree";
+import { GenreForm } from "./GenreForm";
+import { GenreTree } from "./GenreTree";
+import type { GenreDomain, GenreLike } from "./config";
 
 type View = "list" | "tree";
 
-export function MovieGenresPage() {
+export function GenresPage({ domain }: { domain: GenreDomain }) {
   const qc = useQueryClient();
-  const { data: genres = [] } = useMovieGenres();
+  const { data: genres = [] } = domain.useAll();
   const [view, setView] = useState<View>("list");
-  const [editing, setEditing] = useState<MovieGenre | "new" | null>(null);
-  const [confirmDelete, setConfirmDelete] = useState<MovieGenre | null>(null);
+  const [editing, setEditing] = useState<GenreLike | "new" | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<GenreLike | null>(null);
 
   const remove = useMutation({
-    mutationFn: (id: number) => api.delete(`/movie-genres/${id}`),
+    mutationFn: (id: number) => api.delete(`${domain.apiBase}/${id}`),
     onMutate: async (id) => {
-      await qc.cancelQueries({ queryKey: ["movie-genres"] });
-      const prev = qc.getQueryData<MovieGenre[]>(["movie-genres"]);
-      qc.setQueryData<MovieGenre[]>(["movie-genres"], (old = []) => old.filter((g) => g.id !== id));
+      await qc.cancelQueries({ queryKey: [domain.key] });
+      const prev = qc.getQueryData<GenreLike[]>([domain.key]);
+      qc.setQueryData<GenreLike[]>([domain.key], (old = []) => old.filter((g) => g.id !== id));
       return { prev };
     },
-    onError: (_err, _id, ctx) => qc.setQueryData(["movie-genres"], ctx?.prev),
-    onSettled: () => qc.invalidateQueries({ queryKey: ["movie-genres"] }),
+    onError: (_err, _id, ctx) => qc.setQueryData([domain.key], ctx?.prev),
+    onSettled: () => qc.invalidateQueries({ queryKey: [domain.key] }),
   });
 
   return (
     <section>
       <header className="page-head">
-        <h1>Movie Genres</h1>
+        <h1>Genres</h1>
         <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
           <div className="view-toggle">
             <button
@@ -53,7 +52,7 @@ export function MovieGenresPage() {
         <ul className="plain-list">
           {genres.map((g) => (
             <li key={g.id} className="row">
-              <Link className="name" to={`/movies/genres/${g.id}`}>{g.name}</Link>
+              <Link className="name" to={`${domain.routeBase}/${g.id}`}>{g.name}</Link>
               <span className="meta">
                 {g.synonyms?.length ? `aka ${g.synonyms.join(", ")}` : ""}
               </span>
@@ -65,7 +64,7 @@ export function MovieGenresPage() {
       )}
 
       {view === "tree" && (
-        <MovieGenreTree genres={genres} onEdit={(g) => setEditing(g)} />
+        <GenreTree genres={genres} onEdit={(g) => setEditing(g)} />
       )}
 
       {confirmDelete && (
@@ -82,7 +81,8 @@ export function MovieGenresPage() {
       {editing && (
         <div className="modal-backdrop" onClick={() => setEditing(null)}>
           <div onClick={(e) => e.stopPropagation()}>
-            <MovieGenreForm
+            <GenreForm
+              domain={domain}
               initial={editing === "new" ? undefined : editing}
               onClose={() => setEditing(null)}
             />

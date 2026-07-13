@@ -390,3 +390,153 @@ export interface PersonGraph {
   artists: GraphArtistNode[];
   edges: GraphEdge[];
 }
+
+// ── TMDB movie/person link scan ──────────────────────────────────
+export type ScanSlot = "cast" | "director" | "composer";
+
+export interface ScanStats {
+  movies_total: number;
+  movies_in_scope: number;
+  movies_resolved: number;
+  movies_unresolved: number;
+  network_calls: number;
+  cache_hits: number;
+  revalidated: number;
+}
+
+export interface ScanJob {
+  id: string;
+  status: "pending" | "running" | "done" | "cancelled" | "error";
+  phase: "queued" | "loading" | "fetching" | "matching" | "finished";
+  processed: number;
+  total: number;
+  last_movie: string | null;
+  error: string | null;
+  candidate_count: number | null;
+  stats: ScanStats | null;
+}
+
+export interface ScanCandidate {
+  key: string;
+  person_id: number;
+  person_name: string;
+  movie_id: number;
+  movie_name: string;
+  movie_year: number | null;
+  credit_type: "cast" | "crew";
+  slot: ScanSlot;
+  character: string | null;
+  billing_order: number | null;
+  job: string | null;
+  suggested_role: CastRole;
+  suggestion_reason: string;
+  match: "verified" | "name_only";
+  overlap: number;
+  tmdb_person_id: number;
+  tmdb_popularity: number;
+  suppressed: boolean;
+}
+
+export interface UnresolvedMovie { id: number; name: string; release_year: number | null }
+
+export interface ScanResults {
+  job_id: string;
+  candidates: ScanCandidate[];
+  unresolved_movies: UnresolvedMovie[];
+}
+
+export interface ScanLink { movie_id: number; person_id: number; role: CastRole }
+export interface ScanSlotRef { movie_id: number; person_id: number; slot: ScanSlot }
+
+export interface ScanApply {
+  links: ScanLink[];
+  suppress: ScanSlotRef[];
+  unsuppress: ScanSlotRef[];
+}
+
+export interface ScanApplyResult {
+  created: number;
+  skipped: number;
+  invalid: ScanLink[];
+  suppressed: number;
+  unsuppressed: number;
+}
+
+export interface Suppression {
+  person_id: number; person_name: string | null;
+  movie_id: number; movie_name: string | null;
+  slot: ScanSlot;
+}
+export interface SuppressionList { count: number; items: Suppression[] }
+
+// ── TMDB import ───────────────────────────────────────────────────
+
+export interface DbPersonMatch {
+  person_id: number;
+  person_name: string;
+  has_movie_entries: boolean;
+  artist_summary: string;
+}
+
+export interface TmdbPerson {
+  tmdb_id: number;
+  name: string;
+  credit_type: "cast" | "crew";
+  character: string | null;
+  billing_order: number | null;
+  job: string | null;
+  suggested_role: CastRole;
+  suggestion_reason: string;
+  top_credits: string[];
+  nationality_guess: string;
+  birth_place: string | null;
+  db_matches: DbPersonMatch[];
+}
+
+export interface TmdbGenre {
+  tmdb_id: number;
+  tmdb_name: string;
+  db_genre_id: number | null;
+}
+
+export interface TmdbLookup {
+  tmdb_id: number;
+  title: string;
+  original_title: string | null;
+  release_date: string | null;
+  runtime: number;
+  overview: string | null;
+  people: TmdbPerson[];
+  genres: TmdbGenre[];
+  ambiguous: boolean;
+}
+
+export interface TmdbImportPersonIn {
+  tmdb_id: number;
+  name: string;
+  role: CastRole;
+  nationality: string;
+  existing_person_id: number | null;
+}
+
+export interface TmdbImportIn {
+  title: string;
+  original_title: string | null;
+  runtime_minutes: number;
+  release_year: number;
+  people: TmdbImportPersonIn[];
+  genre_ids: number[];
+}
+
+export interface TmdbImportPersonResult {
+  person_id: number;
+  name: string;
+  nationality: string;
+  created: boolean;
+}
+
+export interface TmdbImportResult {
+  movie_id: number;
+  created_people: TmdbImportPersonResult[];
+  reused_people: TmdbImportPersonResult[];
+}
