@@ -3,14 +3,14 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 
 import { api } from "../api/client";
-import { useMovieGenres, usePeople, useStartScan } from "../api/hooks";
-import type { CastRole, Movie, MovieGenre, MoviePersonRef, Person } from "../api/types";
+import { useGenres, usePeople, useStartScan } from "../api/hooks";
+import type { CastRole, Genre, Movie, MoviePersonRef, Person } from "../api/types";
 import { CAST_ROLES, CAST_ROLE_LABELS } from "../api/types";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { MovieForm } from "../components/MovieForm";
-import { MovieGenreChooser } from "../components/MovieGenreChooser";
+import { GenreChooser } from "../components/GenreChooser";
 import { PersonForm } from "../components/PersonForm";
-import { PersonPicker, type PersonSearchField } from "../components/PersonPicker";
+import { matchesPersonSearch, PersonPicker, type PersonSearchField } from "../components/PersonPicker";
 
 function fmtRuntime(minutes: number) {
   const h = Math.floor(minutes / 60);
@@ -41,21 +41,10 @@ function MoviePeopleSection({ movie }: { movie: Movie }) {
     setCastKeys(new Set(movie.persons.map((p) => `${p.id}:${p.role}`)));
   }, [movie.persons]);
 
-  const filteredPeople = useMemo(() => {
-    const q = castSearch.trim().toLowerCase();
-    if (!q) return allPeople;
-    return allPeople.filter((p) => {
-      if (searchField === "person") return p.name.toLowerCase().includes(q) || !!p.name_en?.toLowerCase().includes(q);
-      if (searchField === "artist") return p.artist_names.some((n) => n.toLowerCase().includes(q));
-      if (searchField === "movie") return p.movie_names.some((n) => n.toLowerCase().includes(q));
-      return (
-        p.name.toLowerCase().includes(q) ||
-        !!p.name_en?.toLowerCase().includes(q) ||
-        p.artist_names.some((n) => n.toLowerCase().includes(q)) ||
-        p.movie_names.some((n) => n.toLowerCase().includes(q))
-      );
-    });
-  }, [castSearch, searchField, allPeople]);
+  const filteredPeople = useMemo(
+    () => allPeople.filter((p) => matchesPersonSearch(p, searchField, castSearch)),
+    [castSearch, searchField, allPeople],
+  );
 
   const link = useMutation({
     mutationFn: ({ personId, role }: { personId: number; role: CastRole }) =>
@@ -203,15 +192,15 @@ function MoviePeopleSection({ movie }: { movie: Movie }) {
 
 // ── Genres section ─────────────────────────────────────────────────────────────
 
-function MovieGenresSection({ movie }: { movie: Movie }) {
+function GenresSection({ movie }: { movie: Movie }) {
   const qc = useQueryClient();
   const [editing, setEditing] = useState(false);
-  const [confirmUnlink, setConfirmUnlink] = useState<MovieGenre | null>(null);
-  const { data: allGenres = [] } = useMovieGenres();
+  const [confirmUnlink, setConfirmUnlink] = useState<Genre | null>(null);
+  const { data: allGenres = [] } = useGenres();
 
   const { data: movieGenres = [] } = useQuery({
     queryKey: ["movies", movie.id, "genres"],
-    queryFn: () => api.get<MovieGenre[]>(`/movies/${movie.id}/genres`),
+    queryFn: () => api.get<Genre[]>(`/movies/${movie.id}/genres`),
   });
 
   const [genreIds, setGenreIds] = useState<Set<number>>(new Set());
@@ -265,7 +254,7 @@ function MovieGenresSection({ movie }: { movie: Movie }) {
 
       {editing && (
         <div style={{ marginBottom: "0.75rem" }}>
-          <MovieGenreChooser selected={genreIds} onChange={handleChange} />
+          <GenreChooser selected={genreIds} onChange={handleChange} />
         </div>
       )}
 
@@ -384,7 +373,7 @@ export function MovieDetailPage() {
       </div>
 
       <MoviePeopleSection movie={movie} />
-      <MovieGenresSection movie={movie} />
+      <GenresSection movie={movie} />
 
       {editing && (
         <div className="modal-backdrop" onClick={() => setEditing(false)}>

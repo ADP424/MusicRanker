@@ -10,7 +10,12 @@ from .database_models import NATIONALITIES
 from .routers import (
     albums,
     artists,
+    game_genres,
+    game_platforms,
+    game_stats,
+    games,
     genres,
+    igdb_import,
     movie_genres,
     movie_person_scan,
     movie_stats,
@@ -39,16 +44,25 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(genres.category_router)
 app.include_router(genres.router)
 app.include_router(artists.router)
 app.include_router(albums.router)
 app.include_router(stats.router)
+app.include_router(movie_genres.category_router)
 app.include_router(movie_genres.router)
 app.include_router(movies.router)
 app.include_router(movie_stats.router)
 app.include_router(movie_person_scan.router)
 app.include_router(persons.router)
 app.include_router(tmdb_import.router)
+app.include_router(game_genres.category_router)
+app.include_router(game_genres.router)
+app.include_router(game_platforms.category_router)
+app.include_router(game_platforms.router)
+app.include_router(games.router)
+app.include_router(game_stats.router)
+app.include_router(igdb_import.router)
 
 
 @app.exception_handler(IntegrityError)

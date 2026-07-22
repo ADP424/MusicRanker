@@ -31,7 +31,7 @@ export function GenreDetailPage({ domain }: { domain: GenreDomain }) {
   });
 
   if (isLoading) return <section><p>Loading…</p></section>;
-  if (isError || !genre) return <section><p>Genre not found.</p></section>;
+  if (isError || !genre) return <section><p>{domain.heading} not found.</p></section>;
 
   return (
     <section>
@@ -60,7 +60,7 @@ export function GenreDetailPage({ domain }: { domain: GenreDomain }) {
 
       {parents.length > 0 && (
         <>
-          <h2>Parent genres</h2>
+          <h2>Parent {domain.noun}</h2>
           <ul className="sortable plain-list">
             {parents.map((g) => (
               <li key={g.id} className="sortable-item">
@@ -75,7 +75,7 @@ export function GenreDetailPage({ domain }: { domain: GenreDomain }) {
 
       {children.length > 0 && (
         <>
-          <h2 style={{ marginTop: "1.5rem" }}>Subgenres</h2>
+          <h2 style={{ marginTop: "1.5rem" }}>Child {domain.noun}</h2>
           <ul className="sortable plain-list">
             {children.map((g) => (
               <li key={g.id} className="sortable-item">
@@ -89,7 +89,7 @@ export function GenreDetailPage({ domain }: { domain: GenreDomain }) {
       )}
 
       {parents.length === 0 && children.length === 0 && (
-        <p style={{ opacity: 0.5 }}>No parent or child genres.</p>
+        <p style={{ opacity: 0.5 }}>No parent or child {domain.noun}.</p>
       )}
 
       {editing && (

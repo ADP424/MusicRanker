@@ -200,8 +200,14 @@ button.danger:hover { background: #a22; }
 .genre-chooser-controls { display: flex; flex-direction: column; gap: 0.4rem; }
 .genre-search { padding: 0.35rem 0.6rem; font: inherit; border: 1px solid #8884;
                 border-radius: 4px; width: 100%; box-sizing: border-box; }
+.genre-category-select { padding: 0.35rem 0.6rem; font: inherit; border: 1px solid #8884;
+                          border-radius: 4px; width: 100%; box-sizing: border-box; }
 .genre-filters { flex-wrap: wrap; }
 .chip-active { background: Canvas; border-color: currentColor; font-weight: 600; }
+
+/* Category manager (on the genre/platform list pages) */
+.category-manager { margin: 0.75rem 0 1.25rem; padding: 0.75rem 1rem;
+                     border: 1px solid #8884; border-radius: 6px; }
 
 /* Album rows: handle | pos | name | meta | listens-ctrl | expand | edit | delete */
 .row.album-row { grid-template-columns: 1.5rem 3rem 1fr auto auto auto auto auto; }
@@ -481,6 +487,11 @@ main:has(.stats-page) { max-width: 90rem; }
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
+
+  /* Rendered as a plain <div>, so (unlike the <dialog>-based modals) it gets no
+     UA background and the backdrop shows through. Give it an opaque surface. */
+  background: Canvas;
+  color: CanvasText;
 
   --tip-ok-bg:   #2e7d3216;
   --tip-ok-fg:   #2e7d32;

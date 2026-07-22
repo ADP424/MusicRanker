@@ -1,31 +1,67 @@
 import type { Person } from "../api/types";
 
-export type PersonSearchField = "all" | "person" | "artist" | "movie";
+export type PersonSearchField = "all" | "person" | "artist" | "movie" | "game";
+
+export const PERSON_SEARCH_FIELDS: PersonSearchField[] = [
+  "all", "person", "artist", "movie", "game",
+];
 
 const FIELD_LABEL: Record<PersonSearchField, string> = {
   all: "All",
   person: "Person",
   artist: "Artist",
   movie: "Movie",
+  game: "Game",
 };
 
 const FIELD_PLACEHOLDER: Record<PersonSearchField, string> = {
-  all: "Search people, artists, movies…",
+  all: "Search people, artists, movies, games…",
   person: "Search by person name…",
   artist: "Search by artist name…",
   movie: "Search by movie name…",
+  game: "Search by game name…",
 };
 
 /**
- * Presentational person/role picker shared by MovieForm, ArtistDetailPage and
- * MovieDetailPage. It renders the role chips, the search-field chips, the
- * search box + "New Person" button, and the checkbox chip list.
+ * Single source of truth for "does this person match the search box?".
  *
- * It is deliberately state-free: each caller owns its own link model (MovieForm
- * stages pending links and diffs them on save; the detail sections mutate
- * immediately, and MovieDetailPage confirms before unlinking). Callers pass the
- * already-filtered people plus `isChecked`/`onToggle`, so those divergent
- * behaviours stay where they belong.
+ * Every caller (MovieForm, GameForm, ArtistDetailPage, MovieDetailPage,
+ * GameDetailPage) used to inline its own copy of this switch, which is how
+ * the "game" field would otherwise have had to be added in five places.
+ */
+export function matchesPersonSearch(
+  p: Person,
+  field: PersonSearchField,
+  query: string,
+): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  const hit = (s: string) => s.toLowerCase().includes(q);
+  const nameHit = hit(p.name) || !!p.name_en?.toLowerCase().includes(q);
+  // `?? []` guards against a response cached by a build that predates game_names
+  const artistHit = (p.artist_names ?? []).some(hit);
+  const movieHit = (p.movie_names ?? []).some(hit);
+  const gameHit = (p.game_names ?? []).some(hit);
+  switch (field) {
+    case "person": return nameHit;
+    case "artist": return artistHit;
+    case "movie":  return movieHit;
+    case "game":   return gameHit;
+    default:       return nameHit || artistHit || movieHit || gameHit;
+  }
+}
+
+/**
+ * Presentational person/role picker shared by MovieForm, GameForm,
+ * ArtistDetailPage, MovieDetailPage and GameDetailPage. It renders the role
+ * chips, the search-field chips, the search box + "New Person" button, and the
+ * checkbox chip list.
+ *
+ * It is deliberately state-free: each caller owns its own link model (the forms
+ * stage pending links and diff them on save; the detail sections mutate
+ * immediately and confirm before unlinking). Callers pass the already-filtered
+ * people plus `isChecked`/`onToggle`, so those divergent behaviours stay where
+ * they belong.
  */
 export function PersonPicker<R extends string>(props: {
   roles: readonly R[];
@@ -68,7 +104,7 @@ export function PersonPicker<R extends string>(props: {
 
       {/* Search-field selector */}
       <div style={{ display: "flex", gap: "0.5rem", marginBottom: "0.4rem", flexWrap: "wrap" }}>
-        {(["all", "person", "artist", "movie"] as PersonSearchField[]).map((f) => (
+        {PERSON_SEARCH_FIELDS.map((f) => (
           <label
             key={f}
             className={`chip${searchField === f ? " chip-active" : ""}`}

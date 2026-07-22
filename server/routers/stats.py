@@ -245,9 +245,9 @@ def _genre_ancestors(db: Session) -> dict[int, set[int]]:
 
 
 def _root_genre_ids(db: Session) -> set[int]:
-    """IDs of genres with no parents."""
+    """IDs of music genres with no parents."""
     has_parent = select(genre_parents.c.genre_id)
-    return {g.id for g in db.scalars(select(Genre).where(Genre.id.not_in(has_parent))).all()}
+    return {g.id for g in db.scalars(select(Genre).where(Genre.id.not_in(has_parent), Genre.is_music.is_(True))).all()}
 
 
 # ---------------------------------------------------------------------------
@@ -459,7 +459,7 @@ def by_genre(db: Session = Depends(get_database)):
     for album_id, genre_id in rows:
         album_genre_ids[album_id].append(genre_id)
 
-    genre_by_id: dict[int, Genre] = {g.id: g for g in db.scalars(select(Genre)).all()}
+    genre_by_id: dict[int, Genre] = {g.id: g for g in db.scalars(select(Genre).where(Genre.is_music.is_(True))).all()}
     roots = _root_genre_ids(db)
     ancestors = _genre_ancestors(db)
 

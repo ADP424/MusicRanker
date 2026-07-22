@@ -22,6 +22,16 @@ def _get(db: Session, aid: int) -> Artist:
     raise HTTPException(404, "Artist not found")
 
 
+def _validate_primary_genre(db: Session, genre_id: int | None) -> None:
+    if genre_id is None:
+        return
+    genre = db.get(Genre, genre_id)
+    if not genre:
+        raise HTTPException(404, "Genre not found")
+    if not genre.is_music:
+        raise HTTPException(422, "Genre is not applicable to music")
+
+
 def _attach_position(db: Session, artist: Artist) -> Artist:
     artist.position = 1 + db.scalar(
         select(func.count()).select_from(Artist).where(Artist.global_rank < artist.global_rank)
@@ -101,6 +111,7 @@ def get_artist(aid: int, db: Session = Depends(get_database)):
 
 @router.post("", response_model=ArtistOut, status_code=201)
 def create_artist(body: ArtistIn, db: Session = Depends(get_database)):
+    _validate_primary_genre(db, body.primary_genre)
     rank = _rank_at(db, body.position, exclude=None)
     artist = Artist(**body.model_dump(exclude={"position"}), global_rank=rank)
     db.add(artist)
@@ -111,7 +122,10 @@ def create_artist(body: ArtistIn, db: Session = Depends(get_database)):
 @router.patch("/{aid}", response_model=ArtistOut)
 def update_artist(aid: int, body: ArtistPatch, db: Session = Depends(get_database)):
     artist = _get(db, aid)
-    for k, v in body.model_dump(exclude_unset=True).items():
+    data = body.model_dump(exclude_unset=True)
+    if "primary_genre" in data:
+        _validate_primary_genre(db, data["primary_genre"])
+    for k, v in data.items():
         setattr(artist, k, v)
     return _attach_position(db, artist)
 

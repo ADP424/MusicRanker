@@ -7,6 +7,7 @@ import type { AlbumIndex, CastRole, Movie, MovieBody, Person } from "../api/type
 import { CAST_ROLES } from "../api/types";
 import { MovieGenreChooser } from "./MovieGenreChooser";
 import { PersonForm } from "./PersonForm";
+import { matchesPersonSearch, PERSON_SEARCH_FIELDS, type PersonSearchField } from "./PersonPicker";
 
 const orNull = (s: string) => (s.trim() === "" ? null : s);
 
@@ -64,7 +65,7 @@ export function MovieForm(props: {
   const [castLinks, setCastLinks] = useState<Set<string>>(new Set()); // keys: "id:role"
   const [pendingLinks, setPendingLinks] = useState<PendingLink[]>([]);
   const [castSearch, setCastSearch] = useState("");
-  const [searchField, setSearchField] = useState<"all" | "person" | "artist" | "movie">("all");
+  const [searchField, setSearchField] = useState<PersonSearchField>("all");
   const [addRole, setAddRole] = useState<CastRole>("director");
 
   // Soundtrack album links
@@ -96,20 +97,8 @@ export function MovieForm(props: {
   useEffect(() => { setCastSortSnap(castLinks); }, [castSearch, addRole]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const filteredPeople = useMemo(() => {
-    const q = castSearch.trim().toLowerCase();
     return allPeople
-      .filter((p) => {
-        if (!q) return true;
-        if (searchField === "person") return p.name.toLowerCase().includes(q) || !!p.name_en?.toLowerCase().includes(q);
-        if (searchField === "artist") return p.artist_names.some((n) => n.toLowerCase().includes(q));
-        if (searchField === "movie") return p.movie_names.some((n) => n.toLowerCase().includes(q));
-        return (
-          p.name.toLowerCase().includes(q) ||
-          !!p.name_en?.toLowerCase().includes(q) ||
-          p.artist_names.some((n) => n.toLowerCase().includes(q)) ||
-          p.movie_names.some((n) => n.toLowerCase().includes(q))
-        );
-      })
+      .filter((p) => matchesPersonSearch(p, searchField, castSearch))
       .sort((a, b) => {
         const aKey = linkKey({ personId: a.id, role: addRole });
         const bKey = linkKey({ personId: b.id, role: addRole });
@@ -321,14 +310,14 @@ export function MovieForm(props: {
               </div>
 
               <div style={{ display: "flex", gap: "0.5rem", marginBottom: "0.4rem", flexWrap: "wrap" }}>
-                {(["all", "person", "artist", "movie"] as const).map((f) => (
+                {PERSON_SEARCH_FIELDS.map((f) => (
                   <label
                     key={f}
                     className={`chip${searchField === f ? " chip-active" : ""}`}
                     onClick={() => setSearchField(f)}
                     style={{ cursor: "pointer" }}
                   >
-                    {f === "all" ? "All" : f === "person" ? "Person" : f === "artist" ? "Artist" : "Movie"}
+                    {f === "all" ? "All" : f === "person" ? "Person" : f === "artist" ? "Artist" : f === "movie" ? "Movie" : "Game"}
                   </label>
                 ))}
               </div>
@@ -340,7 +329,8 @@ export function MovieForm(props: {
                     searchField === "person" ? "Search by person name…" :
                     searchField === "artist" ? "Search by artist name…" :
                     searchField === "movie" ? "Search by movie name…" :
-                    "Search people, artists, movies…"
+                    searchField === "game" ? "Search by game name…" :
+                    "Search people, artists, movies, games…"
                   }
                   value={castSearch}
                   onChange={(e) => setCastSearch(e.target.value)}

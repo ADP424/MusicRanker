@@ -1,11 +1,14 @@
 import { NavLink, Route, Routes } from "react-router-dom";
-import { usePrefetchAll, usePrefetchMovies, usePrefetchPeople } from "./api/hooks";
+import { usePrefetchAll, usePrefetchGames, usePrefetchMovies, usePrefetchPeople } from "./api/hooks";
 import { GenreDetailPage } from "./genre/GenreDetailPage";
 import { GenresPage } from "./genre/GenresPage";
-import { MOVIE_GENRES, MUSIC_GENRES } from "./genre/config";
+import { GAME_GENRES, GAME_PLATFORMS, MOVIE_GENRES, MUSIC_GENRES } from "./genre/config";
 import { AlbumDetailPage } from "./pages/AlbumDetailPage";
 import { ArtistsPage } from "./pages/ArtistsPage";
 import { ArtistDetailPage } from "./pages/ArtistDetailPage";
+import { GameDetailPage } from "./pages/GameDetailPage";
+import { GamesPage } from "./pages/GamesPage";
+import { GameStatsPage } from "./pages/GameStatsPage";
 import { HomePage } from "./pages/HomePage";
 import { MovieDetailPage } from "./pages/MovieDetailPage";
 import { MoviePersonScanPage } from "./pages/MoviePersonScanPage";
@@ -65,6 +68,32 @@ function MoviesSection() {
   );
 }
 
+function GamesSection() {
+  usePrefetchGames();
+  return (
+    <>
+      <nav>
+        <NavLink to="/games">Games</NavLink>
+        <NavLink to="/games/genres">Genres</NavLink>
+        <NavLink to="/games/platforms">Platforms</NavLink>
+        <NavLink to="/games/stats">Stats</NavLink>
+        <NavLink to="/" className="nav-home">← Home</NavLink>
+      </nav>
+      <main>
+        <Routes>
+          <Route path="/" element={<GamesPage />} />
+          <Route path="/genres" element={<GenresPage domain={GAME_GENRES} />} />
+          <Route path="/genres/:id" element={<GenreDetailPage domain={GAME_GENRES} />} />
+          <Route path="/platforms" element={<GenresPage domain={GAME_PLATFORMS} />} />
+          <Route path="/platforms/:id" element={<GenreDetailPage domain={GAME_PLATFORMS} />} />
+          <Route path="/stats" element={<GameStatsPage />} />
+          <Route path="/:id" element={<GameDetailPage />} />
+        </Routes>
+      </main>
+    </>
+  );
+}
+
 function PeopleSection() {
   usePrefetchPeople();
   return (
@@ -91,6 +120,7 @@ export function App() {
       <Route path="/" element={<HomePage />} />
       <Route path="/music/*" element={<MusicSection />} />
       <Route path="/movies/*" element={<MoviesSection />} />
+      <Route path="/games/*" element={<GamesSection />} />
       <Route path="/people/*" element={<PeopleSection />} />
     </Routes>
   );

@@ -15,7 +15,7 @@ from ..api_models import (
 )
 from ..api_models.movie import MovieSoundtrackAlbumRef
 from ..database import get_database
-from ..database_models import Album, Movie, MovieGenre, MoviePerson, Person
+from ..database_models import Album, Genre, Movie, MoviePerson, Person
 from ..database_models.movie_cast_member import CastRole
 from ..ranking import rank_at
 
@@ -187,9 +187,11 @@ def movie_genre_list(mid: int, db: Session = Depends(get_database)):
 @router.put("/{mid}/genres/{gid}", status_code=204)
 def add_genre(mid: int, gid: int, db: Session = Depends(get_database)):
     movie = _get(db, mid)
-    genre = db.get(MovieGenre, gid)
+    genre = db.get(Genre, gid)
     if not genre:
         raise HTTPException(404, "Movie genre not found")
+    if not genre.is_movie:
+        raise HTTPException(422, "Genre is not applicable to movies")
     if genre not in movie.genres:
         movie.genres.append(genre)
 
@@ -197,7 +199,7 @@ def add_genre(mid: int, gid: int, db: Session = Depends(get_database)):
 @router.delete("/{mid}/genres/{gid}", status_code=204)
 def remove_genre(mid: int, gid: int, db: Session = Depends(get_database)):
     movie = _get(db, mid)
-    if (genre := db.get(MovieGenre, gid)) and genre in movie.genres:
+    if (genre := db.get(Genre, gid)) and genre in movie.genres:
         movie.genres.remove(genre)
 
 

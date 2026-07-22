@@ -15,6 +15,12 @@ const MOVIE_ROLE_LABEL: Record<string, string> = {
   cameo_actor: "Cameo Actor",
 };
 
+const GAME_ROLE_LABEL: Record<string, string> = {
+  director: "Director",
+  composer: "Composer",
+  writer:   "Writer",
+};
+
 export function PersonDetailPage() {
   const { id } = useParams<{ id: string }>();
   const pid = Number(id);
@@ -95,15 +101,31 @@ export function PersonDetailPage() {
         </>
       )}
 
-      {data.artists.length === 0 && data.movie_roles.length === 0 && (
-        <p style={{ opacity: 0.5 }}>No linked artists or movie roles yet.</p>
+      {data.game_roles.length > 0 && (
+        <>
+          <h2 style={{ marginTop: "1.5rem" }}>Game Roles</h2>
+          <ul className="sortable plain-list">
+            {data.game_roles.map((r, i) => (
+              <li key={i} className="sortable-item">
+                <div className="row" style={{ gridTemplateColumns: "1fr auto" }}>
+                  <Link className="name" to={`/games/${r.game_id}`}>{r.game_name}</Link>
+                  <span className="meta">{GAME_ROLE_LABEL[r.role] ?? r.role}</span>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+
+      {data.artists.length === 0 && data.movie_roles.length === 0 && data.game_roles.length === 0 && (
+        <p style={{ opacity: 0.5 }}>No linked artists, movie roles, or game roles yet.</p>
       )}
 
       {editing && (
         <div className="modal-backdrop" onClick={() => setEditing(false)}>
           <div onClick={(e) => e.stopPropagation()}>
             <PersonForm
-              initial={{ ...data, artist_ids: data.artists.map((a) => a.id) } as Person}
+              initial={{ ...data, artist_ids: data.artists.map((a) => a.id) } as unknown as Person}
               onClose={() => {
                 setEditing(false);
                 qc.invalidateQueries({ queryKey: ["people", pid, "detail"] });

@@ -11,14 +11,14 @@ from .base import Base
 
 if TYPE_CHECKING:
     from .album import Album
-    from .movie_genre import MovieGenre
+    from .genre import Genre
     from .movie_person import MoviePerson
 
 movie_genres_junction = Table(
     "movie_genres_junction",
     Base.metadata,
     Column("movie_id", ForeignKey("movies.id", ondelete="CASCADE"), primary_key=True),
-    Column("genre_id", ForeignKey("movie_genres.id", ondelete="CASCADE"), primary_key=True),
+    Column("genre_id", ForeignKey("genres.id", ondelete="CASCADE"), primary_key=True),
     Index("idx_movie_genres_junction_genre", "genre_id"),
 )
 
@@ -45,8 +45,8 @@ class Movie(Base):
         back_populates="movie",
         cascade="all, delete-orphan",
     )
-    genres: Mapped[list[MovieGenre]] = relationship(
-        "MovieGenre",
+    genres: Mapped[list[Genre]] = relationship(
+        "Genre",
         secondary=movie_genres_junction,
     )
     soundtrack_albums: Mapped[list[Album]] = relationship(

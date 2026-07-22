@@ -4,9 +4,15 @@ import { api } from "./client";
 import type {
   AlbumIndex,
   Artist,
+  Game,
+  GameIndex,
+  GamePlatform,
   Genre,
+  GenreCategory,
+  IgdbImportIn,
+  IgdbImportResult,
+  IgdbLookup,
   Movie,
-  MovieGenre,
   MovieIndex,
   Person,
   ScanApply,
@@ -31,6 +37,26 @@ export const useGenres = () =>
     queryFn: () => api.get<Genre[]>("/genres"),
   });
 
+export const useGenreCategories = () =>
+  useQuery({
+    queryKey: ["genres", "categories"],
+    queryFn: () => api.get<GenreCategory[]>("/genres/categories"),
+  });
+
+/** Cross-domain: toggle which media types a genre applies to. */
+export const useUpdateGenreMediaTypes = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...body }: { id: number; is_music?: boolean; is_movie?: boolean; is_game?: boolean }) =>
+      api.patch<Genre>(`/genres/${id}/media-types`, body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["genres"] });
+      qc.invalidateQueries({ queryKey: ["movie-genres"] });
+      qc.invalidateQueries({ queryKey: ["game-genres"] });
+    },
+  });
+};
+
 export const useArtists = () =>
   useQuery({
     queryKey: ["artists"],
@@ -48,7 +74,13 @@ export const useAlbumIndex = () =>
 export const useMovieGenres = () =>
   useQuery({
     queryKey: ["movie-genres"],
-    queryFn: () => api.get<MovieGenre[]>("/movie-genres"),
+    queryFn: () => api.get<Genre[]>("/movie-genres"),
+  });
+
+export const useMovieGenreCategories = () =>
+  useQuery({
+    queryKey: ["movie-genres", "categories"],
+    queryFn: () => api.get<GenreCategory[]>("/movie-genres/categories"),
   });
 
 export const useMovieIndex = () =>
@@ -67,6 +99,44 @@ export const usePeople = () =>
   useQuery({
     queryKey: ["people"],
     queryFn: () => api.get<Person[]>("/persons"),
+  });
+
+// ─── Game hooks ────────────────────────────────────────────────────────────
+
+export const useGameGenres = () =>
+  useQuery({
+    queryKey: ["game-genres"],
+    queryFn: () => api.get<Genre[]>("/game-genres"),
+  });
+
+export const useGameGenreCategories = () =>
+  useQuery({
+    queryKey: ["game-genres", "categories"],
+    queryFn: () => api.get<GenreCategory[]>("/game-genres/categories"),
+  });
+
+export const useGamePlatforms = () =>
+  useQuery({
+    queryKey: ["game-platforms"],
+    queryFn: () => api.get<GamePlatform[]>("/game-platforms"),
+  });
+
+export const useGamePlatformCategories = () =>
+  useQuery({
+    queryKey: ["game-platforms", "categories"],
+    queryFn: () => api.get<GenreCategory[]>("/game-platforms/categories"),
+  });
+
+export const useGameIndex = () =>
+  useQuery({
+    queryKey: ["games", "index"],
+    queryFn: () => api.get<GameIndex[]>("/games"),
+  });
+
+export const useGamesRanked = () =>
+  useQuery({
+    queryKey: ["games", "ranked"],
+    queryFn: () => api.get<Game[]>("/games/ranked"),
   });
 
 /** Prefetch music data into the cache on music section mount. */
@@ -93,8 +163,20 @@ export function usePrefetchMovies() {
   useEffect(() => {
     qc.prefetchQuery({ queryKey: ["movies", "index"],  queryFn: () => api.get<MovieIndex[]>("/movies") });
     qc.prefetchQuery({ queryKey: ["movies", "ranked"], queryFn: () => api.get<Movie[]>("/movies/ranked") });
-    qc.prefetchQuery({ queryKey: ["movie-genres"],     queryFn: () => api.get<MovieGenre[]>("/movie-genres") });
+    qc.prefetchQuery({ queryKey: ["movie-genres"],     queryFn: () => api.get<Genre[]>("/movie-genres") });
     qc.prefetchQuery({ queryKey: ["people"],           queryFn: () => api.get<Person[]>("/persons") });
+  }, [qc]);
+}
+
+/** Prefetch game data into the cache on games section mount. */
+export function usePrefetchGames() {
+  const qc = useQueryClient();
+  useEffect(() => {
+    qc.prefetchQuery({ queryKey: ["games", "index"],  queryFn: () => api.get<GameIndex[]>("/games") });
+    qc.prefetchQuery({ queryKey: ["games", "ranked"], queryFn: () => api.get<Game[]>("/games/ranked") });
+    qc.prefetchQuery({ queryKey: ["game-genres"],     queryFn: () => api.get<Genre[]>("/game-genres") });
+    qc.prefetchQuery({ queryKey: ["game-platforms"],  queryFn: () => api.get<GamePlatform[]>("/game-platforms") });
+    qc.prefetchQuery({ queryKey: ["people"],          queryFn: () => api.get<Person[]>("/persons") });
   }, [qc]);
 }
 
@@ -203,6 +285,26 @@ export const useTmdbImport = () => {
       api.post<TmdbImportResult>("/movies/tmdb-import", body),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["movies"] });
+      qc.invalidateQueries({ queryKey: ["people"] });
+    },
+  });
+};
+
+// ─── IGDB import ────────────────────────────────────────────────────────────
+
+export const useIgdbLookup = () =>
+  useMutation({
+    mutationFn: (body: { title: string; year?: number }) =>
+      api.post<IgdbLookup>("/games/igdb-import/lookup", body),
+  });
+
+export const useIgdbImport = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: IgdbImportIn) =>
+      api.post<IgdbImportResult>("/games/igdb-import", body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["games"] });
       qc.invalidateQueries({ queryKey: ["people"] });
     },
   });

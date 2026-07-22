@@ -1,21 +1,67 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { api } from "../api/client";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { CategoryManager } from "./CategoryManager";
 import { GenreForm } from "./GenreForm";
 import { GenreTree } from "./GenreTree";
 import type { GenreDomain, GenreLike } from "./config";
 
 type View = "list" | "tree";
 
+/** {genre id -> the set of category ids "in scope" for it}: a root genre's own
+ * category_ids, or (for a non-root genre) the union of that same set walked
+ * down from every one of its ancestors — i.e. filtering by a category shows
+ * the tagged root(s) plus every descendant beneath them. */
+function useCategoryScope(genres: GenreLike[]) {
+  return useMemo(() => {
+    const byId = new Map(genres.map((g) => [g.id, g]));
+    const childrenOf = new Map<number, number[]>();
+    for (const g of genres) {
+      for (const pid of g.parent_ids) {
+        if (!childrenOf.has(pid)) childrenOf.set(pid, []);
+        childrenOf.get(pid)!.push(g.id);
+      }
+    }
+
+    const scope = new Map<number, Set<number>>();
+    function scopeOf(id: number, seen = new Set<number>()): Set<number> {
+      if (scope.has(id)) return scope.get(id)!;
+      if (seen.has(id)) return new Set(); // guard against cyclical data
+      seen.add(id);
+      const g = byId.get(id);
+      if (!g) return new Set();
+      const own = new Set(g.category_ids);
+      if (g.parent_ids.length === 0) {
+        scope.set(id, own);
+        return own;
+      }
+      const union = new Set(own);
+      for (const pid of g.parent_ids) for (const cid of scopeOf(pid, seen)) union.add(cid);
+      scope.set(id, union);
+      return union;
+    }
+    for (const g of genres) scopeOf(g.id);
+    return scope;
+  }, [genres]);
+}
+
 export function GenresPage({ domain }: { domain: GenreDomain }) {
   const qc = useQueryClient();
   const { data: genres = [] } = domain.useAll();
+  const { data: categories = [] } = domain.useCategories();
   const [view, setView] = useState<View>("list");
+  const [categoryFilter, setCategoryFilter] = useState<number | null>(null);
   const [editing, setEditing] = useState<GenreLike | "new" | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<GenreLike | null>(null);
+
+  const categoryScope = useCategoryScope(genres);
+  const visibleGenres = useMemo(() => {
+    if (categoryFilter === null) return genres;
+    return genres.filter((g) => categoryScope.get(g.id)?.has(categoryFilter));
+  }, [genres, categoryScope, categoryFilter]);
 
   const remove = useMutation({
     mutationFn: (id: number) => api.delete(`${domain.apiBase}/${id}`),
@@ -32,7 +78,7 @@ export function GenresPage({ domain }: { domain: GenreDomain }) {
   return (
     <section>
       <header className="page-head">
-        <h1>Genres</h1>
+        <h1>{domain.heading}s</h1>
         <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
           <div className="view-toggle">
             <button
@@ -48,9 +94,25 @@ export function GenresPage({ domain }: { domain: GenreDomain }) {
         </div>
       </header>
 
+      <CategoryManager domain={domain} />
+
+      {categories.length > 0 && (
+        <select
+          className="genre-category-select"
+          value={categoryFilter ?? ""}
+          onChange={(e) => setCategoryFilter(e.target.value === "" ? null : Number(e.target.value))}
+          style={{ marginBottom: "1rem" }}
+        >
+          <option value="">All categories</option>
+          {categories.map((c) => (
+            <option key={c.id} value={c.id}>{c.name}</option>
+          ))}
+        </select>
+      )}
+
       {view === "list" && (
         <ul className="plain-list">
-          {genres.map((g) => (
+          {visibleGenres.map((g) => (
             <li key={g.id} className="row">
               <Link className="name" to={`${domain.routeBase}/${g.id}`}>{g.name}</Link>
               <span className="meta">
@@ -60,11 +122,12 @@ export function GenresPage({ domain }: { domain: GenreDomain }) {
               <button className="icon" onClick={() => setConfirmDelete(g)}>✕</button>
             </li>
           ))}
+          {visibleGenres.length === 0 && <li><small>No {domain.noun} match.</small></li>}
         </ul>
       )}
 
       {view === "tree" && (
-        <GenreTree genres={genres} onEdit={(g) => setEditing(g)} />
+        <GenreTree genres={visibleGenres} onEdit={(g) => setEditing(g)} />
       )}
 
       {confirmDelete && (

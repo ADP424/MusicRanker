@@ -409,7 +409,7 @@ export function TmdbImportDialog({
             <button
               type="button"
               className="tip-primary"
-              disabled={importMut.isPending || checkedCount === 0}
+              disabled={importMut.isPending}
               onClick={handleImport}
             >
               {importMut.isPending

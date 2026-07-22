@@ -31,8 +31,8 @@ from .database_models import (
     Artist,
     ArtistPerson,
     CastRole,
+    Genre,
     Movie,
-    MovieGenre,
     MoviePerson,
     Person,
 )
@@ -357,7 +357,7 @@ def _find_db_matches(
     return out
 
 
-def _match_genre(tmdb_name: str, db_genres: list[MovieGenre]) -> int | None:
+def _match_genre(tmdb_name: str, db_genres: list[Genre]) -> int | None:
     needle = tmdb_name.strip().lower()
     for g in db_genres:
         if needle == g.name.lower():
@@ -479,7 +479,7 @@ def tmdb_lookup(db: Session, title: str, year: int | None) -> TmdbLookupOut | No
         )
 
     # ── Genres ───────────────────────────────────────────────────────
-    db_genres = db.query(MovieGenre).order_by(MovieGenre.name).all()
+    db_genres = db.query(Genre).filter(Genre.is_movie.is_(True)).order_by(Genre.name).all()
     genres = [
         TmdbGenreOut(
             tmdb_id=tg["id"],
@@ -576,7 +576,7 @@ def tmdb_import_movie(db: Session, body: TmdbImportIn) -> TmdbImportOut:
             (created if is_new else reused).append(item)
 
     if body.genre_ids:
-        movie.genres = db.query(MovieGenre).filter(MovieGenre.id.in_(body.genre_ids)).all()
+        movie.genres = db.query(Genre).filter(Genre.id.in_(body.genre_ids), Genre.is_movie.is_(True)).all()
 
     db.flush()
     return TmdbImportOut(

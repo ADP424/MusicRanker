@@ -18,7 +18,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..database import get_database
-from ..database_models import Movie, MovieGenre, MoviePerson, Person
+from ..database_models import Genre, Movie, MoviePerson, Person
+from ..database_models.genre_parent import genre_parents
 from ..database_models.movie import movie_genres_junction
 from ..database_models.movie_cast_member import CastRole
 
@@ -91,9 +92,7 @@ def _group_stats(items: list[Any], key_fn, score_fn=None) -> list[dict]:
 
 
 def _genre_ancestors(db: Session) -> dict[int, set[int]]:
-    from ..database_models.movie_genre import movie_genre_parents as mgp
-
-    rows = db.execute(select(mgp.c.genre_id, mgp.c.parent_genre_id)).all()
+    rows = db.execute(select(genre_parents.c.genre_id, genre_parents.c.parent_genre_id)).all()
     parent_of: dict[int, set[int]] = defaultdict(set)
     for child_id, parent_id in rows:
         parent_of[child_id].add(parent_id)
@@ -123,10 +122,9 @@ def _genre_ancestors(db: Session) -> dict[int, set[int]]:
 
 
 def _root_genre_ids(db: Session) -> set[int]:
-    from ..database_models.movie_genre import movie_genre_parents as mgp
-
-    has_parent = select(mgp.c.genre_id)
-    return {g.id for g in db.scalars(select(MovieGenre).where(MovieGenre.id.not_in(has_parent))).all()}
+    """IDs of movie genres with no parents."""
+    has_parent = select(genre_parents.c.genre_id)
+    return {g.id for g in db.scalars(select(Genre).where(Genre.id.not_in(has_parent), Genre.is_movie.is_(True))).all()}
 
 
 def _fmt(minutes: float) -> str:
@@ -291,7 +289,7 @@ def by_genre(db: Session = Depends(get_database)):
     for movie_id, genre_id in rows:
         movie_genre_ids[movie_id].append(genre_id)
 
-    genre_by_id: dict[int, MovieGenre] = {g.id: g for g in db.scalars(select(MovieGenre)).all()}
+    genre_by_id: dict[int, Genre] = {g.id: g for g in db.scalars(select(Genre).where(Genre.is_movie.is_(True))).all()}
     roots = _root_genre_ids(db)
     ancestors = _genre_ancestors(db)
 
@@ -397,9 +395,7 @@ def cast_member_detail(pid: int, db: Session = Depends(get_database)):
         .all()
     )
     unique_genre_ids = set(genre_rows)
-    genre_names = sorted(
-        g.name for g in db.scalars(select(MovieGenre).where(MovieGenre.id.in_(unique_genre_ids))).all()
-    )
+    genre_names = sorted(g.name for g in db.scalars(select(Genre).where(Genre.id.in_(unique_genre_ids))).all())
 
     # Collaborators = other persons on the same movies
     collaborator_ids: set[int] = set()

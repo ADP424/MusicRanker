@@ -9,6 +9,7 @@ from ..api_models.person import (
     GraphMovieNode,
     GraphPersonNode,
     PersonArtistRef,
+    PersonGameRoleRef,
     PersonMovieRoleRef,
 )
 from ..database import get_database
@@ -34,6 +35,7 @@ def _build_out(person: Person) -> PersonOut:
         artist_ids=[link.artist_id for link in person.artist_links],
         artist_names=[link.artist.name for link in person.artist_links],
         movie_names=[link.movie.name for link in person.movie_links],
+        game_names=[link.game.name for link in person.game_links],
     )
 
 
@@ -114,6 +116,17 @@ def get_person_detail(pid: int, db: Session = Depends(get_database)):
         ],
         key=lambda r: r.movie_name,
     )
+    game_roles = sorted(
+        [
+            PersonGameRoleRef(
+                game_id=link.game.id,
+                game_name=link.game.name,
+                role=link.role.value,
+            )
+            for link in person.game_links
+        ],
+        key=lambda r: r.game_name,
+    )
     return PersonDetail(
         id=person.id,
         name=person.name,
@@ -123,6 +136,7 @@ def get_person_detail(pid: int, db: Session = Depends(get_database)):
         notes=person.notes,
         artists=artists,
         movie_roles=movie_roles,
+        game_roles=game_roles,
     )
 
 

@@ -10,6 +10,7 @@ from .nationality import nationality
 
 if TYPE_CHECKING:
     from .artist_person import ArtistPerson
+    from .game_person import GamePerson
     from .movie_person import MoviePerson
 
 
@@ -28,4 +29,7 @@ class Person(Base):
     )
     movie_links: Mapped[list[MoviePerson]] = relationship(
         "MoviePerson", back_populates="person", cascade="all, delete-orphan"
+    )
+    game_links: Mapped[list[GamePerson]] = relationship(
+        "GamePerson", back_populates="person", cascade="all, delete-orphan"
     )

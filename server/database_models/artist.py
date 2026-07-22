@@ -28,7 +28,7 @@ class Artist(Base):
     discography_link: Mapped[str] = mapped_column(Text)
     birth_nationality: Mapped[str] = mapped_column(nationality)
     core_nationality: Mapped[str] = mapped_column(nationality)
-    primary_genre: Mapped[int | None] = mapped_column(ForeignKey("music_genres.id", ondelete="SET NULL"))
+    primary_genre: Mapped[int | None] = mapped_column(ForeignKey("genres.id", ondelete="SET NULL"))
     notes: Mapped[str | None] = mapped_column(Text)
 
     album_links: Mapped[list[AlbumArtist]] = relationship(

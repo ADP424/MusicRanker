@@ -2,8 +2,16 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 
 import { api } from "../api/client";
+import { useUpdateGenreMediaTypes } from "../api/hooks";
+import type { Genre } from "../api/types";
 import { GenreChooser } from "./GenreChooser";
 import type { GenreDomain, GenreLike } from "./config";
+
+const MEDIA_TYPE_LABELS: Record<"is_music" | "is_movie" | "is_game", string> = {
+  is_music: "Music",
+  is_movie: "Movie",
+  is_game: "Game",
+};
 
 export function GenreForm(props: {
   domain: GenreDomain;
@@ -31,6 +39,32 @@ export function GenreForm(props: {
     if (parents) setParentIds(new Set(parents.map((p) => p.id)));
   }, [parents]);
 
+  // Categories are only assignable to root (parentless) entries.
+  const isRoot = parentIds.size === 0;
+  const { data: categories = [] } = domain.useCategories();
+  const [categoryIds, setCategoryIds] = useState<Set<number>>(new Set());
+  useEffect(() => {
+    setCategoryIds(new Set(initial?.category_ids ?? []));
+  }, [initial]);
+
+  // Which media types this genre applies to. On create, these are sent as
+  // part of the POST body (defaulting to just the current domain's flag).
+  // On edit, toggling one fires its own mutation immediately — separate from
+  // the main save, since it's unrelated to this domain's
+  // name/synonyms/notes/parents/categories.
+  const initialGenre = initial as Genre | undefined;
+  const defaultMediaTypes = () => ({
+    is_music: initialGenre?.is_music ?? domain.mediaTypeFlag === "is_music",
+    is_movie: initialGenre?.is_movie ?? domain.mediaTypeFlag === "is_movie",
+    is_game: initialGenre?.is_game ?? domain.mediaTypeFlag === "is_game",
+  });
+  const [mediaTypes, setMediaTypes] = useState(defaultMediaTypes);
+  useEffect(() => {
+    setMediaTypes(defaultMediaTypes());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialGenre]);
+  const updateMediaTypes = useUpdateGenreMediaTypes();
+
   const save = useMutation({
     mutationFn: async () => {
       const body = {
@@ -39,6 +73,9 @@ export function GenreForm(props: {
           ? f.synonyms.split(",").map((s) => s.trim()).filter(Boolean)
           : null,
         notes: f.notes.trim() || null,
+        // Only meaningful on create — domain.mediaTypeFlag domains ignore
+        // these on PATCH (media types are edited via their own mutation).
+        ...(!editing && domain.mediaTypeFlag ? mediaTypes : {}),
       };
 
       const genre = editing
@@ -50,6 +87,14 @@ export function GenreForm(props: {
         if (!before.has(id)) await api.put(`${domain.apiBase}/${genre.id}/parents/${id}`);
       for (const id of before)
         if (!parentIds.has(id)) await api.delete(`${domain.apiBase}/${genre.id}/parents/${id}`);
+
+      if (isRoot) {
+        const beforeCategories = new Set(initial?.category_ids ?? []);
+        for (const id of categoryIds)
+          if (!beforeCategories.has(id)) await api.put(`${domain.apiBase}/${genre.id}/categories/${id}`);
+        for (const id of beforeCategories)
+          if (!categoryIds.has(id)) await api.delete(`${domain.apiBase}/${genre.id}/categories/${id}`);
+      }
 
       return genre;
     },
@@ -72,7 +117,7 @@ export function GenreForm(props: {
         <label>Synonyms <small>(comma‑separated)</small>
           <input value={f.synonyms}
                  onChange={(e) => setF({ ...f, synonyms: e.target.value })}
-                 placeholder="Prog Rock, Prog" />
+                 placeholder={domain.synonymPlaceholder} />
         </label>
 
         <label>Notes
@@ -85,7 +130,7 @@ export function GenreForm(props: {
             className="collapsible-legend"
             onClick={() => setParentsOpen((o) => !o)}
           >
-            Parent genres
+            Parent {domain.noun}
             <span className="collapse-arrow">{parentsOpen ? "▲" : "▼"}</span>
           </legend>
           {parentsOpen && (
@@ -102,6 +147,58 @@ export function GenreForm(props: {
             </span>
           )}
         </fieldset>
+
+        {isRoot && categories.length > 0 && (
+          <fieldset>
+            <legend>Categories</legend>
+            <div className="chips">
+              {categories.map((c) => (
+                <label key={c.id} className="chip">
+                  <input
+                    type="checkbox"
+                    checked={categoryIds.has(c.id)}
+                    onChange={(e) => {
+                      const next = new Set(categoryIds);
+                      e.target.checked ? next.add(c.id) : next.delete(c.id);
+                      setCategoryIds(next);
+                    }}
+                  />
+                  {c.name}
+                </label>
+              ))}
+            </div>
+          </fieldset>
+        )}
+
+        {domain.mediaTypeFlag && (
+          <fieldset>
+            <legend>Media types</legend>
+            <div className="chips">
+              {(Object.keys(MEDIA_TYPE_LABELS) as Array<keyof typeof MEDIA_TYPE_LABELS>).map((flag) => (
+                <label key={flag} className="chip">
+                  <input
+                    type="checkbox"
+                    checked={mediaTypes[flag]}
+                    onChange={(e) => {
+                      const next = { ...mediaTypes, [flag]: e.target.checked };
+                      setMediaTypes(next);
+                      // While editing, each toggle is its own immediate save;
+                      // while creating, the choice is just held in state and
+                      // sent along with the rest of the form on submit.
+                      if (editing) {
+                        updateMediaTypes.mutate({ id: initial.id, [flag]: e.target.checked });
+                      }
+                    }}
+                  />
+                  {MEDIA_TYPE_LABELS[flag]}
+                </label>
+              ))}
+            </div>
+            {editing && updateMediaTypes.isError && (
+              <p className="err">{(updateMediaTypes.error as Error).message}</p>
+            )}
+          </fieldset>
+        )}
 
         <footer>
           <button type="button" onClick={onClose}>Cancel</button>

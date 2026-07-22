@@ -6,7 +6,7 @@ import { AlbumForm } from "../components/AlbumForm";
 import { ArtistForm } from "../components/ArtistForm";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { PersonForm } from "../components/PersonForm";
-import { PersonPicker, type PersonSearchField } from "../components/PersonPicker";
+import { matchesPersonSearch, PersonPicker, type PersonSearchField } from "../components/PersonPicker";
 import { api } from "../api/client";
 import { useGenres, usePeople } from "../api/hooks";
 import type { Album, Artist, ArtistDetail, ArtistRef, BandRole, Person, PersonArtistRef } from "../api/types";
@@ -54,20 +54,7 @@ function ArtistPeopleSection({ artistId }: { artistId: number }) {
 
   // Linked people floated to the top, then alphabetical
   const filteredPeople = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    const filtered = q
-      ? allPeople.filter((p: Person) => {
-          if (searchField === "person") return p.name.toLowerCase().includes(q) || !!p.name_en?.toLowerCase().includes(q);
-          if (searchField === "artist") return p.artist_names.some((n) => n.toLowerCase().includes(q));
-          if (searchField === "movie") return p.movie_names.some((n) => n.toLowerCase().includes(q));
-          return (
-            p.name.toLowerCase().includes(q) ||
-            !!p.name_en?.toLowerCase().includes(q) ||
-            p.artist_names.some((n) => n.toLowerCase().includes(q)) ||
-            p.movie_names.some((n) => n.toLowerCase().includes(q))
-          );
-        })
-      : allPeople;
+    const filtered = allPeople.filter((p: Person) => matchesPersonSearch(p, searchField, search));
     return [...filtered].sort((a, b) => {
       const aLinked = linkedIds.has(a.id) ? 0 : 1;
       const bLinked = linkedIds.has(b.id) ? 0 : 1;

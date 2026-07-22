@@ -29,6 +29,7 @@ class PersonOut(ORMSchema):
     artist_ids: list[int] = []
     artist_names: list[str] = []
     movie_names: list[str] = []
+    game_names: list[str] = []
 
 
 class PersonArtistRef(BaseModel):
@@ -45,6 +46,12 @@ class PersonMovieRoleRef(BaseModel):
     role: str
 
 
+class PersonGameRoleRef(BaseModel):
+    game_id: int
+    game_name: str
+    role: str
+
+
 class PersonDetail(BaseModel):
     id: int
     name: str
@@ -54,6 +61,7 @@ class PersonDetail(BaseModel):
     notes: str | None
     artists: list[PersonArtistRef] = []
     movie_roles: list[PersonMovieRoleRef] = []
+    game_roles: list[PersonGameRoleRef] = []
 
 
 class GraphPersonNode(BaseModel):

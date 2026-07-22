@@ -11,12 +11,12 @@ from ..api_models import (
     AlbumOut,
     AlbumPatch,
     ArtistOut,
-    GenreOut,
     LinkBody,
+    MusicGenreOut,
     PositionBody,
 )
 from ..database import get_database
-from ..database_models import Album, AlbumArtist, Genre, Movie
+from ..database_models import Album, AlbumArtist, Game, Genre, Movie
 from ..ranking import rank_at
 
 router = APIRouter(prefix="/albums", tags=["albums"])
@@ -112,7 +112,7 @@ def move_album(aid: int, artist_id: int, body: PositionBody, db: Session = Depen
     link.album_rank = _rank_at(db, artist_id, body.position, exclude=aid)
 
 
-@router.get("/{aid}/genres", response_model=list[GenreOut])
+@router.get("/{aid}/genres", response_model=list[MusicGenreOut])
 def album_genres(aid: int, db: Session = Depends(get_database)):
     return sorted(_get(db, aid).genres, key=lambda g: g.name)
 
@@ -123,6 +123,8 @@ def add_genre(aid: int, gid: int, db: Session = Depends(get_database)):
     genre = db.get(Genre, gid)
     if not genre:
         raise HTTPException(404, "Genre not found")
+    if not genre.is_music:
+        raise HTTPException(422, "Genre is not applicable to music")
     if genre not in album.genres:
         album.genres.append(genre)
 
@@ -153,6 +155,24 @@ def unlink_soundtrack(aid: int, mid: int, db: Session = Depends(get_database)):
     movie = db.get(Movie, mid)
     if movie and movie in album.soundtrack_movies:
         album.soundtrack_movies.remove(movie)
+
+
+@router.put("/{aid}/soundtrack-games/{gid}", status_code=204)
+def link_soundtrack_game(aid: int, gid: int, db: Session = Depends(get_database)):
+    album = _get(db, aid)
+    game = db.get(Game, gid)
+    if not game:
+        raise HTTPException(404, "Game not found")
+    if game not in album.soundtrack_games:
+        album.soundtrack_games.append(game)
+
+
+@router.delete("/{aid}/soundtrack-games/{gid}", status_code=204)
+def unlink_soundtrack_game(aid: int, gid: int, db: Session = Depends(get_database)):
+    album = _get(db, aid)
+    game = db.get(Game, gid)
+    if game and game in album.soundtrack_games:
+        album.soundtrack_games.remove(game)
 
 
 def _rank_at(db: Session, artist_id: int, position: int | None, exclude: int | None) -> Decimal:
