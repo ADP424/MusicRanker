@@ -7,6 +7,8 @@ import {
   useGenres,
   useMovieGenreCategories,
   useMovieGenres,
+  useTelevisionGenreCategories,
+  useTelevisionGenres,
 } from "../api/hooks";
 import type { GamePlatform, Genre, GenreCategory } from "../api/types";
 
@@ -38,7 +40,7 @@ export interface GenreDomain {
   useCategories: () => { data?: GenreCategory[] };
   /** Which shared-genre boolean flag this domain corresponds to; unset for
    * taxonomies (like game platforms) that aren't split by media type. */
-  mediaTypeFlag?: "is_music" | "is_movie" | "is_game";
+  mediaTypeFlag?: "is_music" | "is_movie" | "is_game" | "is_television";
 }
 
 export const MUSIC_GENRES: GenreDomain = {
@@ -78,6 +80,19 @@ export const GAME_GENRES: GenreDomain = {
   useAll: useGameGenres,
   useCategories: useGameGenreCategories,
   mediaTypeFlag: "is_game",
+};
+
+export const TELEVISION_GENRES: GenreDomain = {
+  key: "television-genres",
+  apiBase: "/television-genres",
+  categoryApiBase: "/television-genres/categories",
+  routeBase: "/television/genres",
+  heading: "Television Genre",
+  noun: "genres",
+  synonymPlaceholder: "Sitcom, Situation Comedy",
+  useAll: useTelevisionGenres,
+  useCategories: useTelevisionGenreCategories,
+  mediaTypeFlag: "is_television",
 };
 
 /** Platforms are a hierarchical taxonomy, so they reuse the genre UI wholesale. */

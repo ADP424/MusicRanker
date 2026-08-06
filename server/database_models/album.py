@@ -9,6 +9,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .album_game_soundtrack import album_game_soundtrack
 from .album_genre import album_genres
 from .album_movie_soundtrack import album_movie_soundtrack
+from .album_television_soundtrack import album_television_show_soundtrack
 from .base import Base
 
 if TYPE_CHECKING:
@@ -16,6 +17,7 @@ if TYPE_CHECKING:
     from .game import Game
     from .genre import Genre
     from .movie import Movie
+    from .television import TelevisionShow
 
 
 class Album(Base):
@@ -50,6 +52,11 @@ class Album(Base):
     soundtrack_games: Mapped[list[Game]] = relationship(
         "Game",
         secondary=album_game_soundtrack,
+        back_populates="soundtrack_albums",
+    )
+    soundtrack_television_shows: Mapped[list[TelevisionShow]] = relationship(
+        "TelevisionShow",
+        secondary=album_television_show_soundtrack,
         back_populates="soundtrack_albums",
     )
 

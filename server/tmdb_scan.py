@@ -17,10 +17,8 @@ lands in `name_only`.
 
 from __future__ import annotations
 
-import re
 import threading
 import time
-import unicodedata
 import uuid
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -37,25 +35,14 @@ from .tmdb_client import (
     TmdbClient,
     get_sidecar,
 )
+from .tmdb_common import CREW_JOB_ROLES, norm as _norm, suggest_cast_role
 
 # A "slot" is the unit of uniqueness for a person on a movie.  It is what the
 # already-linked check keys on, and therefore what a rejection keys on too.
 SLOT_CAST = "cast"
 JOB_SLOTS = {"Director": "director", "Original Music Composer": "composer"}
-SLOT_TO_ROLE = {"director": CastRole.director, "composer": CastRole.composer}
+SLOT_TO_ROLE = {slot: CREW_JOB_ROLES[job] for job, slot in JOB_SLOTS.items()}
 CAST_ROLES = frozenset({CastRole.lead_actor, CastRole.actor, CastRole.cameo_actor})
-
-_CAMEO_RE = re.compile(r"(uncredited|himself|herself|themselves|\bself\b|cameo)", re.I)
-_PUNCT_RE = re.compile(r"[:\-–—,.'\"\[\]!?()&/]+")
-_WS_RE = re.compile(r"\s+")
-
-
-def _strip_accents(s: str) -> str:
-    return "".join(c for c in unicodedata.normalize("NFKD", s) if not unicodedata.combining(c))
-
-
-def _norm(s: str) -> str:
-    return _WS_RE.sub(" ", _PUNCT_RE.sub(" ", _strip_accents(s).lower())).strip()
 
 
 # ──────────────────────────────────────────────────────────────
@@ -198,18 +185,6 @@ class _CreditIndex:
 # ──────────────────────────────────────────────────────────────
 #  Phase 3: matching
 # ──────────────────────────────────────────────────────────────
-def _suggest_cast(order: int, pop: float, character: str) -> tuple[CastRole, str]:
-    if _CAMEO_RE.search(character):
-        return CastRole.cameo_actor, f'"{character}" looks like a cameo'
-    if order <= 2:
-        return CastRole.lead_actor, f"billed #{order + 1}"
-    if order >= 10 and pop >= 20:
-        return CastRole.cameo_actor, f"popular ({pop:.0f}) but billed #{order + 1}"
-    if order >= 12:
-        return CastRole.cameo_actor, f"billed #{order + 1}"
-    return CastRole.actor, f"billed #{order + 1}"
-
-
 @dataclass(slots=True)
 class Candidate:
     person_id: int
@@ -280,7 +255,7 @@ def _match(movies, people, links, index, by_norm, scope, suppressed) -> list[Can
                 continue
             if have.get(mid, set()) & CAST_ROLES:
                 continue
-            role, reason = _suggest_cast(order, tp.popularity, character)
+            role, reason = suggest_cast_role(order=order, popularity=tp.popularity, character=character)
             name, year = minfo[mid]
             out.append(
                 Candidate(

@@ -1,8 +1,8 @@
 import { NavLink, Route, Routes } from "react-router-dom";
-import { usePrefetchAll, usePrefetchGames, usePrefetchMovies, usePrefetchPeople } from "./api/hooks";
+import { usePrefetchAll, usePrefetchGames, usePrefetchMovies, usePrefetchPeople, usePrefetchTelevision } from "./api/hooks";
 import { GenreDetailPage } from "./genre/GenreDetailPage";
 import { GenresPage } from "./genre/GenresPage";
-import { GAME_GENRES, GAME_PLATFORMS, MOVIE_GENRES, MUSIC_GENRES } from "./genre/config";
+import { GAME_GENRES, GAME_PLATFORMS, MOVIE_GENRES, MUSIC_GENRES, TELEVISION_GENRES } from "./genre/config";
 import { AlbumDetailPage } from "./pages/AlbumDetailPage";
 import { ArtistsPage } from "./pages/ArtistsPage";
 import { ArtistDetailPage } from "./pages/ArtistDetailPage";
@@ -18,13 +18,26 @@ import { PeopleGraphPage } from "./pages/PeopleGraphPage";
 import { PeoplePage } from "./pages/PeoplePage";
 import { PersonDetailPage } from "./pages/PersonDetailPage";
 import { StatsPage } from "./pages/StatsPage";
+import { TelevisionEpisodeDetailPage } from "./pages/TelevisionEpisodeDetailPage";
+import { TelevisionShowDetailPage } from "./pages/TelevisionShowDetailPage";
+import { TelevisionShowsPage } from "./pages/TelevisionShowsPage";
+import { TelevisionStatsPage } from "./pages/TelevisionStatsPage";
+import {
+  ArtistAlbumsRankPage,
+  ArtistsRankPage,
+  GamesRankPage,
+  MoviesRankPage,
+  TelevisionEpisodesRankPage,
+  TelevisionShowsRankPage,
+} from "./rank/pages";
 
 function MusicSection() {
   usePrefetchAll();
   return (
     <>
       <nav>
-        <NavLink to="/music">Artists</NavLink>
+        <NavLink to="/music" end>Artists</NavLink>
+        <NavLink to="/music/rank">Rank</NavLink>
         <NavLink to="/music/genres">Genres</NavLink>
         <NavLink to="/music/stats">Stats</NavLink>
         <NavLink to="/" className="nav-home">← Home</NavLink>
@@ -32,9 +45,11 @@ function MusicSection() {
       <main>
         <Routes>
           <Route path="/" element={<ArtistsPage />} />
+          <Route path="/rank" element={<ArtistsRankPage />} />
           <Route path="/genres" element={<GenresPage domain={MUSIC_GENRES} />} />
           <Route path="/genres/:id" element={<GenreDetailPage domain={MUSIC_GENRES} />} />
           <Route path="/artists/:id" element={<ArtistDetailPage />} />
+          <Route path="/artists/:id/rank" element={<ArtistAlbumsRankPage />} />
           <Route path="/albums/:id" element={<AlbumDetailPage />} />
           <Route path="/stats" element={<StatsPage />} />
         </Routes>
@@ -48,7 +63,8 @@ function MoviesSection() {
   return (
     <>
       <nav>
-        <NavLink to="/movies">Movies</NavLink>
+        <NavLink to="/movies" end>Movies</NavLink>
+        <NavLink to="/movies/rank">Rank</NavLink>
         <NavLink to="/movies/genres">Genres</NavLink>
         <NavLink to="/movies/stats">Stats</NavLink>
         <NavLink to="/movies/tmdb-scan">TMDB Scan</NavLink>
@@ -57,6 +73,7 @@ function MoviesSection() {
       <main>
         <Routes>
           <Route path="/" element={<MoviesPage />} />
+          <Route path="/rank" element={<MoviesRankPage />} />
           <Route path="/genres" element={<GenresPage domain={MOVIE_GENRES} />} />
           <Route path="/genres/:id" element={<GenreDetailPage domain={MOVIE_GENRES} />} />
           <Route path="/stats" element={<MovieStatsPage />} />
@@ -68,12 +85,40 @@ function MoviesSection() {
   );
 }
 
+function TelevisionSection() {
+  usePrefetchTelevision();
+  return (
+    <>
+      <nav>
+        <NavLink to="/television" end>Television</NavLink>
+        <NavLink to="/television/rank">Rank</NavLink>
+        <NavLink to="/television/genres">Genres</NavLink>
+        <NavLink to="/television/stats">Stats</NavLink>
+        <NavLink to="/" className="nav-home">← Home</NavLink>
+      </nav>
+      <main>
+        <Routes>
+          <Route path="/" element={<TelevisionShowsPage />} />
+          <Route path="/rank" element={<TelevisionShowsRankPage />} />
+          <Route path="/genres" element={<GenresPage domain={TELEVISION_GENRES} />} />
+          <Route path="/genres/:id" element={<GenreDetailPage domain={TELEVISION_GENRES} />} />
+          <Route path="/stats" element={<TelevisionStatsPage />} />
+          <Route path="/:showId/episodes/:episodeId" element={<TelevisionEpisodeDetailPage />} />
+          <Route path="/:id/rank" element={<TelevisionEpisodesRankPage />} />
+          <Route path="/:id" element={<TelevisionShowDetailPage />} />
+        </Routes>
+      </main>
+    </>
+  );
+}
+
 function GamesSection() {
   usePrefetchGames();
   return (
     <>
       <nav>
-        <NavLink to="/games">Games</NavLink>
+        <NavLink to="/games" end>Games</NavLink>
+        <NavLink to="/games/rank">Rank</NavLink>
         <NavLink to="/games/genres">Genres</NavLink>
         <NavLink to="/games/platforms">Platforms</NavLink>
         <NavLink to="/games/stats">Stats</NavLink>
@@ -82,6 +127,7 @@ function GamesSection() {
       <main>
         <Routes>
           <Route path="/" element={<GamesPage />} />
+          <Route path="/rank" element={<GamesRankPage />} />
           <Route path="/genres" element={<GenresPage domain={GAME_GENRES} />} />
           <Route path="/genres/:id" element={<GenreDetailPage domain={GAME_GENRES} />} />
           <Route path="/platforms" element={<GenresPage domain={GAME_PLATFORMS} />} />
@@ -99,7 +145,7 @@ function PeopleSection() {
   return (
     <>
       <nav>
-        <NavLink to="/people">People</NavLink>
+        <NavLink to="/people" end>People</NavLink>
         <NavLink to="/people/graph">Graph</NavLink>
         <NavLink to="/" className="nav-home">← Home</NavLink>
       </nav>
@@ -120,6 +166,7 @@ export function App() {
       <Route path="/" element={<HomePage />} />
       <Route path="/music/*" element={<MusicSection />} />
       <Route path="/movies/*" element={<MoviesSection />} />
+      <Route path="/television/*" element={<TelevisionSection />} />
       <Route path="/games/*" element={<GamesSection />} />
       <Route path="/people/*" element={<PeopleSection />} />
     </Routes>

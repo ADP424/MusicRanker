@@ -1,169 +1,29 @@
 import { useCallback, useMemo, useState } from "react";
 
 import { useTmdbImport, useTmdbLookup } from "../api/hooks";
-import type {
-  CastRole,
-  TmdbImportPersonIn,
-  TmdbLookup,
-  TmdbPerson,
-} from "../api/types";
-import { CAST_ROLE_LABELS } from "../api/types";
+import type { CastRole, TmdbImportPersonIn, TmdbLookup, TmdbPerson } from "../api/types";
 import { MovieGenreChooser } from "./MovieGenreChooser";
+import { TmdbPersonRow, tmdbCreditDescription, type TmdbRowPerson } from "./TmdbPersonRow";
 
-const CAST_ROLE_OPTIONS: CastRole[] = ["lead_actor", "actor", "cameo_actor"];
-
-/* ── single person row ───────────────────────────────── */
-
-function PersonRow({
-  person,
-  index,
-  checked,
-  role,
-  resolution,
-  onToggle,
-  onRoleChange,
-  onResolve,
-}: {
-  person: TmdbPerson;
-  index: number;
-  checked: boolean;
-  role: CastRole;
-  resolution: number | null | undefined;
-  onToggle: () => void;
-  onRoleChange: (r: CastRole) => void;
-  onResolve: (personId: number | null) => void;
-}) {
-  const isCrew = person.credit_type === "crew";
-  const verifiedMatch = person.db_matches.find((m) => m.has_movie_entries);
-  const zeroMovieMatches = person.db_matches.filter(
-    (m) => !m.has_movie_entries,
-  );
-
-  // Overridden = verified match exists but user explicitly changed away from it
-  const isOverridden =
-    verifiedMatch != null &&
-    resolution !== undefined &&
-    resolution !== verifiedMatch.person_id;
-
-  const desc = isCrew
-    ? (person.job ?? "Crew")
-    : `as ${person.character ?? "?"} (#${(person.billing_order ?? 0) + 1})`;
-
-  return (
-    <div className={`tip-row${checked ? " tip-row--checked" : ""}`}>
-      <label className="tip-check">
-        <input type="checkbox" checked={checked} onChange={onToggle} />
-      </label>
-
-      <div className="tip-body">
-        <div className="tip-main">
-          <strong className="tip-name">{person.name}</strong>
-          <span className="tip-desc">{desc}</span>
-          {isCrew ? (
-            <span className="tip-role-fixed">{CAST_ROLE_LABELS[role]}</span>
-          ) : (
-            <select
-              className="tip-role-select"
-              value={role}
-              onChange={(e) => onRoleChange(e.target.value as CastRole)}
-            >
-              {CAST_ROLE_OPTIONS.map((r) => (
-                <option key={r} value={r}>
-                  {CAST_ROLE_LABELS[r]}
-                </option>
-              ))}
-            </select>
-          )}
-          <span className="tip-nat">{person.nationality_guess}</span>
-        </div>
-
-        {person.top_credits.length > 0 && (
-          <div className="tip-credits">
-            {person.top_credits.slice(0, 3).join("  ·  ")}
-          </div>
-        )}
-
-        <div className="tip-suggestion">💡 {person.suggestion_reason}</div>
-
-        {/* Verified match, not overridden — compact green badge with override button */}
-        {verifiedMatch && !isOverridden && (
-          <div className="tip-match tip-match--ok">
-            ✓ Matched: {verifiedMatch.person_name} (#{verifiedMatch.person_id})
-            <button
-              type="button"
-              className="tip-override"
-              onClick={() => onResolve(null)}
-            >
-              Not this person
-            </button>
-          </div>
-        )}
-
-        {/* Verified match overridden — show all candidates as radio group */}
-        {verifiedMatch && isOverridden && (
-          <div className="tip-match tip-match--warn">
-            <p>⚠ Match overridden — select alternative:</p>
-            {person.db_matches.map((m) => (
-              <div key={m.person_id} className="tip-conflict-option">
-                <label>
-                  <input
-                    type="radio"
-                    name={`resolve-${index}`}
-                    checked={resolution === m.person_id}
-                    onChange={() => onResolve(m.person_id)}
-                  />
-                  Use <strong>{m.person_name}</strong> (#{m.person_id})
-                  {!m.has_movie_entries && " — no movies"}
-                </label>
-                {!m.has_movie_entries && (
-                  <div className="tip-artist-summary">{m.artist_summary}</div>
-                )}
-              </div>
-            ))}
-            <label className="tip-conflict-option">
-              <input
-                type="radio"
-                name={`resolve-${index}`}
-                checked={resolution === null}
-                onChange={() => onResolve(null)}
-              />
-              Create new person
-            </label>
-          </div>
-        )}
-
-        {/* No verified match, zero-movie matches exist */}
-        {!verifiedMatch && zeroMovieMatches.length > 0 && (
-          <div className="tip-match tip-match--warn">
-            <p>⚠ Name match with <strong>no movie entries</strong>:</p>
-            {zeroMovieMatches.map((m) => (
-              <div key={m.person_id} className="tip-conflict-option">
-                <label>
-                  <input
-                    type="radio"
-                    name={`resolve-${index}`}
-                    checked={resolution === m.person_id}
-                    onChange={() => onResolve(m.person_id)}
-                  />
-                  Use existing <strong>{m.person_name}</strong> (#{m.person_id})
-                </label>
-                <div className="tip-artist-summary">{m.artist_summary}</div>
-              </div>
-            ))}
-            <label className="tip-conflict-option">
-              <input
-                type="radio"
-                name={`resolve-${index}`}
-                checked={resolution === null || resolution === undefined}
-                onChange={() => onResolve(null)}
-              />
-              Create new person
-            </label>
-          </div>
-        )}
-      </div>
-    </div>
-  );
+/** The movie API's credit shape -> the shared row's media-agnostic shape. */
+function toRow(p: TmdbPerson): TmdbRowPerson {
+  return {
+    tmdb_id: p.tmdb_id,
+    name: p.name,
+    description: tmdbCreditDescription(p),
+    suggested_role: p.suggested_role,
+    suggestion_reason: p.suggestion_reason,
+    top_credits: p.top_credits,
+    nationality_guess: p.nationality_guess,
+    roleLocked: p.credit_type === "crew",
+    matches: p.db_matches.map((m) => ({
+      person_id: m.person_id,
+      person_name: m.person_name,
+      has_entries: m.has_screen_entries,
+      artist_summary: m.artist_summary,
+      game_summary: m.game_summary,
+    })),
+  };
 }
 
 /* ── main component ──────────────────────────────────── */
@@ -203,7 +63,7 @@ export function TmdbImportDialog({
           const res: Record<number, number | null> = {};
           for (const p of data.people) {
             if (p.tmdb_id in res) continue;
-            const v = p.db_matches.find((m) => m.has_movie_entries);
+            const v = p.db_matches.find((m) => m.has_screen_entries);
             if (v) res[p.tmdb_id] = v.person_id;
           }
           setResolutions(res);
@@ -243,9 +103,12 @@ export function TmdbImportDialog({
   /* ── import ──────────────────────────────────────── */
 
   const checkedCount = checked.size;
-  const releaseYear = lookup
-    ? parseInt((lookup.release_date ?? "0000").slice(0, 4), 10)
-    : 0;
+  // TMDB leaves `release_date` empty for some titles. `parseInt("")` is NaN,
+  // and NaN serialises to JSON `null`, which the importer rejects with a 422.
+  const releaseYear = useMemo(() => {
+    const y = parseInt((lookup?.release_date ?? "").slice(0, 4), 10);
+    return Number.isNaN(y) || y <= 0 ? 0 : y;
+  }, [lookup]);
 
   const handleImport = useCallback(() => {
     if (!lookup) return;
@@ -364,6 +227,12 @@ export function TmdbImportDialog({
             </button>
           </div>
 
+          {releaseYear === 0 && (
+            <p className="tip-warn">
+              ⚠ TMDB has no release date for this title — it can't be imported without a year.
+            </p>
+          )}
+
           {/* people */}
           <section className="tip-section">
             <div className="tip-section-head">
@@ -377,10 +246,10 @@ export function TmdbImportDialog({
 
             <div className="tip-people-list">
               {lookup.people.map((p, i) => (
-                <PersonRow
+                <TmdbPersonRow
                   key={`${p.tmdb_id}-${p.job ?? p.billing_order ?? p.credit_type}`}
-                  person={p}
-                  index={i}
+                  person={toRow(p)}
+                  groupName={String(i)}
                   checked={checked.has(i)}
                   role={roles[i] ?? p.suggested_role}
                   resolution={resolutions[p.tmdb_id]}
@@ -409,7 +278,7 @@ export function TmdbImportDialog({
             <button
               type="button"
               className="tip-primary"
-              disabled={importMut.isPending}
+              disabled={importMut.isPending || releaseYear === 0}
               onClick={handleImport}
             >
               {importMut.isPending

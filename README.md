@@ -61,7 +61,7 @@ python server/snapshot_save.py my-label     # adds a label, e.g. 2026-03-27T14-3
 **Load a snapshot:**
 ```bash
 python -m server.snapshot_load                                      # most recent snapshot
-python -m server.snapshot_load.py 2026-03-27T14-30-00_my-label.sql  # specific file
+python -m server.snapshot_load 2026-03-27T14-30-00_my-label.sql     # specific file
 ```
 
 Restoring a snapshot drops and recreates all objects in-place — no need to run `initialize_database` first.

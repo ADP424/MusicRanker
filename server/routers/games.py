@@ -15,17 +15,26 @@ from ..api_models import (
     GameSoundtrackAlbumRef,
     PositionBody,
 )
+from ..api_models.base import ReorderBody
+from ..api_models.comparison import ComparisonIn, ComparisonOut
+from ..comparisons import (
+    clear_comparisons,
+    delete_comparison,
+    list_comparisons,
+    upsert_comparison,
+)
 from ..database import get_database
 from ..database_models import (
     Album,
     Game,
+    GameComparison,
     GamePerson,
     GamePlatform,
     Genre,
     Person,
 )
 from ..database_models.game_credit import GameRole
-from ..ranking import rank_at
+from ..ranking import apply_sequential_ranks, check_reorder_ids, rank_at
 
 router = APIRouter(prefix="/games", tags=["games"])
 
@@ -112,6 +121,36 @@ def list_games_ranked(db: Session = Depends(get_database)):
         game.position = i
         result.append(_decorate(game))
     return result
+
+
+@router.put("/reorder", status_code=204)
+def reorder_games(body: ReorderBody, db: Session = Depends(get_database)):
+    rows = db.scalars(select(Game)).all()
+    check_reorder_ids(body.ids, [g.id for g in rows])
+    apply_sequential_ranks(db, {g.id: g for g in rows}, body.ids, "global_rank")
+
+
+# ── Pairwise comparisons (Rank tab) ────────────────────────────────────────────
+@router.get("/comparisons", response_model=list[ComparisonOut])
+def list_game_comparisons(db: Session = Depends(get_database)):
+    return list_comparisons(db, GameComparison)
+
+
+@router.put("/comparisons", response_model=ComparisonOut)
+def upsert_game_comparison(body: ComparisonIn, db: Session = Depends(get_database)):
+    _get(db, body.winner_id)
+    _get(db, body.loser_id)
+    return upsert_comparison(db, GameComparison, body.winner_id, body.loser_id)
+
+
+@router.delete("/comparisons", status_code=204)
+def clear_game_comparisons(db: Session = Depends(get_database)):
+    clear_comparisons(db, GameComparison)
+
+
+@router.delete("/comparisons/{a}/{b}", status_code=204)
+def delete_game_comparison(a: int, b: int, db: Session = Depends(get_database)):
+    delete_comparison(db, GameComparison, a, b)
 
 
 @router.get("/{gid}", response_model=GameOut, response_model_by_alias=True)

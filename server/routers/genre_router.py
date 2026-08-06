@@ -33,6 +33,29 @@ from sqlalchemy.orm import Session
 from ..database import get_database
 
 
+def _cycle_path(start, target) -> list | None:
+    """Walk *up* `start`'s parent links looking for `target`, breadth-first.
+
+    Returns the chain `[start, …, target]` when `target` is already an ancestor
+    of `start`, else None. `seen` doubles as protection against data that is
+    already cyclical (rows created before this guard existed), so the walk can
+    never spin — the guard must not itself be hangable.
+    """
+    seen = {start.id}
+    queue: list[list] = [[start]]
+    while queue:
+        path = queue.pop(0)
+        node = path[-1]
+        if node.id == target.id:
+            return path
+        for parent in node.parents:
+            if parent.id in seen:
+                continue
+            seen.add(parent.id)
+            queue.append([*path, parent])
+    return None
+
+
 def make_genre_router(
     *,
     model,
@@ -121,11 +144,11 @@ def make_genre_router(
 
     @router.get("/{gid}/parents", response_model=list[out_schema])
     def get_parents(gid: int, db: Session = Depends(get_database)):
-        return sorted(_get(db, gid).parents, key=lambda g: g.name)
+        return [_with_refs(g) for g in sorted(_get(db, gid).parents, key=lambda g: g.name)]
 
     @router.get("/{gid}/children", response_model=list[out_schema])
     def get_children(gid: int, db: Session = Depends(get_database)):
-        return sorted(_get(db, gid).children, key=lambda g: g.name)
+        return [_with_refs(g) for g in sorted(_get(db, gid).children, key=lambda g: g.name)]
 
     @router.get("/{gid}/descendants", response_model=list[out_schema])
     def get_descendants(gid: int, db: Session = Depends(get_database)):
@@ -143,13 +166,24 @@ def make_genre_router(
             if _in_domain(g):
                 result.append(g)
             queue.extend(g.children)
-        return sorted(result, key=lambda g: g.name)
+        return [_with_refs(g) for g in sorted(result, key=lambda g: g.name)]
 
     @router.put("/{gid}/parents/{pid}", status_code=204)
     def add_parent(gid: int, pid: int, db: Session = Depends(get_database)):
         genre, parent = _get(db, gid), _get(db, pid)
-        if parent not in genre.parents:
-            genre.parents.append(parent)
+        if genre.id == parent.id:
+            raise HTTPException(422, f"'{genre.name}' cannot be its own parent")
+        if parent in genre.parents:
+            return  # idempotent
+        # Putting `parent` above `genre` closes a loop exactly when `genre` is
+        # already somewhere above `parent`. The DB only rejects self-parenting,
+        # so A→B→A was perfectly insertable — and a cycle makes the tree view's
+        # longest-path walk diverge (see GenreTree).
+        loop = _cycle_path(parent, genre)
+        if loop is not None:
+            chain = " → ".join(g.name for g in [genre, *loop])
+            raise HTTPException(409, f"That would create a circular parent chain: {chain}")
+        genre.parents.append(parent)
 
     @router.delete("/{gid}/parents/{pid}", status_code=204)
     def remove_parent(gid: int, pid: int, db: Session = Depends(get_database)):

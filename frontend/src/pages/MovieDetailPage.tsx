@@ -3,12 +3,12 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 
 import { api } from "../api/client";
-import { useGenres, usePeople, useStartScan } from "../api/hooks";
+import { useMovieGenres, usePeople, useStartScan } from "../api/hooks";
 import type { CastRole, Genre, Movie, MoviePersonRef, Person } from "../api/types";
 import { CAST_ROLES, CAST_ROLE_LABELS } from "../api/types";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { MovieForm } from "../components/MovieForm";
-import { GenreChooser } from "../components/GenreChooser";
+import { MovieGenreChooser } from "../components/MovieGenreChooser";
 import { PersonForm } from "../components/PersonForm";
 import { matchesPersonSearch, PersonPicker, type PersonSearchField } from "../components/PersonPicker";
 
@@ -196,7 +196,7 @@ function GenresSection({ movie }: { movie: Movie }) {
   const qc = useQueryClient();
   const [editing, setEditing] = useState(false);
   const [confirmUnlink, setConfirmUnlink] = useState<Genre | null>(null);
-  const { data: allGenres = [] } = useGenres();
+  const { data: allGenres = [] } = useMovieGenres();
 
   const { data: movieGenres = [] } = useQuery({
     queryKey: ["movies", movie.id, "genres"],
@@ -254,7 +254,7 @@ function GenresSection({ movie }: { movie: Movie }) {
 
       {editing && (
         <div style={{ marginBottom: "0.75rem" }}>
-          <GenreChooser selected={genreIds} onChange={handleChange} />
+          <MovieGenreChooser selected={genreIds} onChange={handleChange} />
         </div>
       )}
 

@@ -7,6 +7,7 @@ import { ConfirmDialog } from "../components/ConfirmDialog";
 import { CategoryManager } from "./CategoryManager";
 import { GenreForm } from "./GenreForm";
 import { GenreTree } from "./GenreTree";
+import { findCycles } from "./cycles";
 import type { GenreDomain, GenreLike } from "./config";
 
 type View = "list" | "tree";
@@ -63,6 +64,11 @@ export function GenresPage({ domain }: { domain: GenreDomain }) {
     return genres.filter((g) => categoryScope.get(g.id)?.has(categoryFilter));
   }, [genres, categoryScope, categoryFilter]);
 
+  // Computed once here and threaded to both the warning banner (List and Tree
+  // views alike) and GenreTree's layout, rather than each computing its own.
+  const cycles = useMemo(() => findCycles(genres), [genres]);
+  const genreById = useMemo(() => new Map(genres.map((g) => [g.id, g])), [genres]);
+
   const remove = useMutation({
     mutationFn: (id: number) => api.delete(`${domain.apiBase}/${id}`),
     onMutate: async (id) => {
@@ -93,6 +99,39 @@ export function GenresPage({ domain }: { domain: GenreDomain }) {
           <button onClick={() => setEditing("new")}>+ Add</button>
         </div>
       </header>
+
+      {cycles.hasCycles && (
+        <div className="cycle-warning">
+          <strong>
+            ⚠ {cycles.cycles.length} circular parent{" "}
+            {cycles.cycles.length === 1 ? "chain" : "chains"} in this taxonomy.
+          </strong>{" "}
+          The tree view drops the link that closes each loop so it can still draw
+          (and shows it dashed), but the data is wrong. Click a name to edit it and
+          remove the offending parent.
+          <ul>
+            {cycles.cycles.map((loop, i) => (
+              <li key={i}>
+                {loop.map((id, j) => (
+                  <span key={`${id}-${j}`}>
+                    {j > 0 && " → "}
+                    <button
+                      type="button"
+                      className="cycle-link"
+                      onClick={() => {
+                        const g = genreById.get(id);
+                        if (g) setEditing(g);
+                      }}
+                    >
+                      {genreById.get(id)?.name ?? `#${id}`}
+                    </button>
+                  </span>
+                ))}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       <CategoryManager domain={domain} />
 
@@ -127,7 +166,7 @@ export function GenresPage({ domain }: { domain: GenreDomain }) {
       )}
 
       {view === "tree" && (
-        <GenreTree genres={visibleGenres} onEdit={(g) => setEditing(g)} />
+        <GenreTree genres={visibleGenres} cycles={cycles} onEdit={(g) => setEditing(g)} />
       )}
 
       {confirmDelete && (

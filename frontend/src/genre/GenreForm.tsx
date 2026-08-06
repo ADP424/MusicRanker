@@ -7,10 +7,11 @@ import type { Genre } from "../api/types";
 import { GenreChooser } from "./GenreChooser";
 import type { GenreDomain, GenreLike } from "./config";
 
-const MEDIA_TYPE_LABELS: Record<"is_music" | "is_movie" | "is_game", string> = {
+const MEDIA_TYPE_LABELS: Record<"is_music" | "is_movie" | "is_game" | "is_television", string> = {
   is_music: "Music",
   is_movie: "Movie",
   is_game: "Game",
+  is_television: "Television",
 };
 
 export function GenreForm(props: {
@@ -57,6 +58,7 @@ export function GenreForm(props: {
     is_music: initialGenre?.is_music ?? domain.mediaTypeFlag === "is_music",
     is_movie: initialGenre?.is_movie ?? domain.mediaTypeFlag === "is_movie",
     is_game: initialGenre?.is_game ?? domain.mediaTypeFlag === "is_game",
+    is_television: initialGenre?.is_television ?? domain.mediaTypeFlag === "is_television",
   });
   const [mediaTypes, setMediaTypes] = useState(defaultMediaTypes);
   useEffect(() => {

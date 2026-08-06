@@ -24,6 +24,12 @@ class AlbumSoundtrackGameRef(BaseModel):
     name_en: str | None = None
 
 
+class AlbumSoundtrackTelevisionRef(BaseModel):
+    id: int
+    name: str
+    name_en: str | None = None
+
+
 class AlbumIn(BaseModel):
     name: str
     name_en: str | None = None
@@ -65,6 +71,7 @@ class AlbumOut(ORMSchema):
     genre_ids: list[int] = []
     soundtrack_movies: list[AlbumSoundtrackMovieRef] = []
     soundtrack_games: list[AlbumSoundtrackGameRef] = []
+    soundtrack_television_shows: list[AlbumSoundtrackTelevisionRef] = []
 
 
 class AlbumIndex(ORMSchema):

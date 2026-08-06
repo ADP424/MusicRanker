@@ -11,3 +11,9 @@ class PositionBody(BaseModel):
 
 class LinkBody(BaseModel):
     position: int | None = Field(default=None, ge=1)
+
+
+class ReorderBody(BaseModel):
+    """Full permutation of a ranked collection, best first."""
+
+    ids: list[int]

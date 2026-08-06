@@ -7,11 +7,26 @@ from sqlalchemy.orm import Session
 
 from ..api_models import AlbumOut, ArtistIn, ArtistOut, ArtistPatch, PositionBody
 from ..api_models.album import AlbumArtistRef
+from ..api_models.base import ReorderBody
+from ..api_models.comparison import ComparisonIn, ComparisonOut
 from ..api_models.person import PersonArtistRef
+from ..comparisons import (
+    clear_comparisons,
+    delete_comparison,
+    list_comparisons,
+    upsert_comparison,
+)
 from ..database import get_database
-from ..database_models import Album, AlbumArtist, Artist, ArtistPerson
+from ..database_models import (
+    Album,
+    AlbumArtist,
+    AlbumComparison,
+    Artist,
+    ArtistComparison,
+    ArtistPerson,
+)
 from ..database_models.genre import Genre
-from ..ranking import rank_at
+from ..ranking import apply_sequential_ranks, check_reorder_ids, rank_at
 
 router = APIRouter(prefix="/artists", tags=["artists"])
 
@@ -96,12 +111,44 @@ def search_artists(
     return list(ordered)
 
 
+# ── Pairwise comparisons: artists (Rank tab) ───────────────────────────────────
+@router.get("/comparisons", response_model=list[ComparisonOut])
+def list_artist_comparisons(db: Session = Depends(get_database)):
+    return list_comparisons(db, ArtistComparison)
+
+
+@router.put("/comparisons", response_model=ComparisonOut)
+def upsert_artist_comparison(body: ComparisonIn, db: Session = Depends(get_database)):
+    _get(db, body.winner_id)
+    _get(db, body.loser_id)
+    return upsert_comparison(db, ArtistComparison, body.winner_id, body.loser_id)
+
+
+@router.delete("/comparisons", status_code=204)
+def clear_artist_comparisons(db: Session = Depends(get_database)):
+    clear_comparisons(db, ArtistComparison)
+
+
+@router.delete("/comparisons/{a}/{b}", status_code=204)
+def delete_artist_comparison(a: int, b: int, db: Session = Depends(get_database)):
+    delete_comparison(db, ArtistComparison, a, b)
+
+
 @router.get("", response_model=list[ArtistOut])
 def list_artists(db: Session = Depends(get_database)):
     rows = db.scalars(select(Artist).order_by(Artist.global_rank)).all()
     for i, a in enumerate(rows, start=1):
         a.position = i
     return rows
+
+
+@router.put("/reorder", status_code=204)
+def reorder_artists(body: ReorderBody, db: Session = Depends(get_database)):
+    """Rewrite the whole artist order. ``body.ids`` must be a permutation of
+    every artist id; ranks are re-laid as 1..n."""
+    rows = db.scalars(select(Artist)).all()
+    check_reorder_ids(body.ids, [a.id for a in rows])
+    apply_sequential_ranks(db, {a.id: a for a in rows}, body.ids, "global_rank")
 
 
 @router.get("/{aid}", response_model=ArtistOut)
@@ -185,6 +232,58 @@ def artist_albums(aid: int, db: Session = Depends(get_database)):
         album.genre_ids = [g.id for g in album.genres]
         out.append(album)
     return out
+
+
+@router.put("/{aid}/albums/reorder", status_code=204)
+def reorder_artist_albums(aid: int, body: ReorderBody, db: Session = Depends(get_database)):
+    """Rewrite this artist's album order (albums are ranked per-artist)."""
+    _get(db, aid)
+    links = db.scalars(select(AlbumArtist).where(AlbumArtist.artist_id == aid)).all()
+    check_reorder_ids(body.ids, [link.album_id for link in links])
+    apply_sequential_ranks(db, {link.album_id: link for link in links}, body.ids, "album_rank")
+
+
+# ── Pairwise comparisons: albums, scoped to one artist ─────────────────────────
+def _artist_album_ids(db: Session, aid: int) -> set[int]:
+    return set(db.scalars(select(AlbumArtist.album_id).where(AlbumArtist.artist_id == aid)))
+
+
+def _album_scope(aid: int):
+    return AlbumComparison.artist_id == aid
+
+
+@router.get("/{aid}/albums/comparisons", response_model=list[ComparisonOut])
+def list_album_comparisons(aid: int, db: Session = Depends(get_database)):
+    _get(db, aid)
+    return list_comparisons(db, AlbumComparison, scope=_album_scope(aid))
+
+
+@router.put("/{aid}/albums/comparisons", response_model=ComparisonOut)
+def upsert_album_comparison(aid: int, body: ComparisonIn, db: Session = Depends(get_database)):
+    _get(db, aid)
+    live = _artist_album_ids(db, aid)
+    if body.winner_id not in live or body.loser_id not in live:
+        raise HTTPException(404, "Album is not in this artist's discography")
+    return upsert_comparison(
+        db,
+        AlbumComparison,
+        body.winner_id,
+        body.loser_id,
+        scope=_album_scope(aid),
+        extra={"artist_id": aid},
+    )
+
+
+@router.delete("/{aid}/albums/comparisons", status_code=204)
+def clear_album_comparisons(aid: int, db: Session = Depends(get_database)):
+    _get(db, aid)
+    clear_comparisons(db, AlbumComparison, scope=_album_scope(aid))
+
+
+@router.delete("/{aid}/albums/comparisons/{a}/{b}", status_code=204)
+def delete_album_comparison(aid: int, a: int, b: int, db: Session = Depends(get_database)):
+    _get(db, aid)
+    delete_comparison(db, AlbumComparison, a, b, scope=_album_scope(aid))
 
 
 def _rank_at(db: Session, position: int | None, exclude: int | None) -> Decimal:

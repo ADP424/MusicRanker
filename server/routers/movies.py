@@ -13,11 +13,27 @@ from ..api_models import (
     MoviePersonRef,
     PositionBody,
 )
+from ..api_models.base import ReorderBody
+from ..api_models.comparison import ComparisonIn, ComparisonOut
 from ..api_models.movie import MovieSoundtrackAlbumRef
+from ..comparisons import (
+    clear_comparisons,
+    delete_comparison,
+    list_comparisons,
+    upsert_comparison,
+)
 from ..database import get_database
-from ..database_models import Album, Genre, Movie, MoviePerson, Person
+from ..database_models import (
+    MOVIE_ROLES,
+    Album,
+    Genre,
+    Movie,
+    MovieComparison,
+    MoviePerson,
+    Person,
+)
 from ..database_models.movie_cast_member import CastRole
-from ..ranking import rank_at
+from ..ranking import apply_sequential_ranks, check_reorder_ids, rank_at
 
 router = APIRouter(prefix="/movies", tags=["movies"])
 
@@ -94,6 +110,36 @@ def list_movies_ranked(db: Session = Depends(get_database)):
     return result
 
 
+@router.put("/reorder", status_code=204)
+def reorder_movies(body: ReorderBody, db: Session = Depends(get_database)):
+    rows = db.scalars(select(Movie)).all()
+    check_reorder_ids(body.ids, [m.id for m in rows])
+    apply_sequential_ranks(db, {m.id: m for m in rows}, body.ids, "global_rank")
+
+
+# ── Pairwise comparisons (Rank tab) ────────────────────────────────────────────
+@router.get("/comparisons", response_model=list[ComparisonOut])
+def list_movie_comparisons(db: Session = Depends(get_database)):
+    return list_comparisons(db, MovieComparison)
+
+
+@router.put("/comparisons", response_model=ComparisonOut)
+def upsert_movie_comparison(body: ComparisonIn, db: Session = Depends(get_database)):
+    _get(db, body.winner_id)
+    _get(db, body.loser_id)
+    return upsert_comparison(db, MovieComparison, body.winner_id, body.loser_id)
+
+
+@router.delete("/comparisons", status_code=204)
+def clear_movie_comparisons(db: Session = Depends(get_database)):
+    clear_comparisons(db, MovieComparison)
+
+
+@router.delete("/comparisons/{a}/{b}", status_code=204)
+def delete_movie_comparison(a: int, b: int, db: Session = Depends(get_database)):
+    delete_comparison(db, MovieComparison, a, b)
+
+
 @router.get("/{mid}", response_model=MovieOut, response_model_by_alias=True)
 def get_movie(mid: int, db: Session = Depends(get_database)):
     movie = _get(db, mid)
@@ -157,6 +203,8 @@ def link_person(
     role: CastRole,
     db: Session = Depends(get_database),
 ):
+    if role not in MOVIE_ROLES:
+        raise HTTPException(422, "The creator role only applies to television shows")
     _get(db, mid)
     if not db.get(Person, person_id):
         raise HTTPException(404, "Person not found")

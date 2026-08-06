@@ -143,7 +143,10 @@ def summary(db: Session = Depends(get_database)):
     movies, movie_score, person_movies, person_by_id = _load(db)
 
     total_movies = len(movies)
-    total_persons = len(person_by_id)
+    # Only people who actually hold a movie credit — `person_by_id` is the whole
+    # shared people table (musicians, game devs, …), which says nothing about
+    # movies and contradicts avg_movies_per_cast_member below.
+    total_persons = len(person_movies)
     unique_runtime_h = sum(m.runtime_minutes for m in movies) / 60
     avg_runtime_h = unique_runtime_h / total_movies if total_movies else 0
     total_watched_h = sum(m.runtime_minutes * m.watches for m in movies) / 60

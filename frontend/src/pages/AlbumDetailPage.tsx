@@ -317,6 +317,36 @@ export function AlbumDetailPage() {
               </span>
             </div>
           )}
+          {album.soundtrack_television_shows.length > 0 && (
+            <div>
+              <span className="detail-label">Soundtrack for (TV)</span>
+              <span>
+                {album.soundtrack_television_shows.map((s, i) => (
+                  <span key={s.id}>
+                    {i > 0 && ", "}
+                    <Link to={`/television/${s.id}`}>
+                      {s.name}{s.name_en && <span style={{ opacity: 0.6 }}> ({s.name_en})</span>}
+                    </Link>
+                  </span>
+                ))}
+              </span>
+            </div>
+          )}
+          {album.soundtrack_games.length > 0 && (
+            <div>
+              <span className="detail-label">Soundtrack for (Game)</span>
+              <span>
+                {album.soundtrack_games.map((g, i) => (
+                  <span key={g.id}>
+                    {i > 0 && ", "}
+                    <Link to={`/games/${g.id}`}>
+                      {g.name}{g.name_en && <span style={{ opacity: 0.6 }}> ({g.name_en})</span>}
+                    </Link>
+                  </span>
+                ))}
+              </span>
+            </div>
+          )}
         </div>
         {album.notes && (
           <div className="detail-tags" style={{ marginTop: "0.5rem" }}>

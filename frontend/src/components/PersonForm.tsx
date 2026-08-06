@@ -59,7 +59,7 @@ export function PersonForm(props: { initial?: Person; onClose: (savedName?: stri
           <input required value={f.name} onChange={bind("name")} />
         </label>
 
-        <label>English name <span style={{ opacity: 0.5, fontWeight: "normal", fontSize: 12 }}>(optional)</span>
+        <label><span className="label-text">English name <span className="info-icon" title="optional">ⓘ</span></span>
           <input value={f.name_en} onChange={bind("name_en")} placeholder="e.g. Ken Watanabe" />
         </label>
 
@@ -78,12 +78,12 @@ export function PersonForm(props: { initial?: Person; onClose: (savedName?: stri
           </label>
         </div>
 
-        <label>Notes
+        <label><span className="label-text">Notes <span className="info-icon" title="optional">ⓘ</span></span>
           <textarea rows={3} value={f.notes} onChange={bind("notes")} />
         </label>
 
         <footer>
-          <button type="button" onClick={onClose}>Cancel</button>
+          <button type="button" onClick={() => onClose()}>Cancel</button>
           <button type="submit" disabled={save.isPending}>{editing ? "Save" : "Create"}</button>
         </footer>
         {save.isError && <p className="err">{(save.error as Error).message}</p>}

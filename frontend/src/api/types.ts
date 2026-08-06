@@ -13,6 +13,7 @@ export interface Genre {
   is_music: boolean;
   is_movie: boolean;
   is_game: boolean;
+  is_television: boolean;
   parent_ids: number[];
   category_ids: number[];
 }
@@ -56,6 +57,12 @@ export interface SoundtrackAlbumRef {
   artist_ids: number[];
 }
 
+export interface SoundtrackTelevisionShowRef {
+  id: number;
+  name: string;
+  name_en: string | null;
+}
+
 export interface Album {
   id: number;
   name: string;
@@ -73,6 +80,7 @@ export interface Album {
   genre_ids: number[];
   soundtrack_movies: SoundtrackMovieRef[];
   soundtrack_games: { id: number; name: string; name_en: string | null }[];
+  soundtrack_television_shows: SoundtrackTelevisionShowRef[];
 }
 
 export type ArtistIn = Omit<Artist, "id" | "global_rank" | "position"> & {
@@ -203,17 +211,31 @@ export interface AlbumBody {
 
 // ─── Movies ────────────────────────────────────────────────────────────────
 
-export type CastRole = "director" | "composer" | "actor" | "lead_actor" | "cameo_actor";
+export type CastRole = "creator" | "director" | "composer" | "actor" | "lead_actor" | "cameo_actor";
 
+/** Movies: no `creator`. */
 export const CAST_ROLES: CastRole[] = ["director", "composer", "lead_actor", "actor", "cameo_actor"];
+/** TV shows: a show is authored — `creator` stands in for `director`. */
+export const TV_SHOW_ROLES: CastRole[] = ["creator", "composer", "lead_actor", "actor", "cameo_actor"];
+/** TV episodes: each episode keeps its own director. */
+export const TV_EPISODE_ROLES: CastRole[] = ["director", "composer", "lead_actor", "actor", "cameo_actor"];
 
 export const CAST_ROLE_LABELS: Record<CastRole, string> = {
+  creator: "Creator",
   director: "Director",
   composer: "Composer",
   actor: "Actor",
   lead_actor: "Lead Actor",
   cameo_actor: "Cameo Actor",
 };
+
+/** Roles where holding two on one entry is noise, not signal. */
+export const ACTING_ROLES: CastRole[] = ["lead_actor", "actor", "cameo_actor"];
+
+/** An episode with any acting credit has been cast; it needs no cast import. */
+export function hasActingCredit(persons: { role: CastRole }[]): boolean {
+  return persons.some((p) => ACTING_ROLES.includes(p.role));
+}
 
 export interface MoviePersonRef {
   id: number;
@@ -304,6 +326,192 @@ export interface MovieGenreRow {
   movie_count: number;
   movie_count_direct: number;
   avg_movie_score: number | null;
+}
+
+// ─── Television ────────────────────────────────────────────────────────────
+// Shows and episodes reuse the movie CastRole enum/labels (CAST_ROLES, CAST_ROLE_LABELS).
+
+export interface TelevisionPersonRef {
+  id: number;
+  name: string;
+  name_en: string | null;
+  role: CastRole;
+}
+
+export interface TelevisionEpisode {
+  id: number;
+  show_id: number;
+  show_name: string;
+  name: string;
+  name_en: string | null;
+  runtime_minutes: number;
+  release_year: number;
+  watches: number;
+  watch_link: string | null;
+  notes: string | null;
+  episode_rank: string | null; // NUMERIC → JSON string
+  position: number | null;     // 1-based rank *within the show*
+  persons: TelevisionPersonRef[];
+  genre_ids: number[];
+  // no soundtrack_albums — soundtracks are show-level only
+}
+
+export interface TelevisionShow {
+  id: number;
+  name: string;
+  name_en: string | null;
+  release_year: number;
+  watch_link: string | null;
+  notes: string | null;
+  global_rank: string | null;
+  position: number | null;
+  persons: TelevisionPersonRef[];
+  genre_ids: number[];
+  soundtrack_albums: SoundtrackAlbumRef[];
+  episodes: TelevisionEpisode[];
+  episode_count: number;
+  total_runtime_minutes: number;
+  total_watched_minutes: number;
+  total_watches: number;
+}
+
+export interface TelevisionShowIndex {
+  id: number;
+  name: string;
+  name_en: string | null;
+  person_ids: number[];
+  genre_ids: number[];
+  episode_names: string[];
+}
+
+export interface TelevisionEpisodeIndex {
+  id: number;
+  show_id: number;
+  show_name: string;
+  name: string;
+  name_en: string | null;
+  person_ids: number[];
+  genre_ids: number[];
+}
+
+export interface TelevisionShowBody {
+  name: string;
+  name_en: string | null;
+  release_year: number;
+  watch_link: string | null;
+  notes: string | null;
+}
+
+export interface TelevisionEpisodeBody {
+  name: string | null;         // null → inherit the show's name
+  name_en: string | null;
+  runtime_minutes: number;
+  release_year: number | null; // null → inherit the show's year
+  watches: number;
+  watch_link: string | null;
+  notes: string | null;
+}
+
+export interface TelevisionEpisodeCreate extends TelevisionEpisodeBody {
+  position?: number | null;
+  inherit_from_show?: boolean; // also copies people & genres
+}
+
+export type TelevisionEpisodePatch = Partial<TelevisionEpisodeBody>;
+
+export interface TelevisionPropagateBody {
+  persons: boolean;
+  genres: boolean;
+  overwrite: boolean;
+}
+
+export interface TelevisionPropagateResult {
+  episodes_updated: number;
+  person_links_added: number;
+  genre_links_added: number;
+}
+
+export interface TelevisionStatsSummary {
+  total_cast_members: number;
+  total_shows: number;
+  total_episodes: number;
+  avg_episodes_per_show: number;
+  avg_shows_per_cast_member: number;
+  avg_episodes_per_cast_member: number;
+  unique_runtime_hours: number;
+  unique_runtime_days: number;
+  avg_episode_runtime_hours: number;
+  avg_show_runtime_hours: number;
+  total_watched_hours: number;
+  total_watched_days: number;
+  avg_watched_hours_per_show: number;
+  avg_watched_hours_per_episode: number;
+  most_episodes_show: string | null;
+  most_episodes_count: number | null;
+  best_year_shows: number | null;
+  worst_year_shows: number | null;
+  best_year_episodes: number | null;
+  worst_year_episodes: number | null;
+  best_decade_shows: number | null;
+  worst_decade_shows: number | null;
+  best_decade_episodes: number | null;
+  worst_decade_episodes: number | null;
+  best_core_nationality_shows: string | null;
+  worst_core_nationality_shows: string | null;
+  best_birth_nationality_shows: string | null;
+  worst_birth_nationality_shows: string | null;
+  best_core_nationality_cast: string | null;
+  worst_core_nationality_cast: string | null;
+  best_birth_nationality_cast: string | null;
+  worst_birth_nationality_cast: string | null;
+}
+
+export interface TelevisionYearRow {
+  year: number;
+  show_count: number;
+  avg_show_score: number | null;
+  episode_count: number;
+  avg_episode_score: number | null;
+}
+
+export interface TelevisionDecadeRow {
+  decade: number;
+  show_count: number;
+  avg_show_score: number | null;
+  episode_count: number;
+  avg_episode_score: number | null;
+}
+
+export interface TelevisionNatRow {
+  nationality: string;
+  show_count: number;
+  avg_show_score: number | null;
+  episode_count: number;
+  avg_episode_score: number | null;
+}
+
+export interface TelevisionGenreRow {
+  genre_id: number;
+  genre_name: string;
+  show_count: number;
+  show_count_direct: number;
+  avg_show_score: number | null;
+  episode_count: number;
+  episode_count_direct: number;
+  avg_episode_score: number | null;
+}
+
+export interface TelevisionShowRow {
+  show_id: number;
+  show_name: string;
+  position: number;
+  show_score: number;
+  release_year: number;
+  episode_count: number;
+  total_watches: number;
+  total_runtime_minutes: number;
+  total_watched_minutes: number;
+  avg_episode_runtime_minutes: number | null;
 }
 
 // ─── Games ─────────────────────────────────────────────────────────────────
@@ -474,6 +682,7 @@ export interface Person {
   artist_names: string[];
   movie_names: string[];
   game_names: string[];
+  television_names: string[];
 }
 
 export interface PersonArtistRef {
@@ -496,6 +705,20 @@ export interface PersonGameRoleRef {
   role: GameRole;
 }
 
+export interface PersonTelevisionRoleRef {
+  show_id: number;
+  show_name: string;
+  role: CastRole;
+}
+
+export interface PersonTelevisionEpisodeRoleRef {
+  episode_id: number;
+  episode_name: string;
+  show_id: number;
+  show_name: string;
+  role: CastRole;
+}
+
 export interface PersonDetail {
   id: number;
   name: string;
@@ -506,6 +729,8 @@ export interface PersonDetail {
   artists: PersonArtistRef[];
   movie_roles: PersonMovieRoleRef[];
   game_roles: PersonGameRoleRef[];
+  television_roles: PersonTelevisionRoleRef[];
+  television_episode_roles: PersonTelevisionEpisodeRoleRef[];
 }
 
 export interface PersonBody {
@@ -631,8 +856,10 @@ export interface SuppressionList { count: number; items: Suppression[] }
 export interface DbPersonMatch {
   person_id: number;
   person_name: string;
-  has_movie_entries: boolean;
+  /** Has movie *or* TV credits — i.e. something the filmography can confirm. */
+  has_screen_entries: boolean;
   artist_summary: string;
+  game_summary: string;
 }
 
 export interface TmdbPerson {
@@ -696,6 +923,165 @@ export interface TmdbImportResult {
   movie_id: number;
   created_people: TmdbImportPersonResult[];
   reused_people: TmdbImportPersonResult[];
+}
+
+// ── TMDB television import ───────────────────────────────────────
+
+export interface TmdbTvDbPersonMatch {
+  person_id: number;
+  person_name: string;
+  has_screen_entries: boolean;
+  artist_summary: string;
+  game_summary: string;
+}
+
+export interface TmdbTvPerson {
+  tmdb_id: number;
+  name: string;
+  credit_type: "cast" | "crew" | "guest";
+  character: string | null;
+  billing_order: number | null;
+  job: string | null;
+  episode_count: number | null;
+  suggested_role: CastRole;
+  suggestion_reason: string;
+  top_credits: string[];
+  nationality_guess: string;
+  birth_place: string | null;
+  db_matches: TmdbTvDbPersonMatch[];
+}
+
+export interface TmdbTvGenre {
+  tmdb_id: number;
+  tmdb_name: string;
+  db_genre_id: number | null;
+}
+
+export interface TmdbTvEpisode {
+  tmdb_id: number | null;
+  season_number: number;
+  episode_number: number;
+  name: string;
+  air_date: string | null;
+  release_year: number;
+  runtime: number;
+  overview: string | null;
+  /** At the show step, only the episode's automatic director/composer. */
+  people: TmdbTvPerson[];
+}
+
+export interface TmdbTvSeason {
+  season_number: number;
+  name: string;
+  air_date: string | null;
+  episode_count: number;
+  episodes: TmdbTvEpisode[];
+}
+
+export interface TmdbTvLookup {
+  tmdb_id: number;
+  name: string;
+  original_name: string | null;
+  first_air_date: string | null;
+  release_year: number;
+  overview: string | null;
+  episode_run_time: number;
+  number_of_seasons: number;
+  number_of_episodes: number;
+  crew_episode_threshold: number;
+  people: TmdbTvPerson[];
+  genres: TmdbTvGenre[];
+  seasons: TmdbTvSeason[];
+  ambiguous: boolean;
+}
+
+export interface TmdbTvLookupIn {
+  title: string;
+  year?: number;
+  include_episodes?: boolean;
+  include_specials?: boolean;
+  season_numbers?: number[];
+  crew_episode_threshold?: number;
+}
+
+export interface TmdbTvImportPersonIn {
+  tmdb_id: number;
+  name: string;
+  role: CastRole;
+  nationality: string;
+  existing_person_id: number | null;
+}
+
+export interface TmdbTvImportEpisodeIn {
+  name: string;
+  name_en: string | null;
+  runtime_minutes: number;
+  release_year: number;
+  watches: number;
+  watch_link: string | null;
+  notes: string | null;
+  people: TmdbTvImportPersonIn[];
+  inherit_show_people: boolean;
+  genre_ids: number[] | null;
+}
+
+export interface TmdbTvImportIn {
+  name: string;
+  name_en: string | null;
+  release_year: number;
+  watch_link: string | null;
+  notes: string | null;
+  people: TmdbTvImportPersonIn[];
+  genre_ids: number[];
+  episodes: TmdbTvImportEpisodeIn[];
+}
+
+export interface TmdbTvImportPersonResult {
+  person_id: number;
+  name: string;
+  nationality: string;
+  created: boolean;
+}
+
+export interface TmdbTvImportResult {
+  show_id: number;
+  episode_ids: number[];
+  created_people: TmdbTvImportPersonResult[];
+  reused_people: TmdbTvImportPersonResult[];
+}
+
+// ── Single-episode lookup/import (adding/re-casting an episode) ───
+export interface TmdbTvEpisodeLookupBody {
+  tmdb_show_id?: number | null;
+  title?: string | null;
+  year?: number | null;
+  season_number?: number | null;
+  episode_number?: number | null;
+  episode_name?: string | null;
+}
+
+export interface TmdbTvEpisodeLookup {
+  tmdb_show_id: number;
+  show_name: string;
+  show_ambiguous: boolean;
+  episode: TmdbTvEpisode;
+}
+
+export interface TmdbTvEpisodeImportIn {
+  show_id: number;
+  /** Set to merge into an existing episode; omit to append a new one. */
+  episode_id?: number | null;
+  update_episode_fields?: boolean;
+  episode: TmdbTvImportEpisodeIn;
+}
+
+export interface TmdbTvEpisodeImportResult {
+  show_id: number;
+  episode_id: number;
+  created: boolean;
+  people_linked: number;
+  created_people: TmdbTvImportPersonResult[];
+  reused_people: TmdbTvImportPersonResult[];
 }
 
 // ── IGDB import ───────────────────────────────────────────────────
@@ -770,4 +1156,14 @@ export interface IgdbImportResult {
   game_id: number;
   created_people: IgdbImportPersonResult[];
   reused_people: IgdbImportPersonResult[];
+}
+
+// ─── Pairwise preferences ──────────────────────────────────────────────────
+export interface ComparisonIn {
+  winner_id: number;
+  loser_id: number;
+}
+
+export interface Comparison extends ComparisonIn {
+  created_at?: string | null;
 }

@@ -21,15 +21,19 @@ class GenrePatch(GenrePatchBase):
 
 
 class MusicGenreOut(GenreOutBase, MediaTypesOutMixin):
-    category_ids: list[int] = []
+    pass
 
 
 class MovieGenreOut(GenreOutBase, MediaTypesOutMixin):
-    category_ids: list[int] = []
+    pass
 
 
 class GameGenreOut(GenreOutBase, MediaTypesOutMixin):
-    category_ids: list[int] = []
+    pass
+
+
+class TelevisionGenreOut(GenreOutBase, MediaTypesOutMixin):
+    pass
 
 
 class GenreCategoryIn(CategoryInBase):
@@ -68,7 +72,20 @@ class GameGenreCategoryOut(CategoryOutBase):
     pass
 
 
+class TelevisionGenreCategoryIn(CategoryInBase):
+    pass
+
+
+class TelevisionGenreCategoryPatch(CategoryPatchBase):
+    pass
+
+
+class TelevisionGenreCategoryOut(CategoryOutBase):
+    pass
+
+
 class GenreMediaTypesPatch(BaseModel):
     is_music: bool | None = None
     is_movie: bool | None = None
     is_game: bool | None = None
+    is_television: bool | None = None

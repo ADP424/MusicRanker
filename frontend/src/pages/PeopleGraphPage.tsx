@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api/client";
 import type { CastRole, GraphPerson, PersonGraph } from "../api/types";
-import { CAST_ROLES } from "../api/types";
+import { CAST_ROLE_LABELS, CAST_ROLES } from "../api/types";
 
 // ─── Constants ─────────────────────────────────────────────────────────────
 
@@ -16,16 +16,6 @@ const ARTIST_COLOR = "#6ba06b";
 const EDGE_COLOR_DEFAULT = "rgba(150,150,150,0.18)";
 const EDGE_COLOR_HL = "rgba(150,150,150,0.75)";
 const EDGE_COLOR_DIM = "rgba(150,150,150,0.05)";
-
-// ─── Role label ────────────────────────────────────────────────────────────
-
-const ROLE_LABELS: Record<CastRole, string> = {
-  director: "Director",
-  composer: "Composer",
-  lead_actor: "Lead actor",
-  actor: "Actor",
-  cameo_actor: "Cameo Actor",
-};
 
 // ─── Filters ───────────────────────────────────────────────────────────────
 
@@ -605,7 +595,7 @@ export function PeopleGraphPage() {
               {CAST_ROLES.filter((r) => existingRoles.has(r)).map((role) => (
                 <label key={role} style={{ display: "flex", alignItems: "center", gap: "0.4rem", cursor: "pointer", opacity: 0.85 }}>
                   <input type="checkbox" checked={filterMovieRoles.has(role)} onChange={() => toggleRole(role)} />
-                  {ROLE_LABELS[role]}
+                  {CAST_ROLE_LABELS[role]}
                 </label>
               ))}
               {filterMovieRoles.size > 0 && (

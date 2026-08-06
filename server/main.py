@@ -22,7 +22,11 @@ from .routers import (
     movies,
     persons,
     stats,
+    television,
+    television_genres,
+    television_stats,
     tmdb_import,
+    tmdb_tv_import,
 )
 from .snapshot import save_snapshot
 
@@ -54,8 +58,13 @@ app.include_router(movie_genres.router)
 app.include_router(movies.router)
 app.include_router(movie_stats.router)
 app.include_router(movie_person_scan.router)
+app.include_router(television_genres.category_router)
+app.include_router(television_genres.router)
+app.include_router(television.router)
+app.include_router(television_stats.router)
 app.include_router(persons.router)
 app.include_router(tmdb_import.router)
+app.include_router(tmdb_tv_import.router)
 app.include_router(game_genres.category_router)
 app.include_router(game_genres.router)
 app.include_router(game_platforms.category_router)

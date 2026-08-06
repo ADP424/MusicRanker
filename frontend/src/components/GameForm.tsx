@@ -241,7 +241,7 @@ export function GameForm(props: {
           <input required value={f.name} onChange={txt("name")} />
         </label>
 
-        <label>English name <span style={{ opacity: 0.5, fontWeight: "normal", fontSize: 12 }}>(optional)</span>
+        <label><span className="label-text">English name <span className="info-icon" title="optional">ⓘ</span></span>
           <input value={f.name_en} onChange={txt("name_en")} />
         </label>
 
@@ -265,7 +265,7 @@ export function GameForm(props: {
           <input type="url" value={f.play_link} onChange={txt("play_link")} />
         </label>
 
-        <label>Notes
+        <label><span className="label-text">Notes <span className="info-icon" title="optional">ⓘ</span></span>
           <textarea rows={3} value={f.notes} onChange={txt("notes")} />
         </label>
 

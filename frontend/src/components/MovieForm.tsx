@@ -4,20 +4,12 @@ import { useEffect, useMemo, useState } from "react";
 import { api } from "../api/client";
 import { useAlbumIndex, usePeople } from "../api/hooks";
 import type { AlbumIndex, CastRole, Movie, MovieBody, Person } from "../api/types";
-import { CAST_ROLES } from "../api/types";
+import { CAST_ROLES, CAST_ROLE_LABELS } from "../api/types";
 import { MovieGenreChooser } from "./MovieGenreChooser";
 import { PersonForm } from "./PersonForm";
-import { matchesPersonSearch, PERSON_SEARCH_FIELDS, type PersonSearchField } from "./PersonPicker";
+import { matchesPersonSearch, PersonPicker, type PersonSearchField } from "./PersonPicker";
 
 const orNull = (s: string) => (s.trim() === "" ? null : s);
-
-const ROLE_LABEL: Record<CastRole, string> = {
-  director:   "Director",
-  composer:   "Composer",
-  actor:       "Actor",
-  lead_actor:  "Lead Actor",
-  cameo_actor: "Cameo Actor",
-};
 
 // A pending person link: person_id + role
 type PendingLink = { personId: number; role: CastRole };
@@ -191,10 +183,10 @@ export function MovieForm(props: {
 
   // Grouped summary of selected persons
   const selectedByRole = useMemo(() => {
-    const map: Record<CastRole, string[]> = { director: [], composer: [], actor: [], lead_actor: [], cameo_actor: [] };
+    const map = Object.fromEntries(CAST_ROLES.map((r) => [r, [] as string[]])) as Record<CastRole, string[]>;
     for (const link of pendingLinks) {
       const p = allPeople.find((p) => p.id === link.personId);
-      if (p) map[link.role].push(p.name);
+      if (p) map[link.role]?.push(p.name);
     }
     return map;
   }, [pendingLinks, allPeople]);
@@ -226,7 +218,7 @@ export function MovieForm(props: {
           <input required value={f.name} onChange={txt("name")} />
         </label>
 
-        <label>English name <span style={{ opacity: 0.5, fontWeight: "normal", fontSize: 12 }}>(optional)</span>
+        <label><span className="label-text">English name <span className="info-icon" title="optional">ⓘ</span></span>
           <input value={f.name_en} onChange={txt("name_en")} />
         </label>
 
@@ -248,7 +240,7 @@ export function MovieForm(props: {
           </label>
         </div>
 
-        <label>Notes
+        <label><span className="label-text">Notes <span className="info-icon" title="optional">ⓘ</span></span>
           <textarea rows={3} value={f.notes} onChange={txt("notes")} />
         </label>
 
@@ -262,7 +254,7 @@ export function MovieForm(props: {
             <span className="collapsed-summary" onClick={() => setCastOpen(true)}>
               {pendingLinks.length > 0
                 ? CAST_ROLES.filter((r) => selectedByRole[r].length > 0).map((r) =>
-                    `${ROLE_LABEL[r]}: ${selectedByRole[r].join(", ")}`
+                    `${CAST_ROLE_LABELS[r]}: ${selectedByRole[r].join(", ")}`
                   ).join(" · ")
                 : "None selected"}
             </span>
@@ -280,7 +272,7 @@ export function MovieForm(props: {
                 <div style={{ marginBottom: "0.5rem", fontSize: "0.85rem" }}>
                   {CAST_ROLES.filter((r) => selectedByRole[r].length > 0).map((r) => (
                     <div key={r}>
-                      <strong>{ROLE_LABEL[r]}:</strong>{" "}
+                      <strong>{CAST_ROLE_LABELS[r]}:</strong>{" "}
                       {selectedByRole[r].map((name, i) => (
                         <span key={i}>
                           {i > 0 && ", "}
@@ -299,62 +291,20 @@ export function MovieForm(props: {
                 </div>
               )}
 
-              {/* Role selector */}
-              <div style={{ display: "flex", gap: "0.5rem", marginBottom: "0.5rem", flexWrap: "wrap" }}>
-                {CAST_ROLES.map((role) => (
-                  <label key={role} className={`chip${addRole === role ? " chip-active" : ""}`}
-                    onClick={() => setAddRole(role)} style={{ cursor: "pointer" }}>
-                    {ROLE_LABEL[role]}
-                  </label>
-                ))}
-              </div>
-
-              <div style={{ display: "flex", gap: "0.5rem", marginBottom: "0.4rem", flexWrap: "wrap" }}>
-                {PERSON_SEARCH_FIELDS.map((f) => (
-                  <label
-                    key={f}
-                    className={`chip${searchField === f ? " chip-active" : ""}`}
-                    onClick={() => setSearchField(f)}
-                    style={{ cursor: "pointer" }}
-                  >
-                    {f === "all" ? "All" : f === "person" ? "Person" : f === "artist" ? "Artist" : f === "movie" ? "Movie" : "Game"}
-                  </label>
-                ))}
-              </div>
-              <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", marginBottom: "0.4rem" }}>
-                <input
-                  className="genre-search"
-                  type="search"
-                  placeholder={
-                    searchField === "person" ? "Search by person name…" :
-                    searchField === "artist" ? "Search by artist name…" :
-                    searchField === "movie" ? "Search by movie name…" :
-                    searchField === "game" ? "Search by game name…" :
-                    "Search people, artists, movies, games…"
-                  }
-                  value={castSearch}
-                  onChange={(e) => setCastSearch(e.target.value)}
-                  style={{ margin: 0, flex: 1 }}
-                />
-                <button type="button" style={{ whiteSpace: "nowrap" }} onClick={() => setCreatingPerson(true)}>
-                  + New Person
-                </button>
-              </div>
-              <div className="chips">
-                {filteredPeople.map((p) => {
-                  const key = linkKey({ personId: p.id, role: addRole });
-                  return (
-                    <label key={p.id} className="chip">
-                      <input
-                        type="checkbox"
-                        checked={castLinks.has(key)}
-                        onChange={() => toggleLink(p, addRole)}
-                      />
-                      {p.name}
-                    </label>
-                  );
-                })}
-              </div>
+              <PersonPicker
+                roles={CAST_ROLES}
+                roleLabels={CAST_ROLE_LABELS}
+                activeRole={addRole}
+                onRole={setAddRole}
+                searchField={searchField}
+                onSearchField={setSearchField}
+                search={castSearch}
+                onSearch={setCastSearch}
+                onNewPerson={() => setCreatingPerson(true)}
+                people={filteredPeople}
+                isChecked={(p, role) => castLinks.has(linkKey({ personId: p.id, role }))}
+                onToggle={toggleLink}
+              />
             </>
           )}
         </fieldset>

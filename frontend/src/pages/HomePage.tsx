@@ -14,6 +14,10 @@ export function HomePage() {
           <span className="home-choice-icon">🎬</span>
           <span className="home-choice-label">Movies</span>
         </button>
+        <button className="home-choice" onClick={() => navigate("/television")}>
+          <span className="home-choice-icon">📺</span>
+          <span className="home-choice-label">Television</span>
+        </button>
         <button className="home-choice" onClick={() => navigate("/games")}>
           <span className="home-choice-icon">🎮</span>
           <span className="home-choice-label">Games</span>

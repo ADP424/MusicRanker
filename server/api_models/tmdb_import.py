@@ -14,8 +14,11 @@ class TmdbLookupIn(ORMSchema):
 class DbPersonMatchOut(ORMSchema):
     person_id: int
     person_name: str
-    has_movie_entries: bool
+    #: Has movies *or* TV credits — i.e. something the TMDB filmography can
+    #: corroborate. Identity is a person question, not a per-media one.
+    has_screen_entries: bool
     artist_summary: str
+    game_summary: str
 
 
 class TmdbPersonOut(ORMSchema):

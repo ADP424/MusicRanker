@@ -10,7 +10,7 @@ import { DupWarningBanner, useDupWarning } from "../hooks/useDupWarning";
 import { useExpandAll } from "../hooks/useExpandAll";
 import { useOptimisticDelete } from "../hooks/useOptimisticDelete";
 
-type PeopleSearchBy = "all" | "name" | "nationality" | "artist" | "movie";
+type PeopleSearchBy = "all" | "name" | "nationality" | "artist" | "movie" | "game" | "television";
 
 function PersonRow({ person }: { person: Person }) {
   const { data: artists = [] } = useArtists();
@@ -103,10 +103,16 @@ export function PeoplePage() {
         ) return true;
       }
       if (searchBy === "artist" || searchBy === "all") {
-        if (p.artist_names.some((n) => n.toLowerCase().includes(needle))) return true;
+        if ((p.artist_names ?? []).some((n) => n.toLowerCase().includes(needle))) return true;
       }
       if (searchBy === "movie" || searchBy === "all") {
-        if (p.movie_names.some((n) => n.toLowerCase().includes(needle))) return true;
+        if ((p.movie_names ?? []).some((n) => n.toLowerCase().includes(needle))) return true;
+      }
+      if (searchBy === "game" || searchBy === "all") {
+        if ((p.game_names ?? []).some((n) => n.toLowerCase().includes(needle))) return true;
+      }
+      if (searchBy === "television" || searchBy === "all") {
+        if ((p.television_names ?? []).some((n) => n.toLowerCase().includes(needle))) return true;
       }
       return false;
     });
@@ -141,7 +147,7 @@ export function PeoplePage() {
           onChange={(e) => setSearchQ(e.target.value)}
         />
         <div className="search-by-chips">
-          {(["all", "name", "nationality", "artist", "movie"] as PeopleSearchBy[]).map((opt) => (
+          {(["all", "name", "nationality", "artist", "movie", "game", "television"] as PeopleSearchBy[]).map((opt) => (
             <button
               key={opt}
               className={`chip${searchBy === opt ? " chip-active" : ""}`}

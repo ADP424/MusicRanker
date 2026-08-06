@@ -68,7 +68,7 @@ export function ArtistForm(props: {
           <input required value={f.name} onChange={bind("name")} />
         </label>
 
-        <label>English name <span style={{ opacity: 0.5, fontWeight: "normal", fontSize: 12 }}>(optional)</span>
+        <label><span className="label-text">English name <span className="info-icon" title="optional">ⓘ</span></span>
           <input value={f.name_en} onChange={bind("name_en")} />
         </label>
 
@@ -116,12 +116,12 @@ export function ArtistForm(props: {
           )}
         </fieldset>
 
-        <label>Notes
+        <label><span className="label-text">Notes <span className="info-icon" title="optional">ⓘ</span></span>
           <textarea rows={3} value={f.notes} onChange={bind("notes")} />
         </label>
 
         <footer>
-          <button type="button" onClick={onClose}>Cancel</button>
+          <button type="button" onClick={() => onClose()}>Cancel</button>
           <button type="submit" disabled={save.isPending}>
             {editing ? "Save" : "Create"}
           </button>

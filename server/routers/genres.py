@@ -40,7 +40,7 @@ category_router = make_category_router(
 @router.patch("/{gid}/media-types", response_model=MusicGenreOut)
 def update_media_types(gid: int, body: GenreMediaTypesPatch, db: Session = Depends(get_database)):
     """Cross-domain: toggle which media types a genre applies to. Not scoped
-    to this router's own ``is_music`` flag — this is the one place all three
+    to this router's own ``is_music`` flag — this is the one place all four
     flags are editable together."""
     genre = db.get(Genre, gid)
     if not genre:
@@ -51,7 +51,8 @@ def update_media_types(gid: int, body: GenreMediaTypesPatch, db: Session = Depen
     is_music = updates.get("is_music", genre.is_music)
     is_movie = updates.get("is_movie", genre.is_movie)
     is_game = updates.get("is_game", genre.is_game)
-    if not (is_music or is_movie or is_game):
+    is_television = updates.get("is_television", genre.is_television)
+    if not (is_music or is_movie or is_game or is_television):
         raise HTTPException(422, "Genre must apply to at least one media type")
     db.flush()
     genre.parent_ids = [p.id for p in genre.parents]

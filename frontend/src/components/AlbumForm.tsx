@@ -144,7 +144,7 @@ export function AlbumForm(props: {
           <input required value={f.name} onChange={txt("name")} />
         </label>
 
-        <label>English name <span style={{ opacity: 0.5, fontWeight: "normal", fontSize: 12 }}>(optional)</span>
+        <label><span className="label-text">English name <span className="info-icon" title="optional">ⓘ</span></span>
           <input value={f.name_en} onChange={txt("name_en")} />
         </label>
 
@@ -164,7 +164,7 @@ export function AlbumForm(props: {
         </div>
 
         <div className="grid-2">
-          <label>Alias <small>(if released under a different name)</small>
+          <label><span className="label-text">Alias <span className="info-icon" title="if released under a different name">ⓘ</span></span>
             <input value={f.alias} onChange={txt("alias")} />
           </label>
           <label>Alias link
@@ -183,7 +183,7 @@ export function AlbumForm(props: {
           </label>
         </div>
 
-        <label>Notes
+        <label><span className="label-text">Notes <span className="info-icon" title="optional">ⓘ</span></span>
           <textarea rows={3} value={f.notes} onChange={txt("notes")} />
         </label>
 
@@ -248,7 +248,7 @@ export function AlbumForm(props: {
         </fieldset>
 
         <footer>
-          <button type="button" onClick={onClose}>Cancel</button>
+          <button type="button" onClick={() => onClose()}>Cancel</button>
           <button type="submit" disabled={save.isPending}>
             {editing ? "Save" : "Create"}
           </button>

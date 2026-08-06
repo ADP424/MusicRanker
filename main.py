@@ -11,6 +11,7 @@ Unix) shuts both down cleanly.
 import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).parent
@@ -49,7 +50,7 @@ def main() -> None:
     try:
         # Wait until either process exits (e.g. crash or user closes it).
         while all(p.poll() is None for p in procs):
-            pass
+            time.sleep(0.2)
     except KeyboardInterrupt:
         pass
     finally:

@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import {
-  Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer,
+  Bar, BarChart, CartesianGrid, ResponsiveContainer,
   Scatter, ScatterChart, Tooltip, XAxis, YAxis,
 } from "recharts";
 

@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, NavLink, useParams } from "react-router-dom";
 
 import { AlbumForm } from "../components/AlbumForm";
 import { ArtistForm } from "../components/ArtistForm";
@@ -285,6 +285,11 @@ export function ArtistDetailPage() {
         </div>
       </header>
 
+      <div className="page-tabs">
+        <NavLink to={`/music/artists/${aid}`} end>Overview</NavLink>
+        <NavLink to={`/music/artists/${aid}/rank`}>Rank Albums</NavLink>
+      </div>
+
       {dupWarning && (
         <div className="dup-warning">
           <span>{dupWarning}</span>
@@ -461,8 +466,7 @@ export function ArtistDetailPage() {
               )}
             </span>
             <span className="meta">
-              {a.release_year} · {Math.floor(a.runtime_seconds / 60)}:
-              {String(a.runtime_seconds % 60).padStart(2, "0")}
+              {a.release_year} · {fmtRuntime(a.runtime_seconds)}
             </span>
             <span className="listens-ctrl">
               <button

@@ -11,6 +11,8 @@ from ..api_models.person import (
     PersonArtistRef,
     PersonGameRoleRef,
     PersonMovieRoleRef,
+    PersonTelevisionEpisodeRoleRef,
+    PersonTelevisionRoleRef,
 )
 from ..database import get_database
 from ..database_models import Artist, ArtistPerson, BandRole, Person
@@ -22,6 +24,23 @@ def _get(db: Session, pid: int) -> Person:
     if p := db.get(Person, pid):
         return p
     raise HTTPException(404, "Person not found")
+
+
+def _television_show_names(person: Person) -> list[str]:
+    """Shows this person is credited on, whether at show level or through any
+    of that show's episodes (deduplicated, stable order)."""
+    names: list[str] = []
+    seen: set[int] = set()
+    for link in person.television_links:
+        if link.show_id not in seen:
+            seen.add(link.show_id)
+            names.append(link.show.name)
+    for link in person.television_episode_links:
+        show = link.episode.show
+        if show.id not in seen:
+            seen.add(show.id)
+            names.append(show.name)
+    return names
 
 
 def _build_out(person: Person) -> PersonOut:
@@ -36,6 +55,7 @@ def _build_out(person: Person) -> PersonOut:
         artist_names=[link.artist.name for link in person.artist_links],
         movie_names=[link.movie.name for link in person.movie_links],
         game_names=[link.game.name for link in person.game_links],
+        television_names=_television_show_names(person),
     )
 
 
@@ -127,6 +147,30 @@ def get_person_detail(pid: int, db: Session = Depends(get_database)):
         ],
         key=lambda r: r.game_name,
     )
+    television_roles = sorted(
+        [
+            PersonTelevisionRoleRef(
+                show_id=link.show.id,
+                show_name=link.show.name,
+                role=link.role.value,
+            )
+            for link in person.television_links
+        ],
+        key=lambda r: r.show_name,
+    )
+    television_episode_roles = sorted(
+        [
+            PersonTelevisionEpisodeRoleRef(
+                episode_id=link.episode.id,
+                episode_name=link.episode.name,
+                show_id=link.episode.show.id,
+                show_name=link.episode.show.name,
+                role=link.role.value,
+            )
+            for link in person.television_episode_links
+        ],
+        key=lambda r: (r.show_name, r.episode_name),
+    )
     return PersonDetail(
         id=person.id,
         name=person.name,
@@ -137,6 +181,8 @@ def get_person_detail(pid: int, db: Session = Depends(get_database)):
         artists=artists,
         movie_roles=movie_roles,
         game_roles=game_roles,
+        television_roles=television_roles,
+        television_episode_roles=television_episode_roles,
     )
 
 

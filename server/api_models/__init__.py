@@ -5,6 +5,7 @@ from .album import (
     AlbumPatch,
     AlbumSoundtrackGameRef,
     AlbumSoundtrackMovieRef,
+    AlbumSoundtrackTelevisionRef,
 )
 from .artist import ArtistIn, ArtistOut, ArtistPatch
 from .base import LinkBody, ORMSchema, PositionBody
@@ -40,6 +41,10 @@ from .genre import (
     MovieGenreCategoryPatch,
     MovieGenreOut,
     MusicGenreOut,
+    TelevisionGenreCategoryIn,
+    TelevisionGenreCategoryOut,
+    TelevisionGenreCategoryPatch,
+    TelevisionGenreOut,
 )
 from .movie import (
     MovieIn,
@@ -57,6 +62,22 @@ from .person import (
     PersonIn,
     PersonOut,
     PersonPatch,
+    PersonTelevisionEpisodeRoleRef,
+    PersonTelevisionRoleRef,
+)
+from .television import (
+    TelevisionEpisodeIn,
+    TelevisionEpisodeIndex,
+    TelevisionEpisodeOut,
+    TelevisionEpisodePatch,
+    TelevisionPersonRef,
+    TelevisionPropagateIn,
+    TelevisionPropagateOut,
+    TelevisionShowIn,
+    TelevisionShowIndex,
+    TelevisionShowOut,
+    TelevisionShowPatch,
+    TelevisionSoundtrackAlbumRef,
 )
 
 __all__ = [
@@ -79,6 +100,7 @@ __all__ = [
     "AlbumOut",
     "AlbumSoundtrackGameRef",
     "AlbumSoundtrackMovieRef",
+    "AlbumSoundtrackTelevisionRef",
     "MovieIn",
     "MovieIndex",
     "MoviePatch",
@@ -89,6 +111,22 @@ __all__ = [
     "MovieGenreCategoryIn",
     "MovieGenreCategoryPatch",
     "MovieGenreCategoryOut",
+    "TelevisionShowIn",
+    "TelevisionShowPatch",
+    "TelevisionShowOut",
+    "TelevisionShowIndex",
+    "TelevisionEpisodeIn",
+    "TelevisionEpisodePatch",
+    "TelevisionEpisodeOut",
+    "TelevisionEpisodeIndex",
+    "TelevisionPersonRef",
+    "TelevisionSoundtrackAlbumRef",
+    "TelevisionPropagateIn",
+    "TelevisionPropagateOut",
+    "TelevisionGenreOut",
+    "TelevisionGenreCategoryIn",
+    "TelevisionGenreCategoryPatch",
+    "TelevisionGenreCategoryOut",
     "GameIn",
     "GameIndex",
     "GamePatch",
@@ -110,6 +148,8 @@ __all__ = [
     "PersonOut",
     "PersonDetail",
     "PersonGameRoleRef",
+    "PersonTelevisionRoleRef",
+    "PersonTelevisionEpisodeRoleRef",
     "GraphEdge",
     "PersonGraphOut",
 ]

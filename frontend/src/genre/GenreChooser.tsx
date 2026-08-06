@@ -22,7 +22,7 @@ export function GenreChooser(props: {
   onChange: (next: Set<number>) => void;
   /** If true, only a single genre can be selected (set of 0 or 1). */
   single?: boolean;
-  /** Exclude this genre id from the list (e.g. when editing a genre's own parents). */
+  /** Exclude this genre *and its descendants* (used for a genre's own parent picker). */
   excludeId?: number;
 }) {
   const { domain, selected, onChange, single, excludeId } = props;
@@ -44,12 +44,44 @@ export function GenreChooser(props: {
     queryFn: () => api.get<GenreLike[]>(`${domain.apiBase}/${parentFilter}/descendants`),
     enabled: parentFilter !== null,
   });
-  const descendantIds = new Set(descendants.map((g) => g.id));
+  // A root is part of its own scope — otherwise filtering by "Rock" makes
+  // "Rock" itself unselectable. (Memoised: a fresh Set each render would
+  // invalidate the `candidates` memo on every keystroke.)
+  const scopeIds = useMemo(
+    () => (parentFilter === null ? null : new Set<number>([parentFilter, ...descendants.map((g) => g.id)])),
+    [parentFilter, descendants],
+  );
 
   // A genre's "effective" categories are the union of categories carried by
   // its root ancestors (categories are only ever assigned to root entries).
   // Walk each genre's parent_ids up to its root(s) via BFS over allGenres.
   const genreById = useMemo(() => new Map(allGenres.map((g) => [g.id, g])), [allGenres]);
+
+  // Nothing at or below `excludeId` may become its own ancestor. Excluding the
+  // whole subtree — not just the entry itself — keeps this picker in step with
+  // the server's cycle guard, so a selection can never come back as a 409.
+  const blockedIds = useMemo(() => {
+    if (excludeId === undefined) return null;
+    const childrenOf = new Map<number, number[]>();
+    for (const g of allGenres) {
+      for (const pid of g.parent_ids) {
+        const list = childrenOf.get(pid);
+        if (list) list.push(g.id);
+        else childrenOf.set(pid, [g.id]);
+      }
+    }
+    const blocked = new Set<number>([excludeId]);
+    const queue = [excludeId];
+    while (queue.length) {
+      const id = queue.pop()!;
+      for (const child of childrenOf.get(id) ?? []) {
+        if (blocked.has(child)) continue; // also terminates on already-cyclical data
+        blocked.add(child);
+        queue.push(child);
+      }
+    }
+    return blocked;
+  }, [excludeId, allGenres]);
   const effectiveCategoryIds = useMemo(() => {
     const cache = new Map<number, Set<number>>();
     function resolve(id: number, seen = new Set<number>()): Set<number> {
@@ -89,15 +121,15 @@ export function GenreChooser(props: {
   const candidates = useMemo(() => {
     return allGenres
       .filter((g) => {
-        if (g.id === excludeId) return false;
+        if (blockedIds?.has(g.id)) return false;
         if (needle && !g.name.toLowerCase().includes(needle) &&
             !g.synonyms?.some((s) => s.toLowerCase().includes(needle))) return false;
         if (categoryFilter !== null && !effectiveCategoryIds.get(g.id)?.has(categoryFilter)) return false;
-        if (parentFilter !== null && !descendantIds.has(g.id)) return false;
+        if (scopeIds !== null && !scopeIds.has(g.id)) return false;
         return true;
       })
       .sort((a, b) => (sortSnap.has(a.id) ? 0 : 1) - (sortSnap.has(b.id) ? 0 : 1));
-  }, [needle, categoryFilter, parentFilter, allGenres, excludeId, effectiveCategoryIds, descendantIds, sortSnap]);
+  }, [needle, categoryFilter, allGenres, blockedIds, effectiveCategoryIds, scopeIds, sortSnap]);
 
   function toggle(id: number, checked: boolean) {
     if (single) {

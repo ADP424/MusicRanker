@@ -1,9 +1,9 @@
 import type { Person } from "../api/types";
 
-export type PersonSearchField = "all" | "person" | "artist" | "movie" | "game";
+export type PersonSearchField = "all" | "person" | "artist" | "movie" | "game" | "television";
 
 export const PERSON_SEARCH_FIELDS: PersonSearchField[] = [
-  "all", "person", "artist", "movie", "game",
+  "all", "person", "artist", "movie", "game", "television",
 ];
 
 const FIELD_LABEL: Record<PersonSearchField, string> = {
@@ -12,14 +12,16 @@ const FIELD_LABEL: Record<PersonSearchField, string> = {
   artist: "Artist",
   movie: "Movie",
   game: "Game",
+  television: "TV",
 };
 
 const FIELD_PLACEHOLDER: Record<PersonSearchField, string> = {
-  all: "Search people, artists, movies, games…",
+  all: "Search people, artists, movies, games, TV shows…",
   person: "Search by person name…",
   artist: "Search by artist name…",
   movie: "Search by movie name…",
   game: "Search by game name…",
+  television: "Search by show name…",
 };
 
 /**
@@ -38,16 +40,18 @@ export function matchesPersonSearch(
   if (!q) return true;
   const hit = (s: string) => s.toLowerCase().includes(q);
   const nameHit = hit(p.name) || !!p.name_en?.toLowerCase().includes(q);
-  // `?? []` guards against a response cached by a build that predates game_names
+  // `?? []` guards against a response cached by a build that predates game_names/television_names
   const artistHit = (p.artist_names ?? []).some(hit);
   const movieHit = (p.movie_names ?? []).some(hit);
   const gameHit = (p.game_names ?? []).some(hit);
+  const televisionHit = (p.television_names ?? []).some(hit);
   switch (field) {
     case "person": return nameHit;
     case "artist": return artistHit;
     case "movie":  return movieHit;
     case "game":   return gameHit;
-    default:       return nameHit || artistHit || movieHit || gameHit;
+    case "television": return televisionHit;
+    default:       return nameHit || artistHit || movieHit || gameHit || televisionHit;
   }
 }
 
