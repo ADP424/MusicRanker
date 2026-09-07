@@ -1,43 +1,29 @@
 from __future__ import annotations
 
-from decimal import Decimal
-from typing import TYPE_CHECKING
-
-from sqlalchemy import CheckConstraint, ForeignKey, Index, Numeric, Text
+from sqlalchemy import ForeignKey, Index, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base
+from .mixins import Audited, GuildScoped, NormalizedNames, guild_unique
 from .nationality import nationality
 
-if TYPE_CHECKING:
-    from .album_artist import AlbumArtist
-    from .artist_person import ArtistPerson
 
-
-class Artist(Base):
+class Artist(GuildScoped, Audited, NormalizedNames, Base):
     __tablename__ = "artists"
-    __table_args__ = (
-        CheckConstraint("global_rank > 0", name="chk_artist_rank_positive"),
-        Index("idx_artists_primary_genre", "primary_genre"),
-    )
+    __table_args__ = (guild_unique("artists"), Index("idx_artists_guild_norm", "guild_id", "name_norm"))
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(Text)
     name_en: Mapped[str | None] = mapped_column(Text)
-    global_rank: Mapped[Decimal | None] = mapped_column(Numeric, unique=True)
-    discography_link: Mapped[str] = mapped_column(Text)
     birth_nationality: Mapped[str] = mapped_column(nationality)
     core_nationality: Mapped[str] = mapped_column(nationality)
+    # Plain FK, not composite: ON DELETE SET NULL on a composite would try to
+    # null `guild_id` too, which is NOT NULL. The router validates the guild.
     primary_genre: Mapped[int | None] = mapped_column(ForeignKey("genres.id", ondelete="SET NULL"))
     notes: Mapped[str | None] = mapped_column(Text)
 
-    album_links: Mapped[list[AlbumArtist]] = relationship(
-        "AlbumArtist",
-        back_populates="artist",
-        cascade="all, delete-orphan",
-    )
-    person_links: Mapped[list[ArtistPerson]] = relationship(
-        "ArtistPerson",
-        back_populates="artist",
-        cascade="all, delete-orphan",
-    )
+    album_links = relationship("AlbumArtist", back_populates="artist", cascade="all, delete-orphan",
+                               foreign_keys="AlbumArtist.artist_id")
+    person_links = relationship("ArtistPerson", back_populates="artist", cascade="all, delete-orphan",
+                                foreign_keys="ArtistPerson.artist_id")
+    links = relationship("ArtistLink", cascade="all, delete-orphan", order_by="ArtistLink.position")

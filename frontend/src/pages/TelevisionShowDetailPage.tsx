@@ -1,95 +1,99 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
-import { Link, NavLink, useParams } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 
 import { api } from "../api/client";
-import { useTelevisionGenres, usePeople } from "../api/hooks";
-import type { CastRole, Genre, TelevisionEpisode, TelevisionPersonRef, TelevisionShow, Person } from "../api/types";
-import { CAST_ROLE_LABELS, TV_SHOW_ROLES, hasActingCredit } from "../api/types";
+import {
+  useEntryMutations, useGuildApi, useRankedTelevisionEpisodes, useTelevisionGenres, useTelevisionShow,
+  useTelevisionShowEntry, useUpdateTelevisionShowEntry, usePeople,
+} from "../api/hooks";
+import { gk, rk } from "../api/keys";
+import type { CastRole, Genre, Person, TelevisionEpisode, TelevisionShow } from "../api/types";
+import { CAST_ROLE_LABELS, TV_SHOW_ROLES } from "../api/types";
 import { ConfirmDialog } from "../components/ConfirmDialog";
-import { TelevisionShowForm } from "../components/TelevisionShowForm";
-import { TelevisionEpisodeForm } from "../components/TelevisionEpisodeForm";
-import { TelevisionGenreChooser } from "../components/TelevisionGenreChooser";
-import { TmdbTelevisionEpisodeImportDialog } from "../components/TmdbTelevisionEpisodeImportDialog";
+import { LinksSection } from "../components/LinksSection";
+import { MemberPicker } from "../components/MemberPicker";
 import { PersonForm } from "../components/PersonForm";
 import { matchesPersonSearch, PersonPicker, type PersonSearchField } from "../components/PersonPicker";
 import { SortableList } from "../components/SortableList";
+import { TelevisionEpisodeForm } from "../components/TelevisionEpisodeForm";
+import { TelevisionShowForm } from "../components/TelevisionShowForm";
+import { TmdbTelevisionEpisodeImportDialog } from "../components/TmdbTelevisionEpisodeImportDialog";
+import { GenreChooser } from "../genre/GenreChooser";
+import { TELEVISION_GENRES } from "../genre/config";
+import { useCan } from "../guild/GuildProvider";
+import { BusyButton, InlineBusy, LoadingState, Spinner } from "../components/Spinner";
 
 function fmtRuntime(minutes: number) {
   const h = Math.floor(minutes / 60);
   const m = minutes % 60;
-  if (h > 0) return `${h}h ${m > 0 ? `${m}m` : ""}`.trim();
+  if (h > 0) return `${h}:${String(m).padStart(2, "0")}`;
   return `${m}m`;
 }
 
-// ── People section ─────────────────────────────────────────────────────────────
+type PendingLink = { personId: number; role: CastRole };
+function linkKey(l: PendingLink) { return `${l.personId}:${l.role}`; }
 
-function ShowPeopleSection({ show }: { show: TelevisionShow }) {
+// ── People section ──────────────────────────────────────────────────────────
+
+function ShowPeopleSection({ showId, show }: { showId: number; show: TelevisionShow }) {
   const qc = useQueryClient();
-  const { data: allPeople = [] } = usePeople();
+  const { guildId, base } = useGuildApi();
+  const canEdit = useCan("catalog_edit");
+  const { data: allPeople = [], isLoading: peopleLoading } = usePeople();
   const [editing, setEditing] = useState(false);
-  const [confirmUnlink, setConfirmUnlink] = useState<TelevisionPersonRef | null>(null);
-  const [castSearch, setCastSearch] = useState("");
-  const [searchField, setSearchField] = useState<PersonSearchField>("all");
-  const [addRole, setAddRole] = useState<CastRole>("creator");
   const [creatingPerson, setCreatingPerson] = useState(false);
   const [dupWarning, setDupWarning] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+  const [searchField, setSearchField] = useState<PersonSearchField>("all");
+  const [addRole, setAddRole] = useState<CastRole>("creator");
 
-  const [castKeys, setCastKeys] = useState<Set<string>>(
-    () => new Set(show.persons.map((p) => `${p.id}:${p.role}`))
-  );
+  const castKeys = useMemo(() => new Set(show.persons.map((p) => linkKey({ personId: p.id, role: p.role }))), [show.persons]);
 
-  useEffect(() => {
-    setCastKeys(new Set(show.persons.map((p) => `${p.id}:${p.role}`)));
-  }, [show.persons]);
+  const filteredPeople = useMemo(() => {
+    return allPeople
+      .filter((p) => matchesPersonSearch(p, searchField, search))
+      .sort((a, b) => {
+        const aKey = linkKey({ personId: a.id, role: addRole });
+        const bKey = linkKey({ personId: b.id, role: addRole });
+        return (castKeys.has(aKey) ? 0 : 1) - (castKeys.has(bKey) ? 0 : 1);
+      });
+  }, [search, searchField, allPeople, castKeys, addRole]);
 
-  const filteredPeople = useMemo(
-    () => allPeople.filter((p) => matchesPersonSearch(p, searchField, castSearch)),
-    [castSearch, searchField, allPeople],
-  );
+  const invalidate = () => qc.invalidateQueries({ queryKey: gk(guildId, "television", "shows", showId) });
 
   const link = useMutation({
-    mutationFn: ({ personId, role }: { personId: number; role: CastRole }) =>
-      api.put(`/television/shows/${show.id}/persons/${personId}/${role}`),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["television", "shows", show.id] });
-      qc.invalidateQueries({ queryKey: ["television", "ranked"] });
-    },
+    mutationFn: ({ pid, role }: { pid: number; role: CastRole }) =>
+      api.put(`${base}/television/shows/${showId}/persons/${pid}/${role}`),
+    onSuccess: invalidate,
   });
-
   const unlink = useMutation({
-    mutationFn: ({ personId, role }: { personId: number; role: CastRole }) =>
-      api.delete(`/television/shows/${show.id}/persons/${personId}/${role}`),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["television", "shows", show.id] });
-      qc.invalidateQueries({ queryKey: ["television", "ranked"] });
-    },
+    mutationFn: ({ pid, role }: { pid: number; role: CastRole }) =>
+      api.delete(`${base}/television/shows/${showId}/persons/${pid}/${role}`),
+    onSuccess: invalidate,
   });
 
   function toggleLink(person: Person, role: CastRole) {
-    const key = `${person.id}:${role}`;
-    if (castKeys.has(key)) {
-      const ref = show.persons.find((p) => p.id === person.id && p.role === role);
-      if (ref) setConfirmUnlink(ref);
-    } else {
-      link.mutate({ personId: person.id, role });
-      setCastKeys((prev) => new Set([...prev, key]));
-    }
+    const key = linkKey({ personId: person.id, role });
+    if (castKeys.has(key)) unlink.mutate({ pid: person.id, role });
+    else link.mutate({ pid: person.id, role });
   }
 
-  const byRole: Record<string, TelevisionPersonRef[]> = {};
-  for (const p of show.persons) {
-    if (!byRole[p.role]) byRole[p.role] = [];
-    byRole[p.role].push(p);
-  }
+  const byRole: Partial<Record<CastRole, TelevisionShow["persons"]>> = {};
+  for (const p of show.persons) (byRole[p.role] ??= []).push(p);
 
   return (
     <section style={{ marginBottom: "1.5rem" }}>
       <header className="page-head" style={{ marginBottom: "0.5rem" }}>
-        <h2 style={{ margin: 0 }}>People</h2>
-        <button style={{ fontSize: 12 }} onClick={() => setEditing((o) => !o)}>
-          {editing ? "Done" : "Edit"}
-        </button>
+        <span className="inline">
+          <h2 style={{ margin: 0 }}>People</h2>
+          {(link.isPending || unlink.isPending) && <InlineBusy label="Saving…" />}
+        </span>
+        {canEdit && (
+          <button style={{ fontSize: 12 }} onClick={() => setEditing((o) => !o)}>
+            {editing ? "Done" : "Edit"}
+          </button>
+        )}
       </header>
 
       {editing && (
@@ -100,7 +104,6 @@ function ShowPeopleSection({ show }: { show: TelevisionShow }) {
               <button className="icon" onClick={() => setDupWarning(null)}>✕</button>
             </div>
           )}
-
           <div style={{ marginBottom: "0.75rem" }}>
             <PersonPicker
               roles={TV_SHOW_ROLES}
@@ -109,12 +112,14 @@ function ShowPeopleSection({ show }: { show: TelevisionShow }) {
               onRole={setAddRole}
               searchField={searchField}
               onSearchField={setSearchField}
-              search={castSearch}
-              onSearch={setCastSearch}
+              search={search}
+              onSearch={setSearch}
               onNewPerson={() => setCreatingPerson(true)}
               people={filteredPeople}
-              isChecked={(p, role) => castKeys.has(`${p.id}:${role}`)}
+              isChecked={(p, role) => castKeys.has(linkKey({ personId: p.id, role }))}
               onToggle={toggleLink}
+              loading={peopleLoading}
+              busy={link.isPending || unlink.isPending}
             />
           </div>
         </>
@@ -123,23 +128,14 @@ function ShowPeopleSection({ show }: { show: TelevisionShow }) {
       {show.persons.length > 0 ? (
         TV_SHOW_ROLES.filter((r) => byRole[r]?.length).map((role) => (
           <div key={role} style={{ marginBottom: "0.75rem" }}>
-            <div className="detail-label" style={{ marginBottom: "0.25rem" }}>
-              {CAST_ROLE_LABELS[role]}
-            </div>
+            <div className="detail-label" style={{ marginBottom: "0.25rem" }}>{CAST_ROLE_LABELS[role]}</div>
             <ul className="sortable plain-list">
-              {byRole[role].map((p) => (
+              {byRole[role]!.map((p) => (
                 <li key={`${p.id}:${p.role}`} className="sortable-item">
-                  <div className="row" style={{ gridTemplateColumns: "1fr auto" }}>
-                    <Link className="name" to={`/people/${p.id}`}>
+                  <div className="row" style={{ gridTemplateColumns: "1fr" }}>
+                    <Link className="name" to={`/g/${guildId}/people/${p.id}`}>
                       {p.name}{p.name_en && <span style={{ opacity: 0.6 }}> ({p.name_en})</span>}
                     </Link>
-                    {editing && (
-                      <button
-                        className="icon"
-                        title="Remove"
-                        onClick={() => setConfirmUnlink(p)}
-                      >✕</button>
-                    )}
                   </div>
                 </li>
               ))}
@@ -150,22 +146,6 @@ function ShowPeopleSection({ show }: { show: TelevisionShow }) {
         <p style={{ opacity: 0.5, margin: "0.25rem 0 0" }}>No people linked.</p>
       )}
 
-      {confirmUnlink && (
-        <ConfirmDialog
-          message={`Remove "${confirmUnlink.name}" (${CAST_ROLE_LABELS[confirmUnlink.role]}) from this show?`}
-          onConfirm={() => {
-            unlink.mutate({ personId: confirmUnlink.id, role: confirmUnlink.role });
-            setCastKeys((prev) => {
-              const next = new Set(prev);
-              next.delete(`${confirmUnlink!.id}:${confirmUnlink!.role}`);
-              return next;
-            });
-            setConfirmUnlink(null);
-          }}
-          onCancel={() => setConfirmUnlink(null)}
-        />
-      )}
-
       {creatingPerson && (
         <div className="modal-backdrop" onClick={() => setCreatingPerson(false)}>
           <div onClick={(e) => e.stopPropagation()}>
@@ -173,9 +153,8 @@ function ShowPeopleSection({ show }: { show: TelevisionShow }) {
               onClose={(savedName, savedId) => {
                 setCreatingPerson(false);
                 if (savedId != null) {
-                  qc.invalidateQueries({ queryKey: ["people"] });
-                  link.mutate({ personId: savedId, role: addRole });
-                  setCastKeys((prev) => new Set([...prev, `${savedId}:${addRole}`]));
+                  qc.invalidateQueries({ queryKey: gk(guildId, "people") });
+                  link.mutate({ pid: savedId, role: addRole });
                 }
                 if (savedName != null) {
                   const nameLower = savedName.toLowerCase();
@@ -191,54 +170,38 @@ function ShowPeopleSection({ show }: { show: TelevisionShow }) {
   );
 }
 
-// ── Genres section ─────────────────────────────────────────────────────────────
+// ── Genres section ───────────────────────────────────────────────────────────
 
-function GenresSection({ show }: { show: TelevisionShow }) {
+function ShowGenresSection({ showId, show }: { showId: number; show: TelevisionShow }) {
   const qc = useQueryClient();
+  const { guildId, base } = useGuildApi();
+  const canEdit = useCan("catalog_edit");
   const [editing, setEditing] = useState(false);
   const [confirmUnlink, setConfirmUnlink] = useState<Genre | null>(null);
   const { data: allGenres = [] } = useTelevisionGenres();
 
-  const { data: showGenres = [] } = useQuery({
-    queryKey: ["television", "shows", show.id, "genres"],
-    queryFn: () => api.get<Genre[]>(`/television/shows/${show.id}/genres`),
-  });
-
   const [genreIds, setGenreIds] = useState<Set<number>>(new Set());
-  useEffect(() => {
-    setGenreIds(new Set(showGenres.map((g) => g.id)));
-  }, [showGenres]);
+  useEffect(() => { setGenreIds(new Set(show.genre_ids)); }, [show.genre_ids]);
 
   const genreMap = Object.fromEntries(allGenres.map((g) => [g.id, g]));
+  const showGenres = show.genre_ids.map((id) => genreMap[id]).filter(Boolean);
 
   const addGenre = useMutation({
-    mutationFn: (gid: number) => api.put(`/television/shows/${show.id}/genres/${gid}`),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["television", "shows", show.id, "genres"] });
-      qc.invalidateQueries({ queryKey: ["television", "shows", show.id] });
-    },
+    mutationFn: (gid: number) => api.put(`${base}/television/shows/${showId}/genres/${gid}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: gk(guildId, "television") }),
   });
-
   const removeGenre = useMutation({
-    mutationFn: (gid: number) => api.delete(`/television/shows/${show.id}/genres/${gid}`),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["television", "shows", show.id, "genres"] });
-      qc.invalidateQueries({ queryKey: ["television", "shows", show.id] });
-    },
+    mutationFn: (gid: number) => api.delete(`${base}/television/shows/${showId}/genres/${gid}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: gk(guildId, "television") }),
   });
 
   function handleChange(next: Set<number>) {
     const prev = genreIds;
-    for (const id of next) {
-      if (!prev.has(id)) addGenre.mutate(id);
-    }
+    for (const id of next) if (!prev.has(id)) addGenre.mutate(id);
     for (const id of prev) {
       if (!next.has(id)) {
         const g = genreMap[id];
-        if (g) {
-          setConfirmUnlink(g);
-          return;
-        }
+        if (g) { setConfirmUnlink(g); return; }
       }
     }
     setGenreIds(next);
@@ -247,15 +210,20 @@ function GenresSection({ show }: { show: TelevisionShow }) {
   return (
     <section style={{ marginBottom: "1.5rem" }}>
       <header className="page-head" style={{ marginBottom: "0.5rem" }}>
-        <h2 style={{ margin: 0 }}>Genres</h2>
-        <button style={{ fontSize: 12 }} onClick={() => setEditing((o) => !o)}>
-          {editing ? "Done" : "Edit"}
-        </button>
+        <span className="inline">
+          <h2 style={{ margin: 0 }}>Genres</h2>
+          {(addGenre.isPending || removeGenre.isPending) && <InlineBusy label="Saving…" />}
+        </span>
+        {canEdit && (
+          <button style={{ fontSize: 12 }} onClick={() => setEditing((o) => !o)}>
+            {editing ? "Done" : "Edit"}
+          </button>
+        )}
       </header>
 
       {editing && (
         <div style={{ marginBottom: "0.75rem" }}>
-          <TelevisionGenreChooser selected={genreIds} onChange={handleChange} />
+          <GenreChooser domain={TELEVISION_GENRES} selected={genreIds} onChange={handleChange} />
         </div>
       )}
 
@@ -264,7 +232,7 @@ function GenresSection({ show }: { show: TelevisionShow }) {
           {showGenres.map((g) => (
             <li key={g.id} className="sortable-item">
               <div className="row" style={{ gridTemplateColumns: "1fr" }}>
-                <Link className="name" to={`/television/genres/${g.id}`}>{g.name}</Link>
+                <Link className="name" to={`/g/${guildId}/television/genres/${g.id}`}>{g.name}</Link>
               </div>
             </li>
           ))}
@@ -276,14 +244,11 @@ function GenresSection({ show }: { show: TelevisionShow }) {
       {confirmUnlink && (
         <ConfirmDialog
           message={`Remove genre "${confirmUnlink.name}" from this show?`}
+          busy={removeGenre.isPending}
           onConfirm={() => {
-            removeGenre.mutate(confirmUnlink.id);
-            setGenreIds((prev) => {
-              const next = new Set(prev);
-              next.delete(confirmUnlink!.id);
-              return next;
-            });
-            setConfirmUnlink(null);
+            const id = confirmUnlink.id;
+            setGenreIds((prev) => { const next = new Set(prev); next.delete(id); return next; });
+            removeGenre.mutate(id, { onSettled: () => setConfirmUnlink(null) });
           }}
           onCancel={() => setConfirmUnlink(null)}
         />
@@ -292,162 +257,300 @@ function GenresSection({ show }: { show: TelevisionShow }) {
   );
 }
 
-// ── Episodes section ───────────────────────────────────────────────────────────
+// ── My list section ──────────────────────────────────────────────────────────
+// Shows carry only personal notes — watch counts live on episodes, not the show.
 
-function EpisodesSection({ show }: { show: TelevisionShow }) {
+function MyShowListSection({ showId }: { showId: number }) {
+  const canRank = useCan("rank");
+  const { data: entry, isLoading } = useTelevisionShowEntry(showId);
+  const update = useUpdateTelevisionShowEntry(showId);
+  const entryMutations = useEntryMutations("television/shows");
+  const [editing, setEditing] = useState(false);
+  const [notes, setNotes] = useState("");
+  const [confirmRemove, setConfirmRemove] = useState(false);
+
+  useEffect(() => {
+    if (entry) setNotes(entry.notes ?? "");
+  }, [entry]);
+
+  if (!canRank) return null;
+  const saving = update.isPending || entryMutations.add.isPending || entryMutations.remove.isPending;
+
+  return (
+    <section style={{ marginBottom: "1.5rem" }}>
+      <header className="page-head" style={{ marginBottom: "0.5rem" }}>
+        <span className="inline">
+          <h2 style={{ margin: 0 }}>My List</h2>
+          {saving && <InlineBusy label="Saving…" />}
+        </span>
+        {entry && (
+          <button style={{ fontSize: 12 }} onClick={() => setEditing((o) => !o)}>
+            {editing ? "Done" : "Edit"}
+          </button>
+        )}
+      </header>
+
+      {isLoading ? (<LoadingState compact />) : !entry ? (
+        <p style={{ opacity: 0.5, margin: "0.25rem 0 0" }}>
+          Not in your list. <BusyButton busy={entryMutations.add.isPending} busyLabel="Adding…"
+                                        onClick={() => entryMutations.add.mutate(showId)}>+ Add to my list</BusyButton>
+        </p>
+      ) : editing ? (
+        <div className="detail-section-form">
+          <label>My notes
+            <textarea rows={3} value={notes} onChange={(e) => setNotes(e.target.value)} />
+          </label>
+          <div style={{ marginTop: "0.5rem", display: "flex", gap: "0.5rem" }}>
+            <BusyButton busy={update.isPending} busyLabel="Saving…"
+                        onClick={() => update.mutate({ notes: notes.trim() === "" ? null : notes })}>Save notes</BusyButton>
+            <button className="danger" onClick={() => setConfirmRemove(true)}>✕ Remove from my list</button>
+          </div>
+        </div>
+      ) : (
+        entry.notes
+          ? <div className="detail-tags"><span className="detail-label">My notes</span><span>{entry.notes}</span></div>
+          : <p style={{ opacity: 0.5, margin: "0.25rem 0 0" }}>No personal notes yet.</p>
+      )}
+
+      {confirmRemove && (
+        <ConfirmDialog
+          message="Remove this show from your list? Your personal notes for it will be lost. (Your episode rankings are separate and won't be affected.)"
+          confirmLabel="Remove"
+          busy={entryMutations.remove.isPending}
+          onConfirm={() => entryMutations.remove.mutate(showId, { onSettled: () => { setConfirmRemove(false); setEditing(false); } })}
+          onCancel={() => setConfirmRemove(false)}
+        />
+      )}
+    </section>
+  );
+}
+
+// ── Main page ──────────────────────────────────────────────────────────────────
+
+export function TelevisionShowDetailPage() {
+  const { id } = useParams<{ id: string }>();
+  const sid = Number(id);
   const qc = useQueryClient();
-  const key = ["television", "shows", show.id];
-  const [editing, setEditing] = useState<{ episode: TelevisionEpisode } | "new" | null>(null);
-  const [confirmDelete, setConfirmDelete] = useState<TelevisionEpisode | null>(null);
-  const [expandedIds, setExpandedIds] = useState<Set<number>>(new Set());
-  // `null` = closed; `{}` = new episode; `{ episode }` = import credits into it
-  const [tmdbImport, setTmdbImport] = useState<{ episode?: TelevisionEpisode } | null>(null);
+  const { guildId, userId: me, base } = useGuildApi();
+  const canEdit = useCan("catalog_edit");
+  const canDelete = useCan("catalog_delete");
 
-  const move = useMutation({
-    mutationFn: (v: { id: number; position: number }) =>
-      api.put(`/television/episodes/${v.id}/position`, { position: v.position }),
-    onSettled: () => qc.invalidateQueries({ queryKey: key }),
+  const [editing, setEditing] = useState<{ episode: TelevisionEpisode } | "new" | null>(null);
+  const [editingShow, setEditingShow] = useState(false);
+  const [importingEpisode, setImportingEpisode] = useState<{ episode?: TelevisionEpisode } | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<{ episode: TelevisionEpisode; rankingsDestroyed: number } | null>(null);
+  const [confirmRemoveFromList, setConfirmRemoveFromList] = useState<TelevisionEpisode | null>(null);
+  const [expandedIds, setExpandedIds] = useState<Set<number>>(new Set());
+  const [viewingUser, setViewingUser] = useState(me);
+  const [impactFor, setImpactFor] = useState<number | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  const { data: show, isLoading: showLoading, isError: showError } = useTelevisionShow(sid);
+  const { data: ranked = [], isLoading: rankedLoading } = useRankedTelevisionEpisodes(sid, viewingUser);
+  const isMine = viewingUser === me;
+
+  const rankKey = rk(guildId, me, "television", "shows", sid, "episodes", "ranked");
+
+  const moveEpisode = useMutation({
+    mutationFn: (v: { episodeId: number; position: number }) =>
+      api.put(`${base}/television/episodes/${v.episodeId}/position`, { position: v.position }),
+    onSettled: () => qc.invalidateQueries({ queryKey: rk(guildId, me, "television", "shows", sid, "episodes") }),
   });
 
   const adjustWatches = useMutation({
-    mutationFn: ({ episodeId, delta }: { episodeId: number; delta: 1 | -1 }) => {
-      const ep = show.episodes.find((e) => e.id === episodeId)!;
-      return api.patch<TelevisionEpisode>(`/television/episodes/${episodeId}`, { watches: ep.watches + delta });
-    },
-    onSuccess: () => qc.invalidateQueries({ queryKey: key }),
+    mutationFn: ({ episodeId, watches }: { episodeId: number; watches: number }) =>
+      api.put(`${base}/television/episodes/${episodeId}/entry`, { watches }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: rk(guildId, me, "television", "shows", sid, "episodes") }),
+  });
+
+  const removeEntry = useMutation({
+    mutationFn: (episodeId: number) => api.delete(`${base}/television/episodes/${episodeId}/entry`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: rk(guildId, me, "television", "shows", sid, "episodes") }),
   });
 
   const remove = useMutation({
-    mutationFn: (id: number) => api.delete(`/television/episodes/${id}`),
-    onMutate: async (id) => {
-      await qc.cancelQueries({ queryKey: key });
-      const prev = qc.getQueryData<TelevisionShow>(key);
-      qc.setQueryData<TelevisionShow>(key, (old) =>
-        old ? { ...old, episodes: old.episodes.filter((e) => e.id !== id) } : old
-      );
-      return { prev };
+    mutationFn: (episodeId: number) => api.delete(`${base}/television/episodes/${episodeId}`),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: gk(guildId, "television", "shows", sid) });
+      qc.invalidateQueries({ queryKey: rk(guildId, me, "television", "shows", sid, "episodes") });
     },
-    onError: (_err, _id, ctx) => qc.setQueryData(key, ctx?.prev),
-    onSettled: () => qc.invalidateQueries({ queryKey: key }),
   });
 
-  function toggleExpand(id: number) {
+  async function confirmRemoval(episode: TelevisionEpisode) {
+    setImpactFor(episode.id);
+    setActionError(null);
+    try {
+      const { rankings_destroyed } = await api.get<{ rankings_destroyed: number }>(`${base}/television/episodes/${episode.id}/impact`);
+      setConfirmDelete({ episode, rankingsDestroyed: rankings_destroyed });
+    } catch (e) {
+      setActionError((e as Error).message);
+    } finally {
+      setImpactFor(null);
+    }
+  }
+
+  function toggleExpand(episodeId: number) {
     setExpandedIds((prev) => {
       const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
+      next.has(episodeId) ? next.delete(episodeId) : next.add(episodeId);
       return next;
     });
   }
 
-  const allExpanded = show.episodes.length > 0 && expandedIds.size === show.episodes.length;
+  if (showLoading) return <section><LoadingState label="Loading show…" /></section>;
+  if (showError || !show) return <section><p>Show not found.</p></section>;
+
+  const allExpanded = ranked.length > 0 && expandedIds.size === ranked.length;
+  const sortable = ranked.map((r) => ({ ...r.episode, position: r.position }));
 
   return (
-    <>
+    <section>
+      <header className="page-head">
+        <h1>
+          {show.name}
+          {show.name_en && <span style={{ opacity: 0.6, fontWeight: "normal" }}> ({show.name_en})</span>}
+        </h1>
+        <div style={{ display: "flex", gap: "0.5rem" }}>
+          {canEdit && <button onClick={() => setEditingShow(true)}>✎ Edit</button>}
+          {canEdit && <button onClick={() => setEditing("new")}>+ Add Episode</button>}
+          {canEdit && <button onClick={() => setImportingEpisode({})}>Import Episode from TMDB</button>}
+        </div>
+      </header>
+      {actionError && <p className="err">{actionError}</p>}
+      <div className="artist-detail-dropdown" style={{ marginBottom: "1.5rem" }}>
+        <div className="artist-detail-grid">
+          <div><span className="detail-label">Release year</span><span>{show.release_year}</span></div>
+          <div><span className="detail-label">Episodes</span><span>{show.episode_count}</span></div>
+        </div>
+        {show.soundtrack_albums.length > 0 && (
+          <div className="detail-tags" style={{ marginTop: "0.5rem" }}>
+            <span className="detail-label">Soundtrack</span>
+            <span>
+              {show.soundtrack_albums.map((a, i) => (
+                <span key={a.id}>
+                  {i > 0 && ", "}
+                  <Link to={`/g/${guildId}/music/albums/${a.id}`}>
+                    {a.name}{a.name_en && <span style={{ opacity: 0.6 }}> ({a.name_en})</span>}
+                  </Link>
+                </span>
+              ))}
+            </span>
+          </div>
+        )}
+        {show.notes && (
+          <div className="detail-tags" style={{ marginTop: "0.5rem" }}>
+            <span className="detail-label">Notes</span>
+            <span>{show.notes}</span>
+          </div>
+        )}
+      </div>
+
+      <ShowPeopleSection showId={sid} show={show} />
+      <ShowGenresSection showId={sid} show={show} />
+      <LinksSection path="television/shows" section="television" ownerId={sid} />
+      <MyShowListSection showId={sid} />
+
       <header className="page-head" style={{ marginBottom: "0.5rem" }}>
         <h2 style={{ margin: 0 }}>Episodes</h2>
-        <div style={{ display: "flex", gap: "0.5rem" }}>
-          <button onClick={() => setExpandedIds(allExpanded ? new Set() : new Set(show.episodes.map((e) => e.id)))}>
+        <div className="inline">
+          <MemberPicker value={viewingUser} onChange={setViewingUser} />
+          <button onClick={() => setExpandedIds(allExpanded ? new Set() : new Set(ranked.map((r) => r.episode.id)))}>
             {allExpanded ? "Collapse all" : "Expand all"}
           </button>
-          <button onClick={() => setEditing("new")}>+ Add Episode</button>
-          <button onClick={() => setTmdbImport({})}>Import episode from TMDB</button>
         </div>
       </header>
 
-      {show.episodes.length === 0 ? (
-        <p style={{ opacity: 0.5 }}>No episodes yet.</p>
-      ) : (
-        <SortableList
-          items={show.episodes}
+      <SortableList
+          items={sortable}
+          loading={rankedLoading}
+          loadingLabel="Loading episodes…"
+          empty={<p className="rank-empty">{isMine ? "No episodes ranked yet." : "This member hasn't ranked any episodes of this show yet."}</p>}
+          pendingId={moveEpisode.isPending ? moveEpisode.variables?.episodeId ?? null : null}
           rowClassName="episode-row"
-          onReorder={(next) => qc.setQueryData(key, (old: TelevisionShow | undefined) => old ? { ...old, episodes: next } : old)}
-          onMove={(id, position) => move.mutate({ id, position })}
+          disableDrag={!isMine}
+          onReorder={(next) => qc.setQueryData(rankKey, next.map((e, i) => ({ ...ranked[i], position: i + 1, episode: e })))}
+          onMove={(episodeId, position) => moveEpisode.mutate({ episodeId, position })}
           renderDetail={(e) =>
             expandedIds.has(e.id) ? (
               <div className="album-detail-dropdown">
-                {e.persons.length > 0 && (
+                {e.genre_ids.length > 0 && (
                   <div className="album-detail-row">
-                    <span className="detail-label">People</span>
+                    <span className="detail-label">Genres</span>
+                    <span>{e.genre_ids.length} linked</span>
+                  </div>
+                )}
+                {e.links.length > 0 && (
+                  <div className="album-detail-row">
+                    <span className="detail-label">Links</span>
                     <span>
-                      {e.persons.map((p, i) => (
-                        <span key={`${p.id}:${p.role}`}>
-                          {i > 0 && ", "}
-                          <Link className="plain-link" to={`/people/${p.id}`}>{p.name}</Link>
-                          {" "}<span style={{ opacity: 0.6 }}>({CAST_ROLE_LABELS[p.role]})</span>
-                        </span>
+                      {e.links.map((l, i) => (
+                        <span key={l.id}>{i > 0 && ", "}<a href={l.url} target="_blank" rel="noreferrer">{l.label ?? l.url}</a></span>
                       ))}
                     </span>
                   </div>
                 )}
-                {e.watch_link && (
-                  <div className="album-detail-row">
-                    <span className="detail-label">Watch</span>
-                    <a href={e.watch_link} target="_blank" rel="noreferrer">{e.watch_link}</a>
-                  </div>
-                )}
-                {e.notes && (
-                  <div className="album-detail-row">
-                    <span className="detail-label">Notes</span>
-                    <span>{e.notes}</span>
-                  </div>
-                )}
-                {e.persons.length === 0 && !e.watch_link && !e.notes && (
+                {e.notes && <div className="album-detail-row"><span className="detail-label">Notes</span><span>{e.notes}</span></div>}
+                {e.genre_ids.length === 0 && e.links.length === 0 && !e.notes && (
                   <span style={{ opacity: 0.5 }}>No extra info.</span>
                 )}
               </div>
             ) : null
           }
-          render={(e) => (
-            <>
-              <span className="name">
-                <Link to={`/television/${show.id}/episodes/${e.id}`} className="plain-link">
-                  {e.name}{e.name_en && <span style={{ opacity: 0.6 }}> ({e.name_en})</span>}
-                </Link>
-              </span>
-              <span className="meta">
-                {e.release_year} · {fmtRuntime(e.runtime_minutes)}
-              </span>
-              <span className="listens-ctrl">
-                <button
-                  className="icon"
-                  title="Remove one watch"
-                  disabled={e.watches <= 1}
-                  onClick={() => adjustWatches.mutate({ episodeId: e.id, delta: -1 })}
-                >−</button>
-                <span className="listens-count">{e.watches}×</span>
-                <button
-                  className="icon"
-                  title="Add one watch"
-                  onClick={() => adjustWatches.mutate({ episodeId: e.id, delta: 1 })}
-                >+</button>
-              </span>
-              {/* Uncast episodes (the state the show-level import leaves them in)
-                  get a one-click cast import; once anyone's cast, re-importing
-                  lives on the episode's own page. */}
-              <span className="icon-slot">
-                {!hasActingCredit(e.persons) && (
-                  <button className="icon" title="Import cast & crew from TMDB"
-                          onClick={() => setTmdbImport({ episode: e })}>⬇</button>
-                )}
-              </span>
-              <button className="icon" title="Show details" onClick={() => toggleExpand(e.id)}>
-                {expandedIds.has(e.id) ? "▲" : "▼"}
-              </button>
-              <button className="icon" onClick={() => setEditing({ episode: e })}>✎</button>
-              <button className="icon" onClick={() => setConfirmDelete(e)}>✕</button>
-            </>
-          )}
+          render={(e) => {
+            const r = ranked.find((x) => x.episode.id === e.id)!;
+            return (
+              <>
+                <span className="name">
+                  <Link to={`/g/${guildId}/television/episodes/${e.id}`} className="plain-link">
+                    {e.name}{e.name_en && <span style={{ opacity: 0.6 }}> ({e.name_en})</span>}
+                  </Link>
+                </span>
+                <span className="meta">{e.release_year} · {fmtRuntime(e.runtime_minutes)}</span>
+                {isMine ? (() => {
+                  const counting = adjustWatches.isPending && adjustWatches.variables?.episodeId === e.id;
+                  return (
+                    <span className="listens-ctrl">
+                      <button className="icon" title="Remove one watch" disabled={r.watches <= 1 || counting}
+                              onClick={() => adjustWatches.mutate({ episodeId: e.id, watches: r.watches - 1 })}>−</button>
+                      <span className="listens-count">{counting ? <Spinner size="sm" /> : `${r.watches}×`}</span>
+                      <button className="icon" title="Add one watch" disabled={counting}
+                              onClick={() => adjustWatches.mutate({ episodeId: e.id, watches: r.watches + 1 })}>+</button>
+                    </span>
+                  );
+                })() : <span />}
+                <button className="icon" title="Show details" onClick={() => toggleExpand(e.id)}>
+                  {expandedIds.has(e.id) ? "▲" : "▼"}
+                </button>
+                {isMine
+                  ? <button className="icon" title="Remove from my ranking" onClick={() => setConfirmRemoveFromList(e)}>✕ list</button>
+                  : <span />}
+                {canEdit ? <button className="icon" onClick={() => setEditing({ episode: e })}>✎</button> : <span />}
+                {canEdit ? <button className="icon" title="Import credits from TMDB" onClick={() => setImportingEpisode({ episode: e })}>TMDB</button> : <span />}
+                {canDelete ? (
+                  <BusyButton className="icon" title="Delete from catalog" busy={impactFor === e.id} busyLabel={null}
+                              onClick={() => void confirmRemoval(e)}>✕</BusyButton>
+                ) : <span />}
+              </>
+            );
+          }}
         />
-      )}
 
       {confirmDelete && (
         <ConfirmDialog
-          message={`Delete episode "${confirmDelete.name}"?`}
-          onConfirm={() => {
-            remove.mutate(confirmDelete.id);
-            setConfirmDelete(null);
-          }}
+          message={`Delete "${confirmDelete.episode.name}" from the guild catalog? ${confirmDelete.rankingsDestroyed} member ranking(s) will be destroyed.`}
+          busy={remove.isPending}
+          onConfirm={() => remove.mutate(confirmDelete.episode.id, { onSettled: () => setConfirmDelete(null) })}
           onCancel={() => setConfirmDelete(null)}
+        />
+      )}
+
+      {confirmRemoveFromList && (
+        <ConfirmDialog
+          message={`Remove "${confirmRemoveFromList.name}" from your list? Your watch count and personal notes for it will be lost.`}
+          confirmLabel="Remove"
+          busy={removeEntry.isPending}
+          onConfirm={() => removeEntry.mutate(confirmRemoveFromList.id, { onSettled: () => setConfirmRemoveFromList(null) })}
+          onCancel={() => setConfirmRemoveFromList(null)}
         />
       )}
 
@@ -463,111 +566,31 @@ function EpisodesSection({ show }: { show: TelevisionShow }) {
         </div>
       )}
 
-      {tmdbImport && (
-        <div className="modal-backdrop" onClick={() => setTmdbImport(null)}>
-          <div onClick={(e) => e.stopPropagation()}>
-            <TmdbTelevisionEpisodeImportDialog
-              show={show}
-              episode={tmdbImport.episode}
-              onClose={() => setTmdbImport(null)}
-              onSuccess={() => qc.invalidateQueries({ queryKey: key })}
-            />
-          </div>
-        </div>
-      )}
-    </>
-  );
-}
-
-// ── Main page ──────────────────────────────────────────────────────────────────
-
-export function TelevisionShowDetailPage() {
-  const { id } = useParams<{ id: string }>();
-  const showId = Number(id);
-  const qc = useQueryClient();
-  const [editing, setEditing] = useState(false);
-
-  const { data: show, isLoading, isError } = useQuery({
-    queryKey: ["television", "shows", showId],
-    queryFn: () => api.get<TelevisionShow>(`/television/shows/${showId}`),
-    enabled: !isNaN(showId),
-  });
-
-  if (isLoading) return <section><p>Loading…</p></section>;
-  if (isError || !show) return <section><p>Television show not found.</p></section>;
-
-  return (
-    <section>
-      <header className="page-head">
-        <h1>
-          {show.name}{show.name_en && <span style={{ opacity: 0.6, fontWeight: "normal" }}> ({show.name_en})</span>}
-          {show.watch_link && (
-            <> <a href={show.watch_link} target="_blank" rel="noreferrer" style={{ textDecoration: "none", fontStyle: "italic", fontSize: "0.6em", opacity: 0.7, fontWeight: "normal", color: "inherit" }}>(link)</a></>
-          )}
-        </h1>
-        <button onClick={() => setEditing(true)}>✎ Edit</button>
-      </header>
-
-      <div className="page-tabs">
-        <NavLink to={`/television/${showId}`} end>Overview</NavLink>
-        <NavLink to={`/television/${showId}/rank`}>Rank Episodes</NavLink>
-      </div>
-
-      <div className="artist-detail-dropdown" style={{ marginBottom: "1.5rem" }}>
-        <div className="artist-detail-grid">
-          <div>
-            <span className="detail-label">Release year</span>
-            <span>{show.release_year}</span>
-          </div>
-          <div>
-            <span className="detail-label">Episodes</span>
-            <span>{show.episode_count}</span>
-          </div>
-          <div>
-            <span className="detail-label">Total runtime</span>
-            <span>{fmtRuntime(show.total_runtime_minutes)}</span>
-          </div>
-          <div>
-            <span className="detail-label">Total watches</span>
-            <span>{show.total_watches}</span>
-          </div>
-          {show.soundtrack_albums.length > 0 && (
-            <div>
-              <span className="detail-label">Soundtrack</span>
-              <span>
-                {show.soundtrack_albums.map((a, i) => (
-                  <span key={a.id}>
-                    {i > 0 && ", "}
-                    <Link to={`/music/albums/${a.id}`}>
-                      {a.name}{a.name_en && <span style={{ opacity: 0.6 }}> ({a.name_en})</span>}
-                    </Link>
-                  </span>
-                ))}
-              </span>
-            </div>
-          )}
-        </div>
-        {show.notes && (
-          <div className="detail-tags" style={{ marginTop: "0.5rem" }}>
-            <span className="detail-label">Notes</span>
-            <span>{show.notes}</span>
-          </div>
-        )}
-      </div>
-
-      <ShowPeopleSection show={show} />
-      <GenresSection show={show} />
-      <EpisodesSection show={show} />
-
-      {editing && (
-        <div className="modal-backdrop" onClick={() => setEditing(false)}>
+      {editingShow && (
+        <div className="modal-backdrop" onClick={() => setEditingShow(false)}>
           <div onClick={(e) => e.stopPropagation()}>
             <TelevisionShowForm
               initial={show}
               onClose={() => {
-                setEditing(false);
-                qc.invalidateQueries({ queryKey: ["television", "shows", showId] });
-                qc.invalidateQueries({ queryKey: ["television", "ranked"] });
+                setEditingShow(false);
+                qc.invalidateQueries({ queryKey: gk(guildId, "television", "shows", sid) });
+              }}
+            />
+          </div>
+        </div>
+      )}
+
+      {importingEpisode && (
+        <div className="modal-backdrop" onClick={() => setImportingEpisode(null)}>
+          <div onClick={(e) => e.stopPropagation()}>
+            <TmdbTelevisionEpisodeImportDialog
+              show={show}
+              episode={importingEpisode.episode}
+              onClose={() => setImportingEpisode(null)}
+              onSuccess={() => {
+                setImportingEpisode(null);
+                qc.invalidateQueries({ queryKey: gk(guildId, "television", "shows", sid) });
+                qc.invalidateQueries({ queryKey: rk(guildId, me, "television", "shows", sid, "episodes") });
               }}
             />
           </div>

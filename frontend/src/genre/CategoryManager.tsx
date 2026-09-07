@@ -4,6 +4,7 @@ import { useState } from "react";
 import { api } from "../api/client";
 import type { GenreCategory } from "../api/types";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { BusyButton, LoadingState } from "../components/Spinner";
 import type { GenreDomain } from "./config";
 
 /**
@@ -13,7 +14,8 @@ import type { GenreDomain } from "./config";
  */
 export function CategoryManager({ domain }: { domain: GenreDomain }) {
   const qc = useQueryClient();
-  const { data: categories = [] } = domain.useCategories();
+  const categoryApiBase = domain.useCategoryApiBase();
+  const { data: categories = [], isLoading } = domain.useCategories();
   const [open, setOpen] = useState(false);
   const [newName, setNewName] = useState("");
   const [renaming, setRenaming] = useState<GenreCategory | null>(null);
@@ -23,7 +25,7 @@ export function CategoryManager({ domain }: { domain: GenreDomain }) {
   const invalidate = () => qc.invalidateQueries({ queryKey: [domain.key, "categories"] });
 
   const create = useMutation({
-    mutationFn: (name: string) => api.post<GenreCategory>(domain.categoryApiBase, { name }),
+    mutationFn: (name: string) => api.post<GenreCategory>(categoryApiBase, { name }),
     onSuccess: () => {
       setNewName("");
       invalidate();
@@ -32,7 +34,7 @@ export function CategoryManager({ domain }: { domain: GenreDomain }) {
 
   const rename = useMutation({
     mutationFn: ({ id, name }: { id: number; name: string }) =>
-      api.patch<GenreCategory>(`${domain.categoryApiBase}/${id}`, { name }),
+      api.patch<GenreCategory>(`${categoryApiBase}/${id}`, { name }),
     onSuccess: () => {
       setRenaming(null);
       invalidate();
@@ -40,7 +42,7 @@ export function CategoryManager({ domain }: { domain: GenreDomain }) {
   });
 
   const remove = useMutation({
-    mutationFn: (id: number) => api.delete(`${domain.categoryApiBase}/${id}`),
+    mutationFn: (id: number) => api.delete(`${categoryApiBase}/${id}`),
     onSuccess: invalidate,
   });
 
@@ -53,42 +55,46 @@ export function CategoryManager({ domain }: { domain: GenreDomain }) {
 
       {!open && (
         <span className="collapsed-summary" onClick={() => setOpen(true)}>
-          {categories.length > 0 ? categories.map((c) => c.name).join(", ") : "None yet"}
+          {isLoading ? "Loading…" : categories.length > 0 ? categories.map((c) => c.name).join(", ") : "None yet"}
         </span>
       )}
 
       {open && (
         <>
-          <ul className="plain-list">
-            {categories.map((c) => (
-              <li key={c.id} className="row">
-                {renaming?.id === c.id ? (
-                  <form
-                    style={{ display: "flex", gap: "0.5rem", flex: 1 }}
-                    onSubmit={(e) => {
-                      e.preventDefault();
-                      if (renameValue.trim()) rename.mutate({ id: c.id, name: renameValue.trim() });
-                    }}
-                  >
-                    <input
-                      autoFocus
-                      value={renameValue}
-                      onChange={(e) => setRenameValue(e.target.value)}
-                    />
-                    <button type="submit" disabled={rename.isPending}>Save</button>
-                    <button type="button" onClick={() => setRenaming(null)}>Cancel</button>
-                  </form>
-                ) : (
-                  <>
-                    <span className="name">{c.name}</span>
-                    <button className="icon" onClick={() => { setRenaming(c); setRenameValue(c.name); }}>✎</button>
-                    <button className="icon" onClick={() => setConfirmDelete(c)}>✕</button>
-                  </>
-                )}
-              </li>
-            ))}
-            {categories.length === 0 && <li><small>No categories yet.</small></li>}
-          </ul>
+          {isLoading ? (
+            <LoadingState compact />
+          ) : (
+            <ul className="plain-list">
+              {categories.map((c) => (
+                <li key={c.id} className="row">
+                  {renaming?.id === c.id ? (
+                    <form
+                      style={{ display: "flex", gap: "0.5rem", flex: 1 }}
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        if (renameValue.trim()) rename.mutate({ id: c.id, name: renameValue.trim() });
+                      }}
+                    >
+                      <input
+                        autoFocus
+                        value={renameValue}
+                        onChange={(e) => setRenameValue(e.target.value)}
+                      />
+                      <BusyButton type="submit" busy={rename.isPending && rename.variables?.id === c.id} busyLabel="Saving…">Save</BusyButton>
+                      <button type="button" onClick={() => setRenaming(null)}>Cancel</button>
+                    </form>
+                  ) : (
+                    <>
+                      <span className="name">{c.name}</span>
+                      <button className="icon" onClick={() => { setRenaming(c); setRenameValue(c.name); }}>✎</button>
+                      <button className="icon" onClick={() => setConfirmDelete(c)}>✕</button>
+                    </>
+                  )}
+                </li>
+              ))}
+              {categories.length === 0 && <li><small>No categories yet.</small></li>}
+            </ul>
+          )}
 
           <form
             style={{ display: "flex", gap: "0.5rem" }}
@@ -102,7 +108,7 @@ export function CategoryManager({ domain }: { domain: GenreDomain }) {
               value={newName}
               onChange={(e) => setNewName(e.target.value)}
             />
-            <button type="submit" disabled={create.isPending || !newName.trim()}>+ Add</button>
+            <BusyButton type="submit" busy={create.isPending} busyLabel="Adding…" disabled={!newName.trim()}>+ Add</BusyButton>
           </form>
         </>
       )}
@@ -110,10 +116,8 @@ export function CategoryManager({ domain }: { domain: GenreDomain }) {
       {confirmDelete && (
         <ConfirmDialog
           message={`Delete category "${confirmDelete.name}"?`}
-          onConfirm={() => {
-            remove.mutate(confirmDelete.id);
-            setConfirmDelete(null);
-          }}
+          busy={remove.isPending}
+          onConfirm={() => remove.mutate(confirmDelete.id, { onSettled: () => setConfirmDelete(null) })}
           onCancel={() => setConfirmDelete(null)}
         />
       )}

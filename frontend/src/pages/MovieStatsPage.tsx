@@ -6,6 +6,8 @@ import {
 } from "recharts";
 
 import { api } from "../api/client";
+import { useGuildApi } from "../api/hooks";
+import { MemberPicker } from "../components/MemberPicker";
 import type {
   MovieDecadeRow, MovieGenreRow, MovieNatRow,
   MovieStatsSummary, MovieYearRow, ScatterPoint,
@@ -14,31 +16,63 @@ import {
   C1, SCATTER_FILL, ChartWrap, Section, Stat, StatGrid, Table, fmt2,
   type ColDef,
 } from "../stats/shared";
+import { LoadingState } from "../components/Spinner";
 
-const useSummary  = () => useQuery({ queryKey: ["movie-stats", "summary"],   queryFn: () => api.get<MovieStatsSummary>("/movie-stats/summary") });
-const useByYear   = () => useQuery({ queryKey: ["movie-stats", "by-year"],   queryFn: () => api.get<MovieYearRow[]>("/movie-stats/by-year") });
-const useByDecade = () => useQuery({ queryKey: ["movie-stats", "by-decade"], queryFn: () => api.get<MovieDecadeRow[]>("/movie-stats/by-decade") });
-const useByNat    = () => useQuery({ queryKey: ["movie-stats", "by-nat"],    queryFn: () => api.get<{ core_nationality: MovieNatRow[]; birth_nationality: MovieNatRow[] }>("/movie-stats/by-nationality") });
-const useByGenre  = () => useQuery({ queryKey: ["movie-stats", "by-genre"],  queryFn: () => api.get<{ by_genre: MovieGenreRow[]; by_root_genre: MovieGenreRow[] }>("/movie-stats/by-genre") });
-const useScatter  = () => useQuery({ queryKey: ["movie-stats", "scatter"],   queryFn: () => api.get<{
-  movie_score_vs_runtime: ScatterPoint[];
-  cast_member_score_vs_runtime: ScatterPoint[];
-}>("/movie-stats/scatter") });
+function useStatsHooks(userId: number) {
+  const { guildId, base } = useGuildApi();
+  const qs = `?user_id=${userId}`;
+  const useSummary  = () => useQuery({ queryKey: ["g", guildId, "u", userId, "movie-stats", "summary"],   queryFn: () => api.get<MovieStatsSummary>(`${base}/movie-stats/summary${qs}`) });
+  const useByYear   = () => useQuery({ queryKey: ["g", guildId, "u", userId, "movie-stats", "by-year"],   queryFn: () => api.get<MovieYearRow[]>(`${base}/movie-stats/by-year${qs}`) });
+  const useByDecade = () => useQuery({ queryKey: ["g", guildId, "u", userId, "movie-stats", "by-decade"], queryFn: () => api.get<MovieDecadeRow[]>(`${base}/movie-stats/by-decade${qs}`) });
+  const useByNat    = () => useQuery({ queryKey: ["g", guildId, "u", userId, "movie-stats", "by-nat"],    queryFn: () => api.get<{ core_nationality: MovieNatRow[]; birth_nationality: MovieNatRow[] }>(`${base}/movie-stats/by-nationality${qs}`) });
+  const useByGenre  = () => useQuery({ queryKey: ["g", guildId, "u", userId, "movie-stats", "by-genre"],  queryFn: () => api.get<{ by_genre: MovieGenreRow[]; by_root_genre: MovieGenreRow[] }>(`${base}/movie-stats/by-genre${qs}`) });
+  const useScatter  = () => useQuery({ queryKey: ["g", guildId, "u", userId, "movie-stats", "scatter"],   queryFn: () => api.get<{
+    movie_score_vs_runtime: ScatterPoint[];
+    cast_member_score_vs_runtime: ScatterPoint[];
+  }>(`${base}/movie-stats/scatter${qs}`) });
+  return { useSummary, useByYear, useByDecade, useByNat, useByGenre, useScatter };
+}
 
 const TABS = ["Stats", "Graphs"] as const;
 type Tab = typeof TABS[number];
 
 export function MovieStatsPage() {
+  const { userId: me } = useGuildApi();
   const [tab, setTab] = useState<Tab>("Stats");
+  const [viewingUser, setViewingUser] = useState(me);
+  const { useSummary, useByYear, useByDecade, useByNat, useByGenre, useScatter } = useStatsHooks(viewingUser);
 
-  const { data: summary, isLoading } = useSummary();
-  const { data: byYear   = [] } = useByYear();
-  const { data: byDecade = [] } = useByDecade();
-  const { data: byNat }         = useByNat();
-  const { data: byGenre }       = useByGenre();
-  const { data: scatter }       = useScatter();
+  const summaryQ = useSummary();
+  const yearQ    = useByYear();
+  const decadeQ  = useByDecade();
+  const natQ     = useByNat();
+  const genreQ   = useByGenre();
+  const scatterQ = useScatter();
+  const summary  = summaryQ.data;
+  const byYear   = yearQ.data ?? [];
+  const byDecade = decadeQ.data ?? [];
+  const byNat    = natQ.data;
+  const byGenre  = genreQ.data;
+  const scatter  = scatterQ.data;
+  const loading  = [summaryQ, yearQ, decadeQ, natQ, genreQ, scatterQ].some((q) => q.isLoading);
 
-  if (isLoading || !summary) return <p>Loading…</p>;
+  const header = (
+    <div className="stats-tabs" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+      <div style={{ display: "flex" }}>
+        {TABS.map((t) => (
+          <button key={t} className={`stats-tab${tab === t ? " stats-tab-active" : ""}`} onClick={() => setTab(t)}>{t}</button>
+        ))}
+      </div>
+      <MemberPicker value={viewingUser} onChange={setViewingUser} />
+    </div>
+  );
+
+  if (summaryQ.isError) {
+    return <div className="stats-page">{header}<p className="err">{(summaryQ.error as Error).message}</p></div>;
+  }
+  if (loading || !summary) {
+    return <div className="stats-page">{header}<LoadingState label="Crunching stats…" /></div>;
+  }
 
   const coreNat    = byNat?.core_nationality  ?? [];
   const birthNat   = byNat?.birth_nationality ?? [];
@@ -59,11 +93,7 @@ export function MovieStatsPage() {
 
   return (
     <div className="stats-page">
-      <div className="stats-tabs">
-        {TABS.map((t) => (
-          <button key={t} className={`stats-tab${tab === t ? " stats-tab-active" : ""}`} onClick={() => setTab(t)}>{t}</button>
-        ))}
-      </div>
+      {header}
 
       {tab === "Stats" && (
         <>

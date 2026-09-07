@@ -10,6 +10,10 @@ export interface TmdbRowMatch {
   person_name: string;
   /** Has movie or TV credits — the "we can verify this" signal. */
   has_entries: boolean;
+  /** True iff has_entries and a credit's title overlaps this filmography.
+   * False with has_entries=true means a name-only match against a differing
+   * filmography (e.g. a title mismatch between our catalog and TMDB's). */
+  filmography_overlap: boolean;
   artist_summary: string;
   game_summary: string;
 }
@@ -62,8 +66,8 @@ export function TmdbPersonRow({
   onRoleChange: (r: CastRole) => void;
   onResolve: (personId: number | null) => void;
 }) {
-  const verifiedMatch = person.matches.find((m) => m.has_entries);
-  const bareMatches = person.matches.filter((m) => !m.has_entries);
+  const verifiedMatch = person.matches.find((m) => m.filmography_overlap);
+  const unverifiedMatches = person.matches.filter((m) => !m.filmography_overlap);
 
   // Overridden = verified match exists but user explicitly changed away from it
   const isOverridden =
@@ -136,8 +140,9 @@ export function TmdbPersonRow({
                   />
                   Use <strong>{m.person_name}</strong> (#{m.person_id})
                   {!m.has_entries && " — no screen credits"}
+                  {m.has_entries && !m.filmography_overlap && " — differing filmography, name match only"}
                 </label>
-                {!m.has_entries && (
+                {!m.filmography_overlap && (
                   <>
                     <div className="tip-artist-summary">{m.artist_summary}</div>
                     <div className="tip-artist-summary">{m.game_summary}</div>
@@ -157,11 +162,11 @@ export function TmdbPersonRow({
           </div>
         )}
 
-        {/* No verified match, bare matches exist */}
-        {!verifiedMatch && bareMatches.length > 0 && (
+        {/* No verified match, unverified matches exist */}
+        {!verifiedMatch && unverifiedMatches.length > 0 && (
           <div className="tip-match tip-match--warn">
-            <p>⚠ Name match with <strong>no movie or TV credits</strong>:</p>
-            {bareMatches.map((m) => (
+            <p>⚠ Name match only — not verified against this filmography:</p>
+            {unverifiedMatches.map((m) => (
               <div key={m.person_id} className="tip-conflict-option">
                 <label>
                   <input
@@ -171,6 +176,9 @@ export function TmdbPersonRow({
                     onChange={() => onResolve(m.person_id)}
                   />
                   Use existing <strong>{m.person_name}</strong> (#{m.person_id})
+                  {m.has_entries
+                    ? " — has movie/TV credits, but a different filmography"
+                    : " — no movie or TV credits"}
                 </label>
                 <div className="tip-artist-summary">{m.artist_summary}</div>
                 <div className="tip-artist-summary">{m.game_summary}</div>

@@ -1,10 +1,10 @@
 import * as d3 from "d3-force";
-import { useQuery } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { api } from "../api/client";
-import type { CastRole, GraphPerson, PersonGraph } from "../api/types";
+import { usePersonGraph, useGuildApi } from "../api/hooks";
+import type { CastRole, GraphPerson } from "../api/types";
 import { CAST_ROLE_LABELS, CAST_ROLES } from "../api/types";
+import { LoadingState } from "../components/Spinner";
 
 // ─── Constants ─────────────────────────────────────────────────────────────
 
@@ -86,10 +86,8 @@ function hitTest(nodes: SimNode[], canvasX: number, canvasY: number): SimNode | 
 // ─── Main component ─────────────────────────────────────────────────────────
 
 export function PeopleGraphPage() {
-  const { data, isLoading, isError } = useQuery({
-    queryKey: ["people", "graph"],
-    queryFn: () => api.get<PersonGraph>("/persons/graph"),
-  });
+  const { guildId } = useGuildApi();
+  const { data, isLoading, isError } = usePersonGraph();
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -680,8 +678,8 @@ export function PeopleGraphPage() {
         onMouseDown={onMouseDown} onMouseMove={onMouseMove} onMouseUp={onMouseUp} onMouseLeave={onMouseUp} onWheel={onWheel}>
         <canvas ref={canvasRef} onClick={onCanvasClick} style={{ display: "block" }} />
         {overlayMessage && (
-          <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", opacity: 0.5, pointerEvents: "none" }}>
-            {overlayMessage}
+          <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
+            {isLoading ? <LoadingState label="Loading graph…" /> : <span style={{ opacity: 0.5 }}>{overlayMessage}</span>}
           </div>
         )}
       </div>
@@ -691,7 +689,7 @@ export function PeopleGraphPage() {
         <div style={{ marginTop: "1rem", padding: "0.75rem 1rem", border: "1px solid #8884", borderRadius: 6, fontSize: "0.875rem" }}>
           <div style={{ display: "flex", alignItems: "baseline", gap: "1rem", marginBottom: "0.5rem" }}>
             <strong style={{ fontSize: "1rem" }}>{selectedPerson.name}{selectedPerson.name_en && <span style={{ opacity: 0.6, fontWeight: "normal" }}> ({selectedPerson.name_en})</span>}</strong>
-            <Link to={`/people/${selectedPerson.id}`} style={{ opacity: 0.6, fontSize: "0.8rem" }}>view profile →</Link>
+            <Link to={`/g/${guildId}/people/${selectedPerson.id}`} style={{ opacity: 0.6, fontSize: "0.8rem" }}>view profile →</Link>
             <button onClick={() => centerOn(selected!)}
               style={{ marginLeft: "auto", opacity: 0.5, background: "none", border: "none", cursor: "pointer", fontSize: "0.78rem" }}>
               center
@@ -723,7 +721,7 @@ export function PeopleGraphPage() {
             <span style={{ display: "inline-block", width: 9, height: 9, borderRadius: "50%", background: selectedHub.kind === "movie" ? MOVIE_COLOR : ARTIST_COLOR, flexShrink: 0, alignSelf: "center" }} />
             <strong style={{ fontSize: "1rem" }}>{selectedHub.label}</strong>
             <Link
-              to={selectedHub.kind === "movie" ? `/movies/${selectedHub.id_}` : `/music/artists/${selectedHub.id_}`}
+              to={selectedHub.kind === "movie" ? `/g/${guildId}/movies/${selectedHub.id_}` : `/g/${guildId}/music/artists/${selectedHub.id_}`}
               style={{ opacity: 0.6, fontSize: "0.8rem" }}>
               view {selectedHub.kind} →
             </Link>

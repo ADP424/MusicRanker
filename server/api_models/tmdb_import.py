@@ -17,6 +17,12 @@ class DbPersonMatchOut(ORMSchema):
     #: Has movies *or* TV credits — i.e. something the TMDB filmography can
     #: corroborate. Identity is a person question, not a per-media one.
     has_screen_entries: bool
+    #: True iff `has_screen_entries` and at least one of those credits' titles
+    #: overlaps this TMDB filmography. False (with `has_screen_entries=True`)
+    #: means this is a name-only match against a differing filmography — e.g.
+    #: our catalog's title differs from TMDB's own (see `tmdb_common.norm`
+    #: doesn't fix title *substitutions* like "Dune: Part One" vs. "Dune").
+    filmography_overlap: bool
     artist_summary: str
     game_summary: str
 

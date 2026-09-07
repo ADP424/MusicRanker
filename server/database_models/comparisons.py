@@ -1,92 +1,77 @@
-"""Stored pairwise preferences backing the "Rank" tabs.
+"""Pairwise preferences, now keyed by (user, guild, winner, loser).
 
-One row per answered question: the entry the user preferred (``winner_id``) and
-the one they didn't (``loser_id``). The API keeps at most one row per *unordered*
-pair — re-answering or swapping replaces it.
-
-Foreign keys are declared against the mapped tables (rather than by name) and
-cascade on delete, so deleting an artist / album / movie / game / show / episode
-also deletes every question that mentioned it.
-
-``AlbumComparison`` additionally carries ``artist_id`` because albums are ranked
-*within* an artist's discography, so the same two albums can be compared once per
-shared artist. Un-linking an album from an artist prunes those rows explicitly
-(see ``routers/albums.py::unlink_artist``); deleting the album or the artist is
-handled by the cascades.
+Per E4 there is no stored "guild ranking": a consensus order is *derived* from
+members' own comparisons (Copeland/Borda over these rows), so this table stays
+the single source of truth and guild aggregates come for free later.
 """
+from datetime import datetime
 
-from datetime import datetime, timezone
+from sqlalchemy import DateTime, ForeignKey, ForeignKeyConstraint
+from sqlalchemy.orm import Mapped, declared_attr, mapped_column
 
-from sqlalchemy import DateTime, ForeignKey
-from sqlalchemy.orm import Mapped, mapped_column
-
-from .album import Album
-from .artist import Artist
 from .base import Base
-from .game import Game
-from .movie import Movie
-from .television import TelevisionShow
-from .television_episode import TelevisionEpisode
+from .mixins import utcnow
 
 
-def _now() -> datetime:
-    return datetime.now(timezone.utc)
+class Comparison:
+    @declared_attr
+    def user_id(cls) -> Mapped[int]:
+        return mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+
+    @declared_attr
+    def guild_id(cls) -> Mapped[int]:
+        return mapped_column(ForeignKey("guilds.id", ondelete="CASCADE"), nullable=False)
+
+    @declared_attr
+    def created_at(cls) -> Mapped[datetime]:
+        return mapped_column(DateTime(timezone=True), default=utcnow)
 
 
-class ArtistComparison(Base):
+def _pair_fks(table: str):
+    return (
+        ForeignKeyConstraint(["winner_id", "guild_id"], [f"{table}.id", f"{table}.guild_id"], ondelete="CASCADE"),
+        ForeignKeyConstraint(["loser_id", "guild_id"], [f"{table}.id", f"{table}.guild_id"], ondelete="CASCADE"),
+    )
+
+
+class ArtistComparison(Comparison, Base):
     __tablename__ = "artist_comparison"
+    winner_id: Mapped[int] = mapped_column(primary_key=True)
+    loser_id: Mapped[int] = mapped_column(primary_key=True)
+    __table_args__ = _pair_fks("artists")
 
-    winner_id: Mapped[int] = mapped_column(ForeignKey(Artist.__table__.c.id, ondelete="CASCADE"), primary_key=True)
-    loser_id: Mapped[int] = mapped_column(ForeignKey(Artist.__table__.c.id, ondelete="CASCADE"), primary_key=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
-
-class AlbumComparison(Base):
+class AlbumComparison(Comparison, Base):
     __tablename__ = "album_comparison"
+    artist_id: Mapped[int] = mapped_column(ForeignKey("artists.id", ondelete="CASCADE"), primary_key=True)
+    winner_id: Mapped[int] = mapped_column(primary_key=True)
+    loser_id: Mapped[int] = mapped_column(primary_key=True)
+    __table_args__ = _pair_fks("albums")
 
-    artist_id: Mapped[int] = mapped_column(ForeignKey(Artist.__table__.c.id, ondelete="CASCADE"), primary_key=True)
-    winner_id: Mapped[int] = mapped_column(ForeignKey(Album.__table__.c.id, ondelete="CASCADE"), primary_key=True)
-    loser_id: Mapped[int] = mapped_column(ForeignKey(Album.__table__.c.id, ondelete="CASCADE"), primary_key=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
-
-class MovieComparison(Base):
+class MovieComparison(Comparison, Base):
     __tablename__ = "movie_comparison"
+    winner_id: Mapped[int] = mapped_column(primary_key=True)
+    loser_id: Mapped[int] = mapped_column(primary_key=True)
+    __table_args__ = _pair_fks("movies")
 
-    winner_id: Mapped[int] = mapped_column(ForeignKey(Movie.__table__.c.id, ondelete="CASCADE"), primary_key=True)
-    loser_id: Mapped[int] = mapped_column(ForeignKey(Movie.__table__.c.id, ondelete="CASCADE"), primary_key=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
-
-class GameComparison(Base):
+class GameComparison(Comparison, Base):
     __tablename__ = "game_comparison"
+    winner_id: Mapped[int] = mapped_column(primary_key=True)
+    loser_id: Mapped[int] = mapped_column(primary_key=True)
+    __table_args__ = _pair_fks("games")
 
-    winner_id: Mapped[int] = mapped_column(ForeignKey(Game.__table__.c.id, ondelete="CASCADE"), primary_key=True)
-    loser_id: Mapped[int] = mapped_column(ForeignKey(Game.__table__.c.id, ondelete="CASCADE"), primary_key=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
-
-class TelevisionShowComparison(Base):
+class TelevisionShowComparison(Comparison, Base):
     __tablename__ = "television_show_comparison"
-
-    winner_id: Mapped[int] = mapped_column(
-        ForeignKey(TelevisionShow.__table__.c.id, ondelete="CASCADE"), primary_key=True
-    )
-    loser_id: Mapped[int] = mapped_column(
-        ForeignKey(TelevisionShow.__table__.c.id, ondelete="CASCADE"), primary_key=True
-    )
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    winner_id: Mapped[int] = mapped_column(primary_key=True)
+    loser_id: Mapped[int] = mapped_column(primary_key=True)
+    __table_args__ = _pair_fks("television_shows")
 
 
-class TelevisionEpisodeComparison(Base):
-    """Episodes belong to exactly one show, so the show scope is implied."""
-
+class TelevisionEpisodeComparison(Comparison, Base):
     __tablename__ = "television_episode_comparison"
-
-    winner_id: Mapped[int] = mapped_column(
-        ForeignKey(TelevisionEpisode.__table__.c.id, ondelete="CASCADE"), primary_key=True
-    )
-    loser_id: Mapped[int] = mapped_column(
-        ForeignKey(TelevisionEpisode.__table__.c.id, ondelete="CASCADE"), primary_key=True
-    )
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    winner_id: Mapped[int] = mapped_column(primary_key=True)
+    loser_id: Mapped[int] = mapped_column(primary_key=True)
+    __table_args__ = _pair_fks("television_episodes")

@@ -4,6 +4,7 @@ import { Link } from "react-router-dom";
 
 import { api } from "../api/client";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { LoadingState } from "../components/Spinner";
 import { CategoryManager } from "./CategoryManager";
 import { GenreForm } from "./GenreForm";
 import { GenreTree } from "./GenreTree";
@@ -51,7 +52,8 @@ function useCategoryScope(genres: GenreLike[]) {
 
 export function GenresPage({ domain }: { domain: GenreDomain }) {
   const qc = useQueryClient();
-  const { data: genres = [] } = domain.useAll();
+  const apiBase = domain.useApiBase();
+  const { data: genres = [], isLoading } = domain.useAll();
   const { data: categories = [] } = domain.useCategories();
   const [view, setView] = useState<View>("list");
   const [categoryFilter, setCategoryFilter] = useState<number | null>(null);
@@ -70,7 +72,7 @@ export function GenresPage({ domain }: { domain: GenreDomain }) {
   const genreById = useMemo(() => new Map(genres.map((g) => [g.id, g])), [genres]);
 
   const remove = useMutation({
-    mutationFn: (id: number) => api.delete(`${domain.apiBase}/${id}`),
+    mutationFn: (id: number) => api.delete(`${apiBase}/${id}`),
     onMutate: async (id) => {
       await qc.cancelQueries({ queryKey: [domain.key] });
       const prev = qc.getQueryData<GenreLike[]>([domain.key]);
@@ -149,7 +151,8 @@ export function GenresPage({ domain }: { domain: GenreDomain }) {
         </select>
       )}
 
-      {view === "list" && (
+      {isLoading && <LoadingState label={`Loading ${domain.noun}…`} />}
+      {!isLoading && view === "list" && (
         <ul className="plain-list">
           {visibleGenres.map((g) => (
             <li key={g.id} className="row">
@@ -164,8 +167,7 @@ export function GenresPage({ domain }: { domain: GenreDomain }) {
           {visibleGenres.length === 0 && <li><small>No {domain.noun} match.</small></li>}
         </ul>
       )}
-
-      {view === "tree" && (
+      {!isLoading && view === "tree" && (
         <GenreTree genres={visibleGenres} cycles={cycles} onEdit={(g) => setEditing(g)} />
       )}
 

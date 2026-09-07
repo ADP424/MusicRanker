@@ -2,9 +2,14 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
 import { api } from "../api/client";
-import { useNationalities } from "../api/hooks";
-import type { Artist, ArtistBody } from "../api/types";
-import { GenreChooser } from "./GenreChooser";
+import { useGuildApi, useNationalities } from "../api/hooks";
+import { gk, rk } from "../api/keys";
+import type { Artist } from "../api/types";
+import { GenreChooser } from "../genre/GenreChooser";
+import { MUSIC_GENRES } from "../genre/config";
+import { useCan } from "../guild/GuildProvider";
+import { commitLinks, LinksField, useLinksField } from "./LinksField";
+import { BusyButton } from "./Spinner";
 
 /** Empty string → null for optional text columns. */
 const orNull = (s: string) => (s.trim() === "" ? null : s);
@@ -16,13 +21,15 @@ export function ArtistForm(props: {
   const { initial, onClose } = props;
   const editing = initial !== undefined;
   const qc = useQueryClient();
-  const { data: nats = [] } = useNationalities();
+  const { guildId, userId, base } = useGuildApi();
+  const canRank = useCan("rank");
+  const { data: nats = [], isLoading: natsLoading } = useNationalities();
   const [genreOpen, setGenreOpen] = useState(false);
+  const [addToList, setAddToList] = useState(true);
 
   const [f, setF] = useState({
     name:              initial?.name              ?? "",
     name_en:           initial?.name_en           ?? "",
-    discography_link:  initial?.discography_link  ?? "",
     birth_nationality: initial?.birth_nationality ?? "",
     core_nationality:  initial?.core_nationality  ?? "",
     notes:             initial?.notes             ?? "",
@@ -31,25 +38,29 @@ export function ArtistForm(props: {
   const [primaryGenreSet, setPrimaryGenreSet] = useState<Set<number>>(
     initial?.primary_genre != null ? new Set([initial.primary_genre]) : new Set()
   );
+  const [links, setLinks] = useLinksField(initial?.links);
 
   const save = useMutation({
-    mutationFn: () => {
+    mutationFn: async () => {
       const [genreId] = primaryGenreSet;
-      const body: ArtistBody = {
+      const body = {
         name: f.name,
         name_en: orNull(f.name_en),
-        discography_link: f.discography_link,
         birth_nationality: f.birth_nationality,
         core_nationality: f.core_nationality,
         primary_genre: genreId ?? null,
         notes: orNull(f.notes),
       };
-      return editing
-        ? api.patch<Artist>(`/artists/${initial.id}`, body)
-        : api.post<Artist>("/artists", body);
+      const artist = editing
+        ? await api.patch<Artist>(`${base}/artists/${initial.id}`, body)
+        : await api.post<Artist>(`${base}/artists`, body);
+      await commitLinks(base, "artists", artist.id, links, editing ? initial.links : []);
+      if (!editing && addToList && canRank) await api.put(`${base}/artists/${artist.id}/entry`, {});
+      return artist;
     },
     onSuccess: (saved) => {
-      qc.invalidateQueries({ queryKey: ["artists"] });
+      qc.invalidateQueries({ queryKey: gk(guildId, "artists") });
+      if (!editing && addToList) qc.invalidateQueries({ queryKey: rk(guildId, userId, "artists") });
       onClose(saved.name, saved.id);
     },
   });
@@ -72,23 +83,18 @@ export function ArtistForm(props: {
           <input value={f.name_en} onChange={bind("name_en")} />
         </label>
 
-        <label>Discography link
-          <input required type="url"
-                 value={f.discography_link} onChange={bind("discography_link")} />
-        </label>
-
         <div className="grid-2">
           <label>Birth / formed nationality
-            <select required value={f.birth_nationality}
+            <select required value={f.birth_nationality} disabled={natsLoading}
                     onChange={bind("birth_nationality")}>
-              <option value="">—</option>
+              <option value="">{natsLoading ? "Loading…" : "—"}</option>
               {nats.map((n) => <option key={n}>{n}</option>)}
             </select>
           </label>
           <label>Core nationality
-            <select required value={f.core_nationality}
+            <select required value={f.core_nationality} disabled={natsLoading}
                     onChange={bind("core_nationality")}>
-              <option value="">—</option>
+              <option value="">{natsLoading ? "Loading…" : "—"}</option>
               {nats.map((n) => <option key={n}>{n}</option>)}
             </select>
           </label>
@@ -104,6 +110,7 @@ export function ArtistForm(props: {
           </legend>
           {genreOpen && (
             <GenreChooser
+              domain={MUSIC_GENRES}
               selected={primaryGenreSet}
               onChange={setPrimaryGenreSet}
               single
@@ -120,11 +127,20 @@ export function ArtistForm(props: {
           <textarea rows={3} value={f.notes} onChange={bind("notes")} />
         </label>
 
+        <LinksField links={links} onChange={setLinks} />
+
+        {!editing && canRank && (
+          <label className="checkbox-label">
+            <input type="checkbox" checked={addToList} onChange={(e) => setAddToList(e.target.checked)} />
+            Add to my list
+          </label>
+        )}
+
         <footer>
-          <button type="button" onClick={() => onClose()}>Cancel</button>
-          <button type="submit" disabled={save.isPending}>
+          <button type="button" onClick={() => onClose()} disabled={save.isPending}>Cancel</button>
+          <BusyButton type="submit" busy={save.isPending} busyLabel={editing ? "Saving…" : "Creating…"}>
             {editing ? "Save" : "Create"}
-          </button>
+          </BusyButton>
         </footer>
         {save.isError && <p className="err">{(save.error as Error).message}</p>}
       </form>

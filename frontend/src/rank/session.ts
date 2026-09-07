@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 const VERSION = 2;
-const PREFIX = "mediaranker.pairwise.v2:";
+const PREFIX = "mediaranker.pairwise.v3:";
+
+/** Two accounts on one browser must not inherit each other's skips and undo
+ *  snapshots, and the same scope name means different entries in different
+ *  guilds. */
+export const scopeFor = (userId: number, guildId: number, scope: string) => `${userId}:${guildId}:${scope}`;
 /** v1 kept the answers here; they're migrated into the DB on first load. */
 export const LEGACY_PREFIX = "mediaranker.pairwise.v1:";
 

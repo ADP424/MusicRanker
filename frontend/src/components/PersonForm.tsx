@@ -2,8 +2,10 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 
 import { api } from "../api/client";
-import { useNationalities } from "../api/hooks";
-import type { Person, PersonBody } from "../api/types";
+import { gk } from "../api/keys";
+import { useGuildApi, useNationalities } from "../api/hooks";
+import type { Person } from "../api/types";
+import { BusyButton } from "./Spinner";
 
 const orNull = (s: string) => (s.trim() === "" ? null : s);
 
@@ -11,7 +13,8 @@ export function PersonForm(props: { initial?: Person; onClose: (savedName?: stri
   const { initial, onClose } = props;
   const editing = initial !== undefined;
   const qc = useQueryClient();
-  const { data: nats = [] } = useNationalities();
+  const { guildId, base } = useGuildApi();
+  const { data: nats = [], isLoading: natsLoading } = useNationalities();
   const ref = useRef<HTMLDialogElement>(null);
 
   useEffect(() => {
@@ -28,7 +31,7 @@ export function PersonForm(props: { initial?: Person; onClose: (savedName?: stri
 
   const save = useMutation({
     mutationFn: () => {
-      const body: PersonBody = {
+      const body = {
         name: f.name,
         name_en: orNull(f.name_en),
         birth_nationality: f.birth_nationality,
@@ -36,11 +39,11 @@ export function PersonForm(props: { initial?: Person; onClose: (savedName?: stri
         notes: orNull(f.notes),
       };
       return editing
-        ? api.patch<Person>(`/persons/${initial.id}`, body)
-        : api.post<Person>("/persons", body);
+        ? api.patch<Person>(`${base}/persons/${initial.id}`, body)
+        : api.post<Person>(`${base}/persons`, body);
     },
     onSuccess: (saved) => {
-      qc.invalidateQueries({ queryKey: ["people"] });
+      qc.invalidateQueries({ queryKey: gk(guildId, "people") });
       onClose(saved.name, saved.id);
     },
   });
@@ -65,14 +68,14 @@ export function PersonForm(props: { initial?: Person; onClose: (savedName?: stri
 
         <div className="grid-2">
           <label>Birth nationality
-            <select required value={f.birth_nationality} onChange={bind("birth_nationality")}>
-              <option value="">—</option>
+            <select required value={f.birth_nationality} disabled={natsLoading} onChange={bind("birth_nationality")}>
+              <option value="">{natsLoading ? "Loading…" : "—"}</option>
               {nats.map((n) => <option key={n}>{n}</option>)}
             </select>
           </label>
           <label>Core nationality
-            <select required value={f.core_nationality} onChange={bind("core_nationality")}>
-              <option value="">—</option>
+            <select required value={f.core_nationality} disabled={natsLoading} onChange={bind("core_nationality")}>
+              <option value="">{natsLoading ? "Loading…" : "—"}</option>
               {nats.map((n) => <option key={n}>{n}</option>)}
             </select>
           </label>
@@ -83,8 +86,10 @@ export function PersonForm(props: { initial?: Person; onClose: (savedName?: stri
         </label>
 
         <footer>
-          <button type="button" onClick={() => onClose()}>Cancel</button>
-          <button type="submit" disabled={save.isPending}>{editing ? "Save" : "Create"}</button>
+          <button type="button" onClick={() => onClose()} disabled={save.isPending}>Cancel</button>
+          <BusyButton type="submit" busy={save.isPending} busyLabel={editing ? "Saving…" : "Creating…"}>
+            {editing ? "Save" : "Create"}
+          </BusyButton>
         </footer>
         {save.isError && <p className="err">{(save.error as Error).message}</p>}
       </form>

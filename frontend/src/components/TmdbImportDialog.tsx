@@ -1,8 +1,14 @@
+import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useMemo, useState } from "react";
 
-import { useTmdbImport, useTmdbLookup } from "../api/hooks";
+import { api } from "../api/client";
+import { useGuildApi, useTmdbImport, useTmdbLookup } from "../api/hooks";
+import { rk } from "../api/keys";
 import type { CastRole, TmdbImportPersonIn, TmdbLookup, TmdbPerson } from "../api/types";
-import { MovieGenreChooser } from "./MovieGenreChooser";
+import { GenreChooser } from "../genre/GenreChooser";
+import { MOVIE_GENRES } from "../genre/config";
+import { useCan } from "../guild/GuildProvider";
+import { BusyButton } from "./Spinner";
 import { TmdbPersonRow, tmdbCreditDescription, type TmdbRowPerson } from "./TmdbPersonRow";
 
 /** The movie API's credit shape -> the shared row's media-agnostic shape. */
@@ -20,6 +26,7 @@ function toRow(p: TmdbPerson): TmdbRowPerson {
       person_id: m.person_id,
       person_name: m.person_name,
       has_entries: m.has_screen_entries,
+      filmography_overlap: m.filmography_overlap,
       artist_summary: m.artist_summary,
       game_summary: m.game_summary,
     })),
@@ -45,7 +52,11 @@ export function TmdbImportDialog({
   >({});
   const [selectedGenres, setSelectedGenres] = useState<Set<number>>(new Set());
   const [error, setError] = useState<string | null>(null);
+  const [addToList, setAddToList] = useState(true);
 
+  const qc = useQueryClient();
+  const { guildId, userId, base } = useGuildApi();
+  const canRank = useCan("rank");
   const lookupMut = useTmdbLookup();
   const importMut = useTmdbImport();
 
@@ -63,7 +74,7 @@ export function TmdbImportDialog({
           const res: Record<number, number | null> = {};
           for (const p of data.people) {
             if (p.tmdb_id in res) continue;
-            const v = p.db_matches.find((m) => m.has_screen_entries);
+            const v = p.db_matches.find((m) => m.filmography_overlap);
             if (v) res[p.tmdb_id] = v.person_id;
           }
           setResolutions(res);
@@ -135,7 +146,11 @@ export function TmdbImportDialog({
         genre_ids: [...selectedGenres],
       },
       {
-        onSuccess(result) {
+        async onSuccess(result) {
+          if (addToList && canRank) {
+            await api.put(`${base}/movies/${result.movie_id}/entry`, {});
+            qc.invalidateQueries({ queryKey: rk(guildId, userId, "movies") });
+          }
           onSuccess?.(result.movie_id);
           onClose();
         },
@@ -144,7 +159,7 @@ export function TmdbImportDialog({
     );
   }, [
     lookup, checked, roles, resolutions, selectedGenres,
-    releaseYear, importMut, onClose, onSuccess,
+    releaseYear, importMut, onClose, onSuccess, addToList, canRank, base, qc, guildId, userId,
   ]);
 
   const unmappedGenres = useMemo(
@@ -156,6 +171,8 @@ export function TmdbImportDialog({
   );
 
   /* ── render ──────────────────────────────────────── */
+
+  const importing = importMut.isPending || importMut.isSuccess;
 
   return (
     <div className="modal tmdb-import-panel">
@@ -192,9 +209,7 @@ export function TmdbImportDialog({
               max={2099}
             />
           </label>
-          <button type="submit" disabled={!title.trim() || lookupMut.isPending}>
-            {lookupMut.isPending ? "Searching…" : "Search TMDB"}
-          </button>
+          <BusyButton type="submit" busy={lookupMut.isPending} busyLabel="Searching TMDB…" disabled={!title.trim()}>Search TMDB</BusyButton>
           <button type="button" onClick={onClose}>Cancel</button>
         </form>
       )}
@@ -264,7 +279,7 @@ export function TmdbImportDialog({
           {/* genres */}
           <section className="tip-section">
             <h3>Genres</h3>
-            <MovieGenreChooser selected={selectedGenres} onChange={setSelectedGenres} />
+            <GenreChooser domain={MOVIE_GENRES} selected={selectedGenres} onChange={setSelectedGenres} />
             {unmappedGenres.length > 0 && (
               <p className="tip-warn">
                 Unmapped TMDB genres: {unmappedGenres.join(", ")}
@@ -274,17 +289,16 @@ export function TmdbImportDialog({
 
           {/* footer */}
           <footer className="tip-footer">
-            <button type="button" onClick={onClose}>Cancel</button>
-            <button
-              type="button"
-              className="tip-primary"
-              disabled={importMut.isPending || releaseYear === 0}
-              onClick={handleImport}
-            >
-              {importMut.isPending
-                ? "Importing…"
-                : `Import Movie + ${checkedCount} people`}
-            </button>
+            {canRank && (
+              <label className="checkbox-label tip-add-to-list">
+                <input type="checkbox" checked={addToList} onChange={(e) => setAddToList(e.target.checked)} />
+                Add to my list
+              </label>
+            )}
+            <button type="button" onClick={onClose} disabled={importing}>Cancel</button>
+            <BusyButton type="button" className="tip-primary" busy={importing} busyLabel="Importing…" disabled={releaseYear === 0} onClick={handleImport}>
+              Import Movie + {checkedCount} people
+            </BusyButton>
           </footer>
         </>
       )}

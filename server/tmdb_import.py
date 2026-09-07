@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import Literal
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from . import tmdb_common as common
@@ -59,6 +60,7 @@ def _person_out(
                 person_id=m.person_id,
                 person_name=m.person_name,
                 has_screen_entries=m.has_screen_entries,
+                filmography_overlap=m.filmography_overlap,
                 artist_summary=m.artist_summary,
                 game_summary=m.game_summary,
             )
@@ -68,7 +70,7 @@ def _person_out(
 
 
 # ── Public: lookup ───────────────────────────────────────────────────
-def tmdb_lookup(db: Session, title: str, year: int | None) -> TmdbLookupOut | None:
+def tmdb_lookup(db: Session, guild_id: int, title: str, year: int | None) -> TmdbLookupOut | None:
     client: TmdbClient = common.client()
 
     best, ambiguous = common.search_best(
@@ -102,7 +104,7 @@ def tmdb_lookup(db: Session, title: str, year: int | None) -> TmdbLookupOut | No
 
     # ── One batched DB query, then all TMDB person calls in parallel ──
     all_names = {m["name"] for m, _ in crew} | {m["name"] for m in cast}
-    persons_by_name = common.batch_load_persons(db, all_names)
+    persons_by_name = common.batch_load_persons(db, guild_id, all_names)
     person_data = common.fetch_person_data_bulk(client, [m["id"] for m, _ in crew] + [m["id"] for m in cast])
 
     def enrich(member: dict) -> common.PersonEnrichment:
@@ -130,7 +132,7 @@ def tmdb_lookup(db: Session, title: str, year: int | None) -> TmdbLookupOut | No
             )
         )
 
-    db_genres = common.db_genres_for(db, MEDIA_FLAG)
+    db_genres = common.db_genres_for(db, guild_id, MEDIA_FLAG)
     genres = [
         TmdbGenreOut(
             tmdb_id=tg["id"],
@@ -154,30 +156,29 @@ def tmdb_lookup(db: Session, title: str, year: int | None) -> TmdbLookupOut | No
 
 
 # ── Public: import ───────────────────────────────────────────────────
-def tmdb_import_movie(db: Session, body: TmdbImportIn) -> TmdbImportOut:
-    existing = (
-        db.query(Movie)
-        .filter(
+def tmdb_import_movie(db: Session, guild_id: int, user_id: int, body: TmdbImportIn) -> TmdbImportOut:
+    existing = db.scalar(
+        select(Movie).where(
+            Movie.guild_id == guild_id,
             (Movie.name == body.title) | (Movie.name_en == body.title),
             Movie.release_year == body.release_year,
         )
-        .first()
     )
     if existing:
         raise ValueError(f"Movie '{body.title}' ({body.release_year}) already exists (id={existing.id})")
 
     name_en = body.title if body.original_title and body.original_title != body.title else None
     movie = Movie(
+        guild_id=guild_id, created_by_user_id=user_id,
         name=body.title,
         name_en=name_en,
         runtime_minutes=body.runtime_minutes,
         release_year=body.release_year,
-        global_rank=common.append_rank(db, Movie.global_rank, id_col=Movie.id),
     )
     db.add(movie)
     db.flush()
 
-    resolver = common.PeopleResolver(db)
+    resolver = common.PeopleResolver(db, guild_id, user_id)
     linked: set[tuple[int, CastRole]] = set()
     for p in body.people:
         if p.role is CastRole.creator:
@@ -191,10 +192,12 @@ def tmdb_import_movie(db: Session, body: TmdbImportIn) -> TmdbImportOut:
         key = (person.id, p.role)
         if key not in linked:
             linked.add(key)
-            db.add(MoviePerson(movie_id=movie.id, person_id=person.id, role=p.role))
+            db.add(MoviePerson(movie_id=movie.id, person_id=person.id, role=p.role, guild_id=guild_id))
 
     if body.genre_ids:
-        movie.genres = db.query(Genre).filter(Genre.id.in_(body.genre_ids), Genre.is_movie.is_(True)).all()
+        movie.genres = list(db.scalars(
+            select(Genre).where(Genre.guild_id == guild_id, Genre.id.in_(body.genre_ids), Genre.is_movie.is_(True))
+        ).all())
 
     db.flush()
     return TmdbImportOut(

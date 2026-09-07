@@ -1,6 +1,9 @@
+import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useMemo, useState } from "react";
 
-import { useIgdbImport, useIgdbLookup } from "../api/hooks";
+import { api } from "../api/client";
+import { useGuildApi, useIgdbImport, useIgdbLookup } from "../api/hooks";
+import { rk } from "../api/keys";
 import type {
   GameRole,
   IgdbImportPersonIn,
@@ -8,8 +11,10 @@ import type {
   IgdbPerson,
 } from "../api/types";
 import { GAME_ROLE_LABELS, GAME_ROLES } from "../api/types";
-import { GameGenreChooser } from "./GameGenreChooser";
-import { GamePlatformChooser } from "./GamePlatformChooser";
+import { GenreChooser } from "../genre/GenreChooser";
+import { GAME_GENRES, GAME_PLATFORMS } from "../genre/config";
+import { useCan } from "../guild/GuildProvider";
+import { BusyButton } from "./Spinner";
 
 /** IGDB company ids and person ids are separate id spaces — namespace by source. */
 const creditKey = (p: IgdbPerson) => `${p.source}:${p.igdb_id}`;
@@ -35,9 +40,9 @@ function PersonRow({
   onRoleChange: (r: GameRole) => void;
   onResolve: (personId: number | null) => void;
 }) {
-  const verifiedMatch = person.db_matches.find((m) => m.has_game_entries);
-  const zeroGameMatches = person.db_matches.filter(
-    (m) => !m.has_game_entries,
+  const verifiedMatch = person.db_matches.find((m) => m.filmography_overlap);
+  const unverifiedMatches = person.db_matches.filter(
+    (m) => !m.filmography_overlap,
   );
 
   // Overridden = verified match exists but user explicitly changed away from it
@@ -107,8 +112,9 @@ function PersonRow({
                   />
                   Use <strong>{m.person_name}</strong> (#{m.person_id})
                   {!m.has_game_entries && " — no games"}
+                  {m.has_game_entries && !m.filmography_overlap && " — different game catalog, name match only"}
                 </label>
-                {!m.has_game_entries && (
+                {!m.filmography_overlap && (
                   <div className="tip-artist-summary">{m.artist_summary}</div>
                 )}
               </div>
@@ -125,11 +131,11 @@ function PersonRow({
           </div>
         )}
 
-        {/* No verified match, zero-game matches exist */}
-        {!verifiedMatch && zeroGameMatches.length > 0 && (
+        {/* No verified match, unverified matches exist */}
+        {!verifiedMatch && unverifiedMatches.length > 0 && (
           <div className="tip-match tip-match--warn">
-            <p>⚠ Name match with <strong>no game entries</strong>:</p>
-            {zeroGameMatches.map((m) => (
+            <p>⚠ Name match only — not verified against this game's credits:</p>
+            {unverifiedMatches.map((m) => (
               <div key={m.person_id} className="tip-conflict-option">
                 <label>
                   <input
@@ -139,6 +145,9 @@ function PersonRow({
                     onChange={() => onResolve(m.person_id)}
                   />
                   Use existing <strong>{m.person_name}</strong> (#{m.person_id})
+                  {m.has_game_entries
+                    ? " — has game credits, but a different catalog"
+                    : " — no game entries"}
                 </label>
                 <div className="tip-artist-summary">{m.artist_summary}</div>
               </div>
@@ -179,7 +188,11 @@ export function IgdbImportDialog({
   const [selectedGenres, setSelectedGenres] = useState<Set<number>>(new Set());
   const [selectedPlatforms, setSelectedPlatforms] = useState<Set<number>>(new Set());
   const [error, setError] = useState<string | null>(null);
+  const [addToList, setAddToList] = useState(true);
 
+  const qc = useQueryClient();
+  const { guildId, userId, base } = useGuildApi();
+  const canRank = useCan("rank");
   const lookupMut = useIgdbLookup();
   const importMut = useIgdbImport();
 
@@ -198,7 +211,7 @@ export function IgdbImportDialog({
           for (const p of data.people) {
             const k = creditKey(p);
             if (k in res) continue;
-            const v = p.db_matches.find((m) => m.has_game_entries);
+            const v = p.db_matches.find((m) => m.filmography_overlap);
             if (v) res[k] = v.person_id;
           }
           setResolutions(res);
@@ -276,7 +289,11 @@ export function IgdbImportDialog({
         platform_ids: [...selectedPlatforms],
       },
       {
-        onSuccess(result) {
+        async onSuccess(result) {
+          if (addToList && canRank) {
+            await api.put(`${base}/games/${result.game_id}/entry`, {});
+            qc.invalidateQueries({ queryKey: rk(guildId, userId, "games") });
+          }
           onSuccess?.(result.game_id);
           onClose();
         },
@@ -285,7 +302,7 @@ export function IgdbImportDialog({
     );
   }, [
     lookup, checked, roles, resolutions, selectedGenres, selectedPlatforms,
-    releaseYear, importMut, onClose, onSuccess,
+    releaseYear, importMut, onClose, onSuccess, addToList, canRank, base, qc, guildId, userId,
   ]);
 
   const unmappedGenres = useMemo(
@@ -305,6 +322,8 @@ export function IgdbImportDialog({
   );
 
   /* ── render ──────────────────────────────────────── */
+
+  const importing = importMut.isPending || importMut.isSuccess;
 
   return (
     <div className="modal tmdb-import-panel">
@@ -341,9 +360,7 @@ export function IgdbImportDialog({
               max={2099}
             />
           </label>
-          <button type="submit" disabled={!title.trim() || lookupMut.isPending}>
-            {lookupMut.isPending ? "Searching…" : "Search IGDB"}
-          </button>
+          <BusyButton type="submit" busy={lookupMut.isPending} busyLabel="Searching IGDB…" disabled={!title.trim()}>Search IGDB</BusyButton>
           <button type="button" onClick={onClose}>Cancel</button>
         </form>
       )}
@@ -412,7 +429,7 @@ export function IgdbImportDialog({
           {/* genres */}
           <section className="tip-section">
             <h3>Genres</h3>
-            <GameGenreChooser selected={selectedGenres} onChange={setSelectedGenres} />
+            <GenreChooser domain={GAME_GENRES} selected={selectedGenres} onChange={setSelectedGenres} />
             {unmappedGenres.length > 0 && (
               <p className="tip-warn">
                 Unmapped IGDB genres: {unmappedGenres.join(", ")}
@@ -423,7 +440,7 @@ export function IgdbImportDialog({
           {/* platforms */}
           <section className="tip-section">
             <h3>Platforms</h3>
-            <GamePlatformChooser selected={selectedPlatforms} onChange={setSelectedPlatforms} />
+            <GenreChooser domain={GAME_PLATFORMS} selected={selectedPlatforms} onChange={setSelectedPlatforms} />
             {unmappedPlatforms.length > 0 && (
               <p className="tip-warn">
                 Unmapped IGDB platforms: {unmappedPlatforms.join(", ")}
@@ -433,17 +450,16 @@ export function IgdbImportDialog({
 
           {/* footer */}
           <footer className="tip-footer">
-            <button type="button" onClick={onClose}>Cancel</button>
-            <button
-              type="button"
-              className="tip-primary"
-              disabled={importMut.isPending || releaseYear === 0}
-              onClick={handleImport}
-            >
-              {importMut.isPending
-                ? "Importing…"
-                : `Import Game + ${checkedCount} people`}
-            </button>
+            {canRank && (
+              <label className="checkbox-label tip-add-to-list">
+                <input type="checkbox" checked={addToList} onChange={(e) => setAddToList(e.target.checked)} />
+                Add to my list
+              </label>
+            )}
+            <button type="button" onClick={onClose} disabled={importing}>Cancel</button>
+            <BusyButton type="button" className="tip-primary" busy={importing} busyLabel="Importing…" disabled={releaseYear === 0} onClick={handleImport}>
+              Import Game + {checkedCount} people
+            </BusyButton>
           </footer>
         </>
       )}

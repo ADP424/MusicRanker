@@ -10,8 +10,10 @@ from ..api_models import (
     GenrePatch,
     MusicGenreOut,
 )
+from ..authz import Capability
 from ..database import get_database
 from ..database_models import Genre, GenreCategory
+from ..deps import GuildContext, guild_ctx
 from .genre_router import make_category_router, make_genre_router
 
 router = make_genre_router(
@@ -38,12 +40,16 @@ category_router = make_category_router(
 
 
 @router.patch("/{gid}/media-types", response_model=MusicGenreOut)
-def update_media_types(gid: int, body: GenreMediaTypesPatch, db: Session = Depends(get_database)):
+def update_media_types(gid: int, body: GenreMediaTypesPatch,
+                       ctx: GuildContext = Depends(guild_ctx(Capability.CATALOG_EDIT)),
+                       db: Session = Depends(get_database)):
     """Cross-domain: toggle which media types a genre applies to. Not scoped
     to this router's own ``is_music`` flag — this is the one place all four
-    flags are editable together."""
+    flags are editable together. Still guild-scoped: `make_genre_router`'s own
+    routes only check the domain flag, but every write here must also confirm
+    the genre belongs to the caller's guild."""
     genre = db.get(Genre, gid)
-    if not genre:
+    if genre is None or genre.guild_id != ctx.guild_id:
         raise HTTPException(404, "Genre not found")
     updates = body.model_dump(exclude_unset=True)
     for k, v in updates.items():
@@ -54,6 +60,7 @@ def update_media_types(gid: int, body: GenreMediaTypesPatch, db: Session = Depen
     is_television = updates.get("is_television", genre.is_television)
     if not (is_music or is_movie or is_game or is_television):
         raise HTTPException(422, "Genre must apply to at least one media type")
+    genre.updated_by_user_id = ctx.user_id
     db.flush()
     genre.parent_ids = [p.id for p in genre.parents]
     genre.category_ids = [c.id for c in genre.music_categories]

@@ -1,10 +1,11 @@
+import { useGuildApi } from "../api/hooks";
 import {
   useGameGenreCategories,
   useGameGenres,
   useGamePlatformCategories,
   useGamePlatforms,
   useGenreCategories,
-  useGenres,
+  useMusicGenres,
   useMovieGenreCategories,
   useMovieGenres,
   useTelevisionGenreCategories,
@@ -18,14 +19,16 @@ export type GenreLike = Genre | GamePlatform;
 /**
  * Per-domain config that parameterizes the shared genre components. The music,
  * movie, and game genre/platform features differ only in these values.
+ * `apiBase`/`categoryApiBase` are hooks because they must be guild-prefixed,
+ * which requires the guild context.
  */
 export interface GenreDomain {
   /** React-Query key prefix, also the API path segment: "genres" | "movie-genres". */
   key: string;
-  /** API base path: "/genres" | "/movie-genres". */
-  apiBase: string;
-  /** Category CRUD base path: "/genres/categories" | "/movie-genres/categories". */
-  categoryApiBase: string;
+  /** Guild-prefixed API base path: "/guilds/{g}/genres" | "/guilds/{g}/movie-genres". */
+  useApiBase: () => string;
+  /** Guild-prefixed category CRUD base path. */
+  useCategoryApiBase: () => string;
   /** Router base for detail-page links: "/music/genres" | "/movies/genres". */
   routeBase: string;
   /** Singular noun for headings: "Genre" | "Movie Genre". */
@@ -35,9 +38,9 @@ export interface GenreDomain {
   /** Example for the comma-separated Synonyms input. */
   synonymPlaceholder: string;
   /** The list hook that loads all genres in this domain. */
-  useAll: () => { data?: GenreLike[] };
+  useAll: () => { data?: GenreLike[]; isLoading: boolean };
   /** The list hook that loads all categories in this domain. */
-  useCategories: () => { data?: GenreCategory[] };
+  useCategories: () => { data?: GenreCategory[]; isLoading: boolean };
   /** Which shared-genre boolean flag this domain corresponds to; unset for
    * taxonomies (like game platforms) that aren't split by media type. */
   mediaTypeFlag?: "is_music" | "is_movie" | "is_game" | "is_television";
@@ -45,21 +48,21 @@ export interface GenreDomain {
 
 export const MUSIC_GENRES: GenreDomain = {
   key: "genres",
-  apiBase: "/genres",
-  categoryApiBase: "/genres/categories",
+  useApiBase: () => `${useGuildApi().base}/genres`,
+  useCategoryApiBase: () => `${useGuildApi().base}/genres/categories`,
   routeBase: "/music/genres",
   heading: "Genre",
   noun: "genres",
   synonymPlaceholder: "Prog Rock, Prog",
-  useAll: useGenres,
+  useAll: useMusicGenres,
   useCategories: useGenreCategories,
   mediaTypeFlag: "is_music",
 };
 
 export const MOVIE_GENRES: GenreDomain = {
   key: "movie-genres",
-  apiBase: "/movie-genres",
-  categoryApiBase: "/movie-genres/categories",
+  useApiBase: () => `${useGuildApi().base}/movie-genres`,
+  useCategoryApiBase: () => `${useGuildApi().base}/movie-genres/categories`,
   routeBase: "/movies/genres",
   heading: "Movie Genre",
   noun: "genres",
@@ -71,8 +74,8 @@ export const MOVIE_GENRES: GenreDomain = {
 
 export const GAME_GENRES: GenreDomain = {
   key: "game-genres",
-  apiBase: "/game-genres",
-  categoryApiBase: "/game-genres/categories",
+  useApiBase: () => `${useGuildApi().base}/game-genres`,
+  useCategoryApiBase: () => `${useGuildApi().base}/game-genres/categories`,
   routeBase: "/games/genres",
   heading: "Game Genre",
   noun: "genres",
@@ -84,8 +87,8 @@ export const GAME_GENRES: GenreDomain = {
 
 export const TELEVISION_GENRES: GenreDomain = {
   key: "television-genres",
-  apiBase: "/television-genres",
-  categoryApiBase: "/television-genres/categories",
+  useApiBase: () => `${useGuildApi().base}/television-genres`,
+  useCategoryApiBase: () => `${useGuildApi().base}/television-genres/categories`,
   routeBase: "/television/genres",
   heading: "Television Genre",
   noun: "genres",
@@ -98,8 +101,8 @@ export const TELEVISION_GENRES: GenreDomain = {
 /** Platforms are a hierarchical taxonomy, so they reuse the genre UI wholesale. */
 export const GAME_PLATFORMS: GenreDomain = {
   key: "game-platforms",
-  apiBase: "/game-platforms",
-  categoryApiBase: "/game-platforms/categories",
+  useApiBase: () => `${useGuildApi().base}/game-platforms`,
+  useCategoryApiBase: () => `${useGuildApi().base}/game-platforms/categories`,
   routeBase: "/games/platforms",
   heading: "Game Platform",
   noun: "platforms",

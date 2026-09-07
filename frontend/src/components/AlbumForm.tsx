@@ -1,10 +1,15 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 
 import { api } from "../api/client";
-import { useGenres } from "../api/hooks";
-import type { Album, AlbumBody, ArtistRef, Genre } from "../api/types";
-import { GenreChooser } from "./GenreChooser";
+import { useArtistCatalog, useGuildApi, useMusicGenres } from "../api/hooks";
+import { gk, rk } from "../api/keys";
+import type { Album } from "../api/types";
+import { MUSIC_GENRES } from "../genre/config";
+import { GenreChooser } from "../genre/GenreChooser";
+import { useCan } from "../guild/GuildProvider";
+import { commitLinks, LinksField, useLinksField } from "./LinksField";
+import { BusyButton, LoadingState } from "./Spinner";
 
 const orNull = (s: string) => (s.trim() === "" ? null : s);
 
@@ -16,9 +21,12 @@ export function AlbumForm(props: {
   const { artistId, initial, onClose } = props;
   const editing = initial !== undefined;
   const qc = useQueryClient();
-  useGenres(); // warm cache
+  const { guildId, userId, base } = useGuildApi();
+  const canRank = useCan("rank");
+  useMusicGenres(); // warm cache
   const [artistsOpen, setArtistsOpen] = useState(false);
   const [genreOpen, setGenreOpen] = useState(false);
+  const [addToList, setAddToList] = useState(true);
 
   const initMin = initial ? Math.floor(initial.runtime_seconds / 60) : 0;
   const initSec = initial ? initial.runtime_seconds % 60 : 0;
@@ -30,98 +38,64 @@ export function AlbumForm(props: {
     sec:          initSec,
     release_year: initial?.release_year ?? new Date().getFullYear(),
     alias:        initial?.alias        ?? "",
-    alias_link:   initial?.alias_link   ?? "",
-    listens:      initial?.listens      ?? 1,
-    listen_link:  initial?.listen_link  ?? "",
     notes:        initial?.notes        ?? "",
   });
 
-  const { data: currentGenres = [] } = useQuery({
-    queryKey: ["albums", initial?.id, "genres"],
-    queryFn: () => api.get<Genre[]>(`/albums/${initial!.id}/genres`),
-    enabled: editing,
-  });
-  const [genreIds, setGenreIds] = useState<Set<number>>(new Set());
-  useEffect(() => {
-    if (editing) setGenreIds(new Set(currentGenres.map((g) => g.id)));
-  }, [currentGenres]); // eslint-disable-line react-hooks/exhaustive-deps
+  const [genreIds, setGenreIds] = useState<Set<number>>(new Set(initial?.genre_ids ?? []));
+  const [links, setLinks] = useLinksField(initial?.links);
 
-  const { data: currentArtists = [] } = useQuery({
-    queryKey: ["albums", initial?.id, "artists"],
-    queryFn: () => api.get<ArtistRef[]>(`/albums/${initial!.id}/artists`),
-    enabled: editing,
-  });
-  const { data: allArtists = [] } = useQuery({
-    queryKey: ["artists"],
-    queryFn: () => api.get<ArtistRef[]>("/artists"),
-  });
+  const { data: allArtists = [], isLoading: artistsLoading } = useArtistCatalog();
   const [artistIds, setArtistIds] = useState<Set<number>>(
-    () => editing ? new Set() : new Set([artistId])
+    () => new Set(editing ? initial.artists.map((a) => a.id) : [artistId])
   );
   const [artistSearch, setArtistSearch] = useState("");
-  useEffect(() => {
-    if (currentArtists.length) {
-      setArtistIds(new Set(currentArtists.map((a) => a.id)));
-    }
-  }, [currentArtists]);
+
+  const before = useMemo(
+    () => ({ artists: new Set(initial?.artists.map((a) => a.id) ?? []), genres: new Set(initial?.genre_ids ?? []) }),
+    [initial],
+  );
 
   const save = useMutation({
     mutationFn: async () => {
-      const body: AlbumBody = {
-        name: f.name,
-        name_en: orNull(f.name_en),
-        runtime_seconds: f.min * 60 + f.sec,
-        release_year: f.release_year,
-        alias: orNull(f.alias),
-        alias_link: orNull(f.alias_link),
-        listens: f.listens,
-        listen_link: orNull(f.listen_link),
-        notes: orNull(f.notes),
-      };
-
+      const runtime_seconds = f.min * 60 + f.sec;
       let album: Album;
       if (editing) {
-        album = await api.patch<Album>(`/albums/${initial.id}`, body);
+        album = await api.patch<Album>(`${base}/albums/${initial.id}`, {
+          name: f.name, name_en: orNull(f.name_en), runtime_seconds, release_year: f.release_year,
+          alias: orNull(f.alias), notes: orNull(f.notes),
+        });
+        for (const id of artistIds) if (!before.artists.has(id)) await api.put(`${base}/albums/${album.id}/artists/${id}`);
+        for (const id of before.artists) if (!artistIds.has(id)) await api.delete(`${base}/albums/${album.id}/artists/${id}`);
+        for (const id of genreIds) if (!before.genres.has(id)) await api.put(`${base}/albums/${album.id}/genres/${id}`);
+        for (const id of before.genres) if (!genreIds.has(id)) await api.delete(`${base}/albums/${album.id}/genres/${id}`);
+        await commitLinks(base, "albums", album.id, links, initial.links);
       } else {
-        album = await api.post<Album>("/albums", body);
+        album = await api.post<Album>(`${base}/albums`, {
+          name: f.name, name_en: orNull(f.name_en), runtime_seconds, release_year: f.release_year,
+          alias: orNull(f.alias), notes: orNull(f.notes), artist_ids: [...artistIds],
+        });
+        for (const id of genreIds) await api.put(`${base}/albums/${album.id}/genres/${id}`);
+        await commitLinks(base, "albums", album.id, links, []);
+        if (addToList && canRank && artistIds.has(artistId)) {
+          await api.put(`${base}/artists/${artistId}/albums/${album.id}/entry`, {});
+        }
       }
-
-      if (editing) {
-        const beforeArtists = new Set(currentArtists.map((a) => a.id));
-        for (const id of artistIds)
-          if (!beforeArtists.has(id)) await api.put(`/albums/${album.id}/artists/${id}`);
-        for (const id of beforeArtists)
-          if (!artistIds.has(id)) await api.delete(`/albums/${album.id}/artists/${id}`);
-      } else {
-        for (const id of artistIds)
-          await api.put(`/albums/${album.id}/artists/${id}`);
-      }
-
-      const before = new Set(currentGenres.map((g) => g.id));
-      for (const id of genreIds)
-        if (!before.has(id)) await api.put(`/albums/${album.id}/genres/${id}`);
-      for (const id of before)
-        if (!genreIds.has(id)) await api.delete(`/albums/${album.id}/genres/${id}`);
-
       return album;
     },
     onSuccess: (album) => {
-      qc.invalidateQueries({ queryKey: ["artists", artistId, "albums"] });
-      qc.invalidateQueries({ queryKey: ["albums", "index"] });
-      if (editing) {
-        qc.invalidateQueries({ queryKey: ["albums", initial.id, "genres"] });
-        qc.invalidateQueries({ queryKey: ["albums", initial.id, "artists"] });
-      }
+      qc.invalidateQueries({ queryKey: gk(guildId, "artists", artistId, "albums") });
+      qc.invalidateQueries({ queryKey: gk(guildId, "artists") });
+      if (!editing && addToList) qc.invalidateQueries({ queryKey: rk(guildId, userId, "artists", artistId, "albums") });
       onClose(album.name, album.id);
     },
   });
 
   const num =
-    (k: "min" | "sec" | "release_year" | "listens") =>
+    (k: "min" | "sec" | "release_year") =>
     (e: React.ChangeEvent<HTMLInputElement>) =>
       setF({ ...f, [k]: Number(e.target.value) });
   const txt =
-    (k: "name" | "name_en" | "alias" | "alias_link" | "listen_link" | "notes") =>
+    (k: "name" | "name_en" | "alias" | "notes") =>
     (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>
       setF({ ...f, [k]: e.target.value });
 
@@ -163,25 +137,9 @@ export function AlbumForm(props: {
           </label>
         </div>
 
-        <div className="grid-2">
-          <label><span className="label-text">Alias <span className="info-icon" title="if released under a different name">ⓘ</span></span>
-            <input value={f.alias} onChange={txt("alias")} />
-          </label>
-          <label>Alias link
-            <input type="url" value={f.alias_link} onChange={txt("alias_link")} />
-          </label>
-        </div>
-
-        <div className="grid-2">
-          <label>Listens
-            <input type="number" min={1} value={f.listens}
-                   onChange={num("listens")} />
-          </label>
-          <label>Listen link
-            <input type="url" value={f.listen_link}
-                   onChange={txt("listen_link")} />
-          </label>
-        </div>
+        <label><span className="label-text">Alias <span className="info-icon" title="if released under a different name">ⓘ</span></span>
+          <input value={f.alias} onChange={txt("alias")} />
+        </label>
 
         <label><span className="label-text">Notes <span className="info-icon" title="optional">ⓘ</span></span>
           <textarea rows={3} value={f.notes} onChange={txt("notes")} />
@@ -204,22 +162,26 @@ export function AlbumForm(props: {
                 value={artistSearch}
                 onChange={(e) => setArtistSearch(e.target.value)}
               />
-              <div className="chips">
-                {filteredArtists.map((a) => (
-                  <label key={a.id} className="chip">
-                    <input
-                      type="checkbox"
-                      checked={artistIds.has(a.id)}
-                      onChange={(e) => {
-                        const next = new Set(artistIds);
-                        e.target.checked ? next.add(a.id) : next.delete(a.id);
-                        setArtistIds(next);
-                      }}
-                    />
-                    {a.name}{a.name_en && <span style={{ opacity: 0.6 }}> ({a.name_en})</span>}
-                  </label>
-                ))}
-              </div>
+              {artistsLoading ? (
+                <LoadingState compact label="Loading artists…" />
+              ) : (
+                <div className="chips">
+                  {filteredArtists.map((a) => (
+                    <label key={a.id} className="chip">
+                      <input
+                        type="checkbox"
+                        checked={artistIds.has(a.id)}
+                        onChange={(e) => {
+                          const next = new Set(artistIds);
+                          e.target.checked ? next.add(a.id) : next.delete(a.id);
+                          setArtistIds(next);
+                        }}
+                      />
+                      {a.name}{a.name_en && <span style={{ opacity: 0.6 }}> ({a.name_en})</span>}
+                    </label>
+                  ))}
+                </div>
+              )}
             </>
           )}
           {!artistsOpen && (
@@ -238,7 +200,7 @@ export function AlbumForm(props: {
             <span className="collapse-arrow">{genreOpen ? "▲" : "▼"}</span>
           </legend>
           {genreOpen && (
-            <GenreChooser selected={genreIds} onChange={setGenreIds} />
+            <GenreChooser domain={MUSIC_GENRES} selected={genreIds} onChange={setGenreIds} />
           )}
           {!genreOpen && (
             <span className="collapsed-summary" onClick={() => setGenreOpen(true)}>
@@ -247,11 +209,20 @@ export function AlbumForm(props: {
           )}
         </fieldset>
 
+        <LinksField links={links} onChange={setLinks} />
+
+        {!editing && canRank && (
+          <label className="checkbox-label">
+            <input type="checkbox" checked={addToList} onChange={(e) => setAddToList(e.target.checked)} />
+            Add to my list
+          </label>
+        )}
+
         <footer>
-          <button type="button" onClick={() => onClose()}>Cancel</button>
-          <button type="submit" disabled={save.isPending}>
+          <button type="button" onClick={() => onClose()} disabled={save.isPending}>Cancel</button>
+          <BusyButton type="submit" busy={save.isPending} busyLabel={editing ? "Saving…" : "Creating…"}>
             {editing ? "Save" : "Create"}
-          </button>
+          </BusyButton>
         </footer>
         {save.isError && <p className="err">{(save.error as Error).message}</p>}
       </form>

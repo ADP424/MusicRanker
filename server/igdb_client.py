@@ -30,6 +30,8 @@ from typing import Any, Optional
 import requests
 from dotenv import load_dotenv
 
+from .lanes import IGDB_LANE
+
 load_dotenv()
 
 IGDB_BASE = "https://api.igdb.com/v4"
@@ -212,7 +214,8 @@ class IgdbClient:
                 "Accept": "application/json",
             }
             try:
-                r = _SESSION.post(f"{IGDB_BASE}/{resource}", data=query, headers=headers, timeout=20)
+                with IGDB_LANE.slot():
+                    r = _SESSION.post(f"{IGDB_BASE}/{resource}", data=query, headers=headers, timeout=20)
             except requests.RequestException as exc:
                 last_exc = exc
                 time.sleep(1.5**attempt)

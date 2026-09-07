@@ -4,3 +4,5 @@ sqlalchemy
 psycopg[binary]
 python-dotenv
 requests
+argon2-cffi
+email-validator

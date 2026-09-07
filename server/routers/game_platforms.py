@@ -12,6 +12,8 @@ from .genre_router import make_category_router, make_genre_router
 router = make_genre_router(
     model=GamePlatform,
     category_model=GamePlatformCategory,
+    category_junction_attr="categories",
+    media_flag=None,
     in_schema=GamePlatformIn,
     patch_schema=GamePlatformPatch,
     out_schema=GamePlatformOut,

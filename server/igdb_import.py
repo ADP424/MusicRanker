@@ -31,7 +31,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from .api_models.igdb_import import (
@@ -57,7 +57,6 @@ from .database_models import (
     Person,
 )
 from .igdb_client import TTL_DETAILS, TTL_SEARCH, IgdbClient, get_sidecar
-from .ranking import rank_between
 
 _KNOWN_NATIONALITIES = set(NATIONALITIES)
 
@@ -125,14 +124,15 @@ def _nationality_from_country(code: int | None) -> str:
 
 def _batch_load_persons(
     db: Session,
+    guild_id: int,
     names: set[str],
 ) -> dict[str, list[Person]]:
-    """Single query for all candidate persons, with eager-loaded relations."""
+    """Single query for all candidate persons in this guild, with eager-loaded relations."""
     if not names:
         return {}
-    rows = (
-        db.query(Person)
-        .filter(Person.name.in_(names) | Person.name_en.in_(names))
+    rows = db.scalars(
+        select(Person)
+        .where(Person.guild_id == guild_id, Person.name.in_(names) | Person.name_en.in_(names))
         .options(
             selectinload(Person.game_links).joinedload(GamePerson.game),
             selectinload(Person.artist_links)
@@ -140,8 +140,7 @@ def _batch_load_persons(
             .selectinload(Artist.album_links)
             .joinedload(AlbumArtist.album),
         )
-        .all()
-    )
+    ).all()
     by_name: dict[str, list[Person]] = {}
     for p in rows:
         by_name.setdefault(p.name, []).append(p)
@@ -191,6 +190,10 @@ def _find_db_matches(
     year: int | None,
     persons_by_name: dict[str, list[Person]],
 ) -> list[DbPersonMatchOut]:
+    """Existing people with this name who could plausibly be this IGDB person.
+    Someone with game credits that share nothing with this title is still
+    surfaced (it's a real name match), just flagged as unverified so the
+    caller can warn that it's a name-only match against a differing catalog."""
     seen: set[int] = set()
     out: list[DbPersonMatchOut] = []
     for c in persons_by_name.get(name, []):
@@ -198,13 +201,13 @@ def _find_db_matches(
             continue
         seen.add(c.id)
         has_games = bool(c.game_links)
-        if has_games and not _filmography_overlaps(c, title, year):
-            continue
+        overlap = _filmography_overlaps(c, title, year) if has_games else False
         out.append(
             DbPersonMatchOut(
                 person_id=c.id,
                 person_name=c.name,
                 has_game_entries=has_games,
+                filmography_overlap=overlap,
                 artist_summary=_artist_summary(c),
             )
         )
@@ -223,7 +226,7 @@ def _match_named(needle: str, rows: list) -> int | None:
 # ── Public: lookup ───────────────────────────────────────────────────
 
 
-def igdb_lookup(db: Session, title: str, year: int | None) -> IgdbLookupOut | None:
+def igdb_lookup(db: Session, guild_id: int, title: str, year: int | None) -> IgdbLookupOut | None:
     client = IgdbClient(get_sidecar())
 
     escaped = title.replace('"', '\\"')
@@ -259,7 +262,7 @@ def igdb_lookup(db: Session, title: str, year: int | None) -> IgdbLookupOut | No
         name = company.get("name")
         if name and (ic.get("developer") or ic.get("publisher")):
             all_names.add(name)
-    persons_by_name = _batch_load_persons(db, all_names)
+    persons_by_name = _batch_load_persons(db, guild_id, all_names)
 
     # ── Build enriched people list (company-level credits) ────────────
     people: list[IgdbPersonOut] = []
@@ -320,7 +323,9 @@ def igdb_lookup(db: Session, title: str, year: int | None) -> IgdbLookupOut | No
                 p.top_credits = credits_by_id.get(p.igdb_id, [])
 
     # ── Genres ───────────────────────────────────────────────────────
-    db_genres = db.query(Genre).filter(Genre.is_game.is_(True)).order_by(Genre.name).all()
+    db_genres = list(db.scalars(
+        select(Genre).where(Genre.guild_id == guild_id, Genre.is_game.is_(True)).order_by(Genre.name)
+    ).all())
     genres = [
         IgdbGenreOut(
             igdb_id=g["id"],
@@ -331,7 +336,9 @@ def igdb_lookup(db: Session, title: str, year: int | None) -> IgdbLookupOut | No
     ]
 
     # ── Platforms ────────────────────────────────────────────────────
-    db_platforms = db.query(GamePlatform).order_by(GamePlatform.name).all()
+    db_platforms = list(db.scalars(
+        select(GamePlatform).where(GamePlatform.guild_id == guild_id).order_by(GamePlatform.name)
+    ).all())
     platforms = [
         IgdbPlatformOut(
             igdb_id=p["id"],
@@ -356,27 +363,19 @@ def igdb_lookup(db: Session, title: str, year: int | None) -> IgdbLookupOut | No
 # ── Public: import ───────────────────────────────────────────────────
 
 
-def igdb_import_game(db: Session, body: IgdbImportIn) -> IgdbImportOut:
-    existing = (
-        db.query(Game)
-        .filter(
+def igdb_import_game(db: Session, guild_id: int, user_id: int, body: IgdbImportIn) -> IgdbImportOut:
+    existing = db.scalar(
+        select(Game).where(
+            Game.guild_id == guild_id,
             (Game.name == body.title) | (Game.name_en == body.title),
             Game.release_year == body.release_year,
         )
-        .first()
     )
     if existing:
         raise ValueError(f"Game '{body.title}' ({body.release_year}) already exists" f" (id={existing.id})")
 
-    max_rank = db.scalar(select(func.max(Game.global_rank)))
-    new_rank = rank_between(max_rank, None)
-
-    game = Game(
-        name=body.title,
-        name_en=None,
-        release_year=body.release_year,
-        global_rank=new_rank,
-    )
+    game = Game(guild_id=guild_id, created_by_user_id=user_id, name=body.title, name_en=None,
+               release_year=body.release_year)
     db.add(game)
     db.flush()
 
@@ -394,11 +393,12 @@ def igdb_import_game(db: Session, body: IgdbImportIn) -> IgdbImportOut:
             person = db.get(Person, person_cache[cache_key])
         elif p.existing_person_id is not None:
             person = db.get(Person, p.existing_person_id)
-            if person is None:
+            if person is None or person.guild_id != guild_id:
                 raise ValueError(f"Person id={p.existing_person_id} not found")
         else:
             nat = p.nationality if p.nationality in _KNOWN_NATIONALITIES else "Unknown"
             person = Person(
+                guild_id=guild_id, created_by_user_id=user_id,
                 name=p.name,
                 name_en=None,
                 birth_nationality=nat,
@@ -413,7 +413,7 @@ def igdb_import_game(db: Session, body: IgdbImportIn) -> IgdbImportOut:
         key = (person.id, p.role)
         if key not in linked:
             linked.add(key)
-            db.add(GamePerson(game_id=game.id, person_id=person.id, role=p.role))
+            db.add(GamePerson(game_id=game.id, person_id=person.id, role=p.role, guild_id=guild_id))
 
         if person.id not in seen_ids:
             seen_ids.add(person.id)
@@ -426,9 +426,13 @@ def igdb_import_game(db: Session, body: IgdbImportIn) -> IgdbImportOut:
             (created if is_new else reused).append(item)
 
     if body.genre_ids:
-        game.genres = db.query(Genre).filter(Genre.id.in_(body.genre_ids), Genre.is_game.is_(True)).all()
+        game.genres = list(db.scalars(
+            select(Genre).where(Genre.guild_id == guild_id, Genre.id.in_(body.genre_ids), Genre.is_game.is_(True))
+        ).all())
     if body.platform_ids:
-        game.platforms = db.query(GamePlatform).filter(GamePlatform.id.in_(body.platform_ids)).all()
+        game.platforms = list(db.scalars(
+            select(GamePlatform).where(GamePlatform.guild_id == guild_id, GamePlatform.id.in_(body.platform_ids))
+        ).all())
 
     db.flush()
     return IgdbImportOut(

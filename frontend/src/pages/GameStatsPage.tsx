@@ -5,6 +5,8 @@ import {
   Scatter, ScatterChart, Tooltip, XAxis, YAxis,
 } from "recharts";
 import { api } from "../api/client";
+import { useGuildApi } from "../api/hooks";
+import { MemberPicker } from "../components/MemberPicker";
 import type {
   GameDecadeRow, GameGenreRow, GameNatRow, GamePlatformRow,
   GameStatsSummary, GameYearRow, ScatterPoint,
@@ -13,17 +15,23 @@ import {
   C1, SCATTER_FILL, ChartWrap, Section, Stat, StatGrid, Table, fmt2,
   type ColDef,
 } from "../stats/shared";
+import { LoadingState } from "../components/Spinner";
 
-const useSummary    = () => useQuery({ queryKey: ["game-stats", "summary"],     queryFn: () => api.get<GameStatsSummary>("/game-stats/summary") });
-const useByYear     = () => useQuery({ queryKey: ["game-stats", "by-year"],     queryFn: () => api.get<GameYearRow[]>("/game-stats/by-year") });
-const useByDecade   = () => useQuery({ queryKey: ["game-stats", "by-decade"],   queryFn: () => api.get<GameDecadeRow[]>("/game-stats/by-decade") });
-const useByNat      = () => useQuery({ queryKey: ["game-stats", "by-nat"],      queryFn: () => api.get<{ core_nationality: GameNatRow[]; birth_nationality: GameNatRow[] }>("/game-stats/by-nationality") });
-const useByGenre    = () => useQuery({ queryKey: ["game-stats", "by-genre"],    queryFn: () => api.get<{ by_genre: GameGenreRow[]; by_root_genre: GameGenreRow[] }>("/game-stats/by-genre") });
-const useByPlatform = () => useQuery({ queryKey: ["game-stats", "by-platform"], queryFn: () => api.get<{ by_platform: GamePlatformRow[]; by_root_platform: GamePlatformRow[] }>("/game-stats/by-platform") });
-const useScatter    = () => useQuery({ queryKey: ["game-stats", "scatter"],     queryFn: () => api.get<{
-  game_score_vs_hours: ScatterPoint[];
-  person_score_vs_hours: ScatterPoint[];
-}>("/game-stats/scatter") });
+function useStatsHooks(userId: number) {
+  const { guildId, base } = useGuildApi();
+  const qs = `?user_id=${userId}`;
+  const useSummary    = () => useQuery({ queryKey: ["g", guildId, "u", userId, "game-stats", "summary"],     queryFn: () => api.get<GameStatsSummary>(`${base}/game-stats/summary${qs}`) });
+  const useByYear     = () => useQuery({ queryKey: ["g", guildId, "u", userId, "game-stats", "by-year"],     queryFn: () => api.get<GameYearRow[]>(`${base}/game-stats/by-year${qs}`) });
+  const useByDecade   = () => useQuery({ queryKey: ["g", guildId, "u", userId, "game-stats", "by-decade"],   queryFn: () => api.get<GameDecadeRow[]>(`${base}/game-stats/by-decade${qs}`) });
+  const useByNat      = () => useQuery({ queryKey: ["g", guildId, "u", userId, "game-stats", "by-nat"],      queryFn: () => api.get<{ core_nationality: GameNatRow[]; birth_nationality: GameNatRow[] }>(`${base}/game-stats/by-nationality${qs}`) });
+  const useByGenre    = () => useQuery({ queryKey: ["g", guildId, "u", userId, "game-stats", "by-genre"],    queryFn: () => api.get<{ by_genre: GameGenreRow[]; by_root_genre: GameGenreRow[] }>(`${base}/game-stats/by-genre${qs}`) });
+  const useByPlatform = () => useQuery({ queryKey: ["g", guildId, "u", userId, "game-stats", "by-platform"], queryFn: () => api.get<{ by_platform: GamePlatformRow[]; by_root_platform: GamePlatformRow[] }>(`${base}/game-stats/by-platform${qs}`) });
+  const useScatter    = () => useQuery({ queryKey: ["g", guildId, "u", userId, "game-stats", "scatter"],     queryFn: () => api.get<{
+    game_score_vs_hours: ScatterPoint[];
+    person_score_vs_hours: ScatterPoint[];
+  }>(`${base}/game-stats/scatter${qs}`) });
+  return { useSummary, useByYear, useByDecade, useByNat, useByGenre, useByPlatform, useScatter };
+}
 
 const TABS = ["Stats", "Graphs"] as const;
 type Tab = typeof TABS[number];
@@ -31,17 +39,44 @@ type Tab = typeof TABS[number];
 const score4 = (v: any) => (v != null ? (v as number).toFixed(4) : "—");
 
 export function GameStatsPage() {
+  const { userId: me } = useGuildApi();
   const [tab, setTab] = useState<Tab>("Stats");
+  const [viewingUser, setViewingUser] = useState(me);
+  const { useSummary, useByYear, useByDecade, useByNat, useByGenre, useByPlatform, useScatter } = useStatsHooks(viewingUser);
 
-  const { data: summary, isLoading } = useSummary();
-  const { data: byYear   = [] } = useByYear();
-  const { data: byDecade = [] } = useByDecade();
-  const { data: byNat }         = useByNat();
-  const { data: byGenre }       = useByGenre();
-  const { data: byPlatform }    = useByPlatform();
-  const { data: scatter }       = useScatter();
+  const summaryQ  = useSummary();
+  const yearQ     = useByYear();
+  const decadeQ   = useByDecade();
+  const natQ      = useByNat();
+  const genreQ    = useByGenre();
+  const platformQ = useByPlatform();
+  const scatterQ  = useScatter();
+  const summary   = summaryQ.data;
+  const byYear    = yearQ.data ?? [];
+  const byDecade  = decadeQ.data ?? [];
+  const byNat     = natQ.data;
+  const byGenre   = genreQ.data;
+  const byPlatform = platformQ.data;
+  const scatter   = scatterQ.data;
+  const loading   = [summaryQ, yearQ, decadeQ, natQ, genreQ, platformQ, scatterQ].some((q) => q.isLoading);
 
-  if (isLoading || !summary) return <p>Loading…</p>;
+  const header = (
+    <div className="stats-tabs" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+      <div style={{ display: "flex" }}>
+        {TABS.map((t) => (
+          <button key={t} className={`stats-tab${tab === t ? " stats-tab-active" : ""}`} onClick={() => setTab(t)}>{t}</button>
+        ))}
+      </div>
+      <MemberPicker value={viewingUser} onChange={setViewingUser} />
+    </div>
+  );
+
+  if (summaryQ.isError) {
+    return <div className="stats-page">{header}<p className="err">{(summaryQ.error as Error).message}</p></div>;
+  }
+  if (loading || !summary) {
+    return <div className="stats-page">{header}<LoadingState label="Crunching stats…" /></div>;
+  }
 
   const coreNat       = byNat?.core_nationality      ?? [];
   const birthNat      = byNat?.birth_nationality     ?? [];
@@ -74,11 +109,7 @@ export function GameStatsPage() {
 
   return (
     <div className="stats-page">
-      <div className="stats-tabs">
-        {TABS.map((t) => (
-          <button key={t} className={`stats-tab${tab === t ? " stats-tab-active" : ""}`} onClick={() => setTab(t)}>{t}</button>
-        ))}
-      </div>
+      {header}
 
       {tab === "Stats" && (
         <>

@@ -1,8 +1,10 @@
 import { ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { BusyButton, LoadingState, Spinner } from "../components/Spinner";
+import { useGuildApi } from "../api/hooks";
 import type { Comparison, ComparisonIn } from "../api/types";
 import { analyze, nextQuestion, pairKey, sameArray, sameSet, type RankAnalysis } from "./pairwise";
-import { takeLegacyComparisons, usePairwiseSession } from "./session";
+import { scopeFor, takeLegacyComparisons, usePairwiseSession } from "./session";
 
 export interface RankItem {
   id: number;
@@ -64,12 +66,14 @@ function AnswersPanel({
   onSwap,
   onDelete,
   busy,
+  pendingKey,
 }: {
   analysis: RankAnalysis;
   byId: Map<number, RankItem>;
   onSwap: (c: Comparison) => void;
   onDelete: (c: Comparison) => void;
   busy: boolean;
+  pendingKey: string | null;
 }) {
   const [filter, setFilter] = useState("");
   const [onlyConflicts, setOnlyConflicts] = useState(false);
@@ -139,12 +143,12 @@ function AnswersPanel({
                   <span title="Part of a preference cycle">⚠ in a cycle</span>
                 ) : null}
               </span>
-              <button className="icon" title="Swap: the other one wins" disabled={busy} onClick={() => onSwap(c)}>
+              <BusyButton className="icon" title="Swap: the other one wins" disabled={busy} busy={pendingKey === k} busyLabel={null} onClick={() => onSwap(c)}>
                 ⇄
-              </button>
-              <button className="icon" title="Delete this answer" disabled={busy} onClick={() => onDelete(c)}>
+              </BusyButton>
+              <BusyButton className="icon" title="Delete this answer" disabled={busy} busy={pendingKey === k} busyLabel={null} onClick={() => onDelete(c)}>
                 ✕
-              </button>
+              </BusyButton>
             </div>
           );
         })}
@@ -168,8 +172,10 @@ export function PairwiseRankPage({
   onApply,
   tabs,
 }: Props) {
-  const { session, patch } = usePairwiseSession(scopeKey);
+  const { guildId, userId } = useGuildApi();
+  const { session, patch } = usePairwiseSession(scopeFor(userId, guildId, scopeKey));
   const [busy, setBusy] = useState(false);
+  const [pendingKey, setPendingKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [confirmClear, setConfirmClear] = useState(false);
   const [preview, setPreview] = useState(false);
@@ -219,8 +225,9 @@ export function PairwiseRankPage({
   const blockedBySkips = !question && !analysis.complete && skipped.size > 0;
 
   // ── actions ─────────────────────────────────────────────────────────────────
-  const run = useCallback(async (fn: () => Promise<unknown>) => {
+  const run = useCallback(async (fn: () => Promise<unknown>, key: string | null = null) => {
     setBusy(true);
+    setPendingKey(key);
     setError(null);
     try {
       await fn();
@@ -228,13 +235,14 @@ export function PairwiseRankPage({
       setError((e as Error)?.message ?? String(e));
     } finally {
       setBusy(false);
+      setPendingKey(null);
     }
   }, []);
 
   const answer = useCallback(
     (winner_id: number, loser_id: number) => {
       patch((s) => ({ skipped: s.skipped.filter(([a, b]) => pairKey(a, b) !== pairKey(winner_id, loser_id)) }));
-      void run(() => onAnswer({ winner_id, loser_id }));
+      void run(() => onAnswer({ winner_id, loser_id }), pairKey(winner_id, loser_id));
     },
     [onAnswer, patch, run],
   );
@@ -253,7 +261,7 @@ export function PairwiseRankPage({
       if (!sameArray(previous, next)) await onApply(next);
       patch({ undo: { previous, next, at: Date.now() } });
       setPreview(false);
-    });
+    }, "apply");
   }
 
   async function undoOrder() {
@@ -262,7 +270,7 @@ export function PairwiseRankPage({
     await run(async () => {
       if (!sameArray(snap.previous, ids)) await onApply(snap.previous);
       patch({ undo: null });
-    });
+    }, "undo");
   }
 
   // ── keyboard ────────────────────────────────────────────────────────────────
@@ -296,7 +304,7 @@ export function PairwiseRankPage({
 
   let questionBody: ReactNode;
   if (isLoading) {
-    questionBody = <p className="rank-empty">Loading…</p>;
+    questionBody = <LoadingState label={`Loading ${nounPlural}…`} />;
   } else if (items.length < 2) {
     questionBody = <p className="rank-empty">You need at least two {nounPlural} before there's anything to compare.</p>;
   } else if (analysis.complete) {
@@ -320,7 +328,10 @@ export function PairwiseRankPage({
     questionBody = (
       <>
         <p className="rank-question">
-          Which do you prefer? <span className="meta">(question {answered + 1} of ≈{estTotal})</span>
+          Which do you prefer?{" "}
+          <span className="meta">
+            (question {answered + 1} of ≈{estTotal}){busy && <> · <Spinner size="sm" label="Saving answer" /></>}
+          </span>
         </p>
         <div className="rank-cards">
           <button className="rank-card" disabled={busy} onClick={() => answer(question.a, question.b)}>
@@ -378,9 +389,7 @@ export function PairwiseRankPage({
           </span>
           <span style={{ display: "flex", gap: "0.5rem" }}>
             <button onClick={() => patch({ undo: null })}>Dismiss</button>
-            <button onClick={undoOrder} disabled={busy}>
-              Undo
-            </button>
+            <BusyButton busy={pendingKey === "undo"} disabled={busy} onClick={undoOrder}>Undo</BusyButton>
           </span>
         </div>
       )}
@@ -427,8 +436,9 @@ export function PairwiseRankPage({
         analysis={analysis}
         byId={byId}
         busy={busy}
+        pendingKey={pendingKey}
         onSwap={(c) => answer(c.loser_id, c.winner_id)}
-        onDelete={(c) => void run(() => onDeleteAnswer(c.winner_id, c.loser_id))}
+        onDelete={(c) => void run(() => onDeleteAnswer(c.winner_id, c.loser_id), pairKey(c.winner_id, c.loser_id))}
       />
 
       {preview && (
@@ -443,9 +453,9 @@ export function PairwiseRankPage({
               <OrderDiff previous={ids} next={analysis.order} byId={byId} />
               <footer>
                 <button onClick={() => setPreview(false)}>Cancel</button>
-                <button className="rank-primary" onClick={applyOrder} disabled={busy || !analysis.movedCount}>
-                  {busy ? "Replacing…" : "Replace current list"}
-                </button>
+                <BusyButton className="rank-primary" busy={pendingKey === "apply"} busyLabel="Replacing…" disabled={busy || !analysis.movedCount} onClick={applyOrder}>
+                  Replace current list
+                </BusyButton>
               </footer>
             </div>
           </div>
@@ -455,10 +465,8 @@ export function PairwiseRankPage({
       {confirmClear && (
         <ConfirmDialog
           message={`Permanently delete all ${answered} stored answer${answered === 1 ? "" : "s"} for this list?`}
-          onConfirm={() => {
-            setConfirmClear(false);
-            void run(() => onClearAnswers());
-          }}
+          busy={pendingKey === "clear"}
+          onConfirm={() => { void run(() => onClearAnswers(), "clear").then(() => setConfirmClear(false)); }}
           onCancel={() => setConfirmClear(false)}
         />
       )}

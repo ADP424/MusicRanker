@@ -20,9 +20,9 @@ import re
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from decimal import Decimal
 from typing import Iterator, Optional, Sequence
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from .database_models import (
@@ -39,7 +39,6 @@ from .database_models import (
     TelevisionEpisodePerson,
     TelevisionShowPerson,
 )
-from .ranking import rank_at
 from .tmdb_client import TTL_SEARCH, WORKERS, TmdbClient, get_sidecar
 
 #: One call per person covers both media types, and identity is a *person*
@@ -406,16 +405,15 @@ def person_load_options() -> list:
     ]
 
 
-def batch_load_persons(db: Session, names: set[str]) -> dict[str, list[Person]]:
-    """Single query for all candidate persons, relations eager-loaded."""
+def batch_load_persons(db: Session, guild_id: int, names: set[str]) -> dict[str, list[Person]]:
+    """Single query for all candidate persons in this guild, relations eager-loaded."""
     if not names:
         return {}
-    rows = (
-        db.query(Person)
-        .filter(Person.name.in_(names) | Person.name_en.in_(names))
+    rows = db.scalars(
+        select(Person)
+        .where(Person.guild_id == guild_id, Person.name.in_(names) | Person.name_en.in_(names))
         .options(*person_load_options())
-        .all()
-    )
+    ).all()
     by_name: dict[str, list[Person]] = {}
     for p in rows:
         by_name.setdefault(p.name, []).append(p)
@@ -467,6 +465,7 @@ class PersonMatch:
     person_id: int
     person_name: str
     has_screen_entries: bool
+    filmography_overlap: bool
     artist_summary: str
     game_summary: str
 
@@ -477,8 +476,10 @@ def find_db_matches(
     persons_by_name: dict[str, list[Person]],
 ) -> list[PersonMatch]:
     """Existing people with this name who could plausibly be this TMDB person.
-    Someone with screen credits that share *nothing* with the TMDB filmography
-    is demonstrably a different human and is dropped."""
+    Someone with screen credits that share nothing with the TMDB filmography is
+    still surfaced (it's a real name match — e.g. our title differs from TMDB's,
+    like "Dune: Part One" vs. TMDB's "Dune"), just flagged as unverified so the
+    caller can warn that it's a name-only match against a differing filmography."""
     seen: set[int] = set()
     out: list[PersonMatch] = []
     for c in persons_by_name.get(name, []):
@@ -486,13 +487,13 @@ def find_db_matches(
             continue
         seen.add(c.id)
         has = has_screen_entries(c)
-        if has and not filmography_overlaps(c, film_keys):
-            continue
+        overlap = filmography_overlaps(c, film_keys) if has else False
         out.append(
             PersonMatch(
                 person_id=c.id,
                 person_name=c.name,
                 has_screen_entries=has,
+                filmography_overlap=overlap,
                 artist_summary=artist_summary(c),
                 game_summary=game_summary(c),
             )
@@ -565,8 +566,10 @@ def match_genre(tmdb_name: str, db_genres: list[Genre]) -> int | None:
     return None
 
 
-def db_genres_for(db: Session, media_flag: str) -> list[Genre]:
-    return db.query(Genre).filter(getattr(Genre, media_flag).is_(True)).order_by(Genre.name).all()
+def db_genres_for(db: Session, guild_id: int, media_flag: str) -> list[Genre]:
+    return list(db.scalars(
+        select(Genre).where(Genre.guild_id == guild_id, getattr(Genre, media_flag).is_(True)).order_by(Genre.name)
+    ).all())
 
 
 # ── Import-side person resolution ────────────────────────────────────
@@ -583,8 +586,10 @@ class PeopleResolver:
     created/reused exactly once per person even when the same human is credited
     on the show *and* on a dozen episodes."""
 
-    def __init__(self, db: Session):
+    def __init__(self, db: Session, guild_id: int, created_by_user_id: int):
         self.db = db
+        self.guild_id = guild_id
+        self.created_by_user_id = created_by_user_id
         self._by_tmdb: dict[int, Person] = {}
         self._seen: set[int] = set()
         self.created: list[ResolvedPerson] = []
@@ -603,11 +608,14 @@ class PeopleResolver:
             person = self._by_tmdb[tmdb_id]
         elif existing_person_id is not None:
             person = self.db.get(Person, existing_person_id)
-            if person is None:
+            if person is None or person.guild_id != self.guild_id:
                 raise ValueError(f"Person id={existing_person_id} not found")
         else:
             nat = nationality if nationality in KNOWN_NATIONALITIES else "Unknown"
-            person = Person(name=name, name_en=None, birth_nationality=nat, core_nationality=nat)
+            person = Person(
+                guild_id=self.guild_id, created_by_user_id=self.created_by_user_id,
+                name=name, name_en=None, birth_nationality=nat, core_nationality=nat,
+            )
             self.db.add(person)
             self.db.flush()
             is_new = True
@@ -618,8 +626,3 @@ class PeopleResolver:
             item = ResolvedPerson(person.id, person.name, person.birth_nationality, is_new)
             (self.created if is_new else self.reused).append(item)
         return person
-
-
-def append_rank(db: Session, rank_col, *, id_col, scope=None) -> Decimal:
-    """The rank for a newly imported row: straight after the current maximum."""
-    return rank_at(db, rank_col, None, exclude_col=id_col, exclude=None, scope=scope)

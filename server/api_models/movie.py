@@ -1,9 +1,12 @@
+from __future__ import annotations
+
 from decimal import Decimal
 
 from pydantic import BaseModel, Field
 
 from ..database_models.movie_cast_member import CastRole
 from .base import ORMSchema
+from .music import LinkOut, NamedRef
 
 
 class MoviePersonRef(BaseModel):
@@ -13,22 +16,12 @@ class MoviePersonRef(BaseModel):
     role: CastRole
 
 
-class MovieSoundtrackAlbumRef(BaseModel):
-    id: int
-    name: str
-    name_en: str | None = None
-    artist_ids: list[int] = []
-
-
 class MovieIn(BaseModel):
     name: str
     name_en: str | None = None
     runtime_minutes: int = Field(ge=0)
     release_year: int
-    watches: int = Field(default=1, ge=1)
-    watch_link: str | None = None
     notes: str | None = None
-    position: int | None = Field(default=None, ge=1)
 
 
 class MoviePatch(BaseModel):
@@ -36,35 +29,40 @@ class MoviePatch(BaseModel):
     name_en: str | None = None
     runtime_minutes: int | None = Field(default=None, ge=0)
     release_year: int | None = None
-    watches: int | None = Field(default=None, ge=1)
-    watch_link: str | None = None
     notes: str | None = None
 
 
 class MovieOut(ORMSchema):
-    model_config = ORMSchema.model_config.copy()
-    model_config["populate_by_name"] = True
-
     id: int
     name: str
-    name_en: str | None = None
+    name_en: str | None
     runtime_minutes: int
     release_year: int
-    watches: int
-    watch_link: str | None
     notes: str | None
-    global_rank: Decimal | None
-    position: int | None = None
     persons: list[MoviePersonRef] = []
     genre_ids: list[int] = []
-    soundtrack_album_refs: list[MovieSoundtrackAlbumRef] = Field(default=[], serialization_alias="soundtrack_albums")
+    links: list[LinkOut] = []
+    soundtrack_albums: list[NamedRef] = []
+    in_my_list: bool = False
 
 
-class MovieIndex(ORMSchema):
-    """Slim movie shape for global cache / search."""
+class RankedMovieOut(BaseModel):
+    position: int
+    rank: Decimal
+    watches: int
+    notes: str | None
+    movie: MovieOut
 
-    id: int
-    name: str
-    name_en: str | None = None
-    person_ids: list[int] = []
-    genre_ids: list[int] = []
+
+class MovieEntryIn(BaseModel):
+    """The personal layer. Creating this row is what "add to my list" means.
+    Fields left unset (rather than explicitly null) are a partial update — the
+    existing value on the row is kept. See `upsert_entry` in routers/movies.py."""
+    watches: int | None = Field(default=None, ge=1)
+    notes: str | None = None
+    position: int | None = Field(default=None, ge=1)
+
+
+class MovieEntryOut(BaseModel):
+    watches: int
+    notes: str | None

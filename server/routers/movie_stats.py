@@ -1,10 +1,11 @@
 """
-Movie stats router — all aggregate / analytical endpoints.
+Movie stats router — aggregate / analytical endpoints, computed from one guild
+member's personal ranking (defaults to the caller).
 
 Movie score formula
--------------------
-Each movie has its own global_rank. Score = 1 / position (1-based rank order).
-Person score = mean of scores of all their movies.
+--------------------
+Score = 1 / position (1-based, per the viewing member's own ranking).
+Person score = mean of scores of all their (ranked) movies.
 """
 
 from __future__ import annotations
@@ -13,17 +14,28 @@ from collections import defaultdict
 from statistics import mean
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session as DbSession
 
+from ..authz import Capability
 from ..database import get_database
-from ..database_models import Genre, Movie, MoviePerson, Person
+from ..database_models import Genre, GuildMember, Movie, MoviePerson, Person, UserMovieRank
 from ..database_models.genre_parent import genre_parents
-from ..database_models.movie import movie_genres_junction
+from ..database_models.junctions import movie_genres_junction
 from ..database_models.movie_cast_member import CastRole
+from ..deps import GuildContext, guild_ctx
 
-router = APIRouter(prefix="/movie-stats", tags=["movie-stats"])
+router = APIRouter(prefix="/guilds/{guild_id}/movie-stats", tags=["movie-stats"])
+VIEW = guild_ctx(Capability.VIEW)
+
+
+def _target_user(db: DbSession, ctx: GuildContext, user_id: int | None) -> int:
+    if user_id is None or user_id == ctx.user_id:
+        return ctx.user_id
+    if db.get(GuildMember, (ctx.guild_id, user_id)) is None:
+        raise HTTPException(404, "Not a member of this guild")
+    return user_id
 
 
 # ---------------------------------------------------------------------------
@@ -31,30 +43,44 @@ router = APIRouter(prefix="/movie-stats", tags=["movie-stats"])
 # ---------------------------------------------------------------------------
 
 
-def _load(db: Session):
+def _load(db: DbSession, ctx: GuildContext, uid: int):
     """
     Returns:
-        movies_ranked: list of Movie in global_rank order, each with .position set
+        movies: list of Movie in the viewing member's rank order
+        movie_score: dict[movie_id, float]
+        watches_by_movie: dict[movie_id, int]
         person_movies: dict[person_id, list[(Movie, score)]]
         person_by_id: dict[int, Person]
-        movie_score: dict[movie_id, float]
     """
-    movies: list[Movie] = list(db.scalars(select(Movie).order_by(Movie.global_rank)).all())
+    rank_rows = list(db.scalars(
+        select(UserMovieRank)
+        .where(UserMovieRank.user_id == uid, UserMovieRank.guild_id == ctx.guild_id)
+        .order_by(UserMovieRank.rank, UserMovieRank.movie_id)
+    ).all())
+    movie_ids = [r.movie_id for r in rank_rows]
+    movie_by_id: dict[int, Movie] = {m.id: m for m in db.scalars(
+        select(Movie).where(Movie.id.in_(movie_ids))
+    ).all()} if movie_ids else {}
+    movies = [movie_by_id[mid] for mid in movie_ids if mid in movie_by_id]
     movie_score: dict[int, float] = {m.id: 1.0 / pos for m, pos in zip(movies, range(1, len(movies) + 1))}
+    watches_by_movie: dict[int, int] = {r.movie_id: r.watches for r in rank_rows}
 
-    links: list[MoviePerson] = list(db.scalars(select(MoviePerson)).all())
+    links: list[MoviePerson] = list(db.scalars(
+        select(MoviePerson).where(MoviePerson.movie_id.in_(movie_ids))
+    ).all()) if movie_ids else []
 
     person_movies: dict[int, list[tuple[Movie, float]]] = defaultdict(list)
-    movie_by_id: dict[int, Movie] = {m.id: m for m in movies}
     for link in links:
         m = movie_by_id.get(link.movie_id)
         if m is not None:
             person_movies[link.person_id].append((m, movie_score[m.id]))
 
-    persons: list[Person] = list(db.scalars(select(Person)).all())
-    person_by_id: dict[int, Person] = {p.id: p for p in persons}
+    person_ids = set(person_movies.keys())
+    person_by_id: dict[int, Person] = {p.id: p for p in db.scalars(
+        select(Person).where(Person.id.in_(person_ids))
+    ).all()} if person_ids else {}
 
-    return movies, movie_score, person_movies, person_by_id
+    return movies, movie_score, watches_by_movie, person_movies, person_by_id
 
 
 # ---------------------------------------------------------------------------
@@ -91,40 +117,42 @@ def _group_stats(items: list[Any], key_fn, score_fn=None) -> list[dict]:
     return result
 
 
-def _genre_ancestors(db: Session) -> dict[int, set[int]]:
+def _genre_ancestors(db: DbSession) -> dict[int, set[int]]:
     rows = db.execute(select(genre_parents.c.genre_id, genre_parents.c.parent_genre_id)).all()
     parent_of: dict[int, set[int]] = defaultdict(set)
     for child_id, parent_id in rows:
         parent_of[child_id].add(parent_id)
-
     all_genre_ids = {gid for gid, _ in rows} | {pid for _, pid in rows}
-    ancestors: dict[int, set[int]] = {gid: set() for gid in all_genre_ids}
+    ancestors: dict[int, set[int]] = {}
 
     def get_ancestors(gid: int) -> set[int]:
-        if gid not in ancestors or (not ancestors[gid] and gid in parent_of):
-            result: set[int] = set()
-            queue = list(parent_of.get(gid, []))
-            visited: set[int] = set()
-            while queue:
-                pid = queue.pop()
-                if pid in visited:
-                    continue
-                visited.add(pid)
-                result.add(pid)
-                queue.extend(parent_of.get(pid, []))
-            ancestors[gid] = result
-        return ancestors.get(gid, set())
+        if gid in ancestors:
+            return ancestors[gid]
+        result: set[int] = set()
+        queue = list(parent_of.get(gid, []))
+        visited: set[int] = set()
+        while queue:
+            pid = queue.pop()
+            if pid in visited:
+                continue
+            visited.add(pid)
+            result.add(pid)
+            queue.extend(parent_of.get(pid, []))
+        ancestors[gid] = result
+        return result
 
     for gid in list(all_genre_ids):
         get_ancestors(gid)
-
     return ancestors
 
 
-def _root_genre_ids(db: Session) -> set[int]:
-    """IDs of movie genres with no parents."""
+def _root_genre_ids(db: DbSession, ctx: GuildContext) -> set[int]:
     has_parent = select(genre_parents.c.genre_id)
-    return {g.id for g in db.scalars(select(Genre).where(Genre.id.not_in(has_parent), Genre.is_movie.is_(True))).all()}
+    return {
+        g.id for g in db.scalars(
+            select(Genre).where(Genre.guild_id == ctx.guild_id, Genre.id.not_in(has_parent), Genre.is_movie.is_(True))
+        ).all()
+    }
 
 
 def _fmt(minutes: float) -> str:
@@ -139,17 +167,15 @@ def _fmt(minutes: float) -> str:
 
 
 @router.get("/summary")
-def summary(db: Session = Depends(get_database)):
-    movies, movie_score, person_movies, person_by_id = _load(db)
+def summary(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+    uid = _target_user(db, ctx, user_id)
+    movies, movie_score, watches_by_movie, person_movies, person_by_id = _load(db, ctx, uid)
 
     total_movies = len(movies)
-    # Only people who actually hold a movie credit — `person_by_id` is the whole
-    # shared people table (musicians, game devs, …), which says nothing about
-    # movies and contradicts avg_movies_per_cast_member below.
     total_persons = len(person_movies)
     unique_runtime_h = sum(m.runtime_minutes for m in movies) / 60
     avg_runtime_h = unique_runtime_h / total_movies if total_movies else 0
-    total_watched_h = sum(m.runtime_minutes * m.watches for m in movies) / 60
+    total_watched_h = sum(m.runtime_minutes * watches_by_movie.get(m.id, 1) for m in movies) / 60
     avg_watched_h = total_watched_h / total_movies if total_movies else 0
 
     avg_movies_per_person = mean(len(v) for v in person_movies.values()) if person_movies else 0
@@ -165,40 +191,36 @@ def summary(db: Session = Depends(get_database)):
         movies, lambda m: _decade(m.release_year), lambda g: mean(movie_score[m.id] for m in g)
     )
 
-    # Pick the "primary" person for nationality stats — use the first director link if any
-    director_links = list(db.scalars(select(MoviePerson).where(MoviePerson.role == CastRole.director)).all())
+    director_links = list(db.scalars(
+        select(MoviePerson).where(MoviePerson.movie_id.in_([m.id for m in movies]), MoviePerson.role == CastRole.director)
+    ).all()) if movies else []
     movie_director: dict[int, Person] = {}
     for link in director_links:
         if link.movie_id not in movie_director:
-            p = person_by_id.get(link.person_id)
+            p = person_by_id.get(link.person_id) or db.get(Person, link.person_id)
             if p:
                 movie_director[link.movie_id] = p
 
     movies_with_director = [m for m in movies if m.id in movie_director]
 
     best_core_nat_movies, worst_core_nat_movies = _best_worst(
-        movies_with_director,
-        lambda m: movie_director[m.id].core_nationality,
+        movies_with_director, lambda m: movie_director[m.id].core_nationality,
         lambda g: mean(movie_score[m.id] for m in g),
     )
     best_birth_nat_movies, worst_birth_nat_movies = _best_worst(
-        movies_with_director,
-        lambda m: movie_director[m.id].birth_nationality,
+        movies_with_director, lambda m: movie_director[m.id].birth_nationality,
         lambda g: mean(movie_score[m.id] for m in g),
     )
 
-    # Person nationality stats (by person's avg movie score)
     persons_with_movies = [
         (p, pairs) for pid, pairs in person_movies.items() if (p := person_by_id.get(pid)) is not None
     ]
     best_core_nat_cast, worst_core_nat_cast = _best_worst(
-        persons_with_movies,
-        lambda t: t[0].core_nationality,
+        persons_with_movies, lambda t: t[0].core_nationality,
         lambda g: mean(mean(score for _, score in t[1]) for t in g),
     )
     best_birth_nat_cast, worst_birth_nat_cast = _best_worst(
-        persons_with_movies,
-        lambda t: t[0].birth_nationality,
+        persons_with_movies, lambda t: t[0].birth_nationality,
         lambda g: mean(mean(score for _, score in t[1]) for t in g),
     )
 
@@ -228,8 +250,9 @@ def summary(db: Session = Depends(get_database)):
 
 
 @router.get("/by-year")
-def by_year(db: Session = Depends(get_database)):
-    movies, movie_score, _, _ = _load(db)
+def by_year(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+    uid = _target_user(db, ctx, user_id)
+    movies, movie_score, *_ = _load(db, ctx, uid)
 
     rows = _group_stats(movies, key_fn=lambda m: m.release_year, score_fn=lambda m: movie_score[m.id])
     for row in rows:
@@ -239,8 +262,9 @@ def by_year(db: Session = Depends(get_database)):
 
 
 @router.get("/by-decade")
-def by_decade(db: Session = Depends(get_database)):
-    movies, movie_score, _, _ = _load(db)
+def by_decade(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+    uid = _target_user(db, ctx, user_id)
+    movies, movie_score, *_ = _load(db, ctx, uid)
 
     def _decade(y):
         return (y // 10) * 10
@@ -253,14 +277,18 @@ def by_decade(db: Session = Depends(get_database)):
 
 
 @router.get("/by-nationality")
-def by_nationality(db: Session = Depends(get_database)):
-    movies, movie_score, person_movies, person_by_id = _load(db)
+def by_nationality(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW),
+                   db: DbSession = Depends(get_database)):
+    uid = _target_user(db, ctx, user_id)
+    movies, movie_score, _, person_movies, person_by_id = _load(db, ctx, uid)
 
-    director_links = list(db.scalars(select(MoviePerson).where(MoviePerson.role == CastRole.director)).all())
+    director_links = list(db.scalars(
+        select(MoviePerson).where(MoviePerson.movie_id.in_([m.id for m in movies]), MoviePerson.role == CastRole.director)
+    ).all()) if movies else []
     movie_director: dict[int, Person] = {}
     for link in director_links:
         if link.movie_id not in movie_director:
-            p = person_by_id.get(link.person_id)
+            p = person_by_id.get(link.person_id) or db.get(Person, link.person_id)
             if p:
                 movie_director[link.movie_id] = p
 
@@ -268,32 +296,34 @@ def by_nationality(db: Session = Depends(get_database)):
     result = {}
     for nat_type in ("core_nationality", "birth_nationality"):
         rows = _group_stats(
-            movies_with_director,
-            key_fn=lambda m, nt=nat_type: getattr(movie_director[m.id], nt),
+            movies_with_director, key_fn=lambda m, nt=nat_type: getattr(movie_director[m.id], nt),
             score_fn=lambda m: movie_score[m.id],
         )
         result[nat_type] = [
-            {
-                "nationality": r["key"],
-                "movie_count": r["count"],
-                "avg_movie_score": r.get("avg_score"),
-            }
+            {"nationality": r["key"], "movie_count": r["count"], "avg_movie_score": r.get("avg_score")}
             for r in rows
         ]
     return result
 
 
 @router.get("/by-genre")
-def by_genre(db: Session = Depends(get_database)):
-    movies, movie_score, _, _ = _load(db)
+def by_genre(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+    uid = _target_user(db, ctx, user_id)
+    movies, movie_score, *_ = _load(db, ctx, uid)
 
-    rows = db.execute(select(movie_genres_junction.c.movie_id, movie_genres_junction.c.genre_id)).all()
+    movie_ids = [m.id for m in movies]
+    rows = db.execute(
+        select(movie_genres_junction.c.movie_id, movie_genres_junction.c.genre_id)
+        .where(movie_genres_junction.c.movie_id.in_(movie_ids))
+    ).all() if movie_ids else []
     movie_genre_ids: dict[int, list[int]] = defaultdict(list)
     for movie_id, genre_id in rows:
         movie_genre_ids[movie_id].append(genre_id)
 
-    genre_by_id: dict[int, Genre] = {g.id: g for g in db.scalars(select(Genre).where(Genre.is_movie.is_(True))).all()}
-    roots = _root_genre_ids(db)
+    genre_by_id: dict[int, Genre] = {
+        g.id: g for g in db.scalars(select(Genre).where(Genre.guild_id == ctx.guild_id, Genre.is_movie.is_(True))).all()
+    }
+    roots = _root_genre_ids(db, ctx)
     ancestors = _genre_ancestors(db)
 
     genre_movies: dict[int, list[Movie]] = defaultdict(list)
@@ -323,15 +353,13 @@ def by_genre(db: Session = Depends(get_database)):
             if g is None:
                 continue
             mov = genre_mov.get(gid, [])
-            result.append(
-                {
-                    "genre_id": gid,
-                    "genre_name": g.name,
-                    "movie_count": len(mov),
-                    "movie_count_direct": len(genre_mov_direct.get(gid, [])),
-                    "avg_movie_score": (round(mean(movie_score[m.id] for m in mov), 6) if mov else None),
-                }
-            )
+            result.append({
+                "genre_id": gid,
+                "genre_name": g.name,
+                "movie_count": len(mov),
+                "movie_count_direct": len(genre_mov_direct.get(gid, [])),
+                "avg_movie_score": (round(mean(movie_score[m.id] for m in mov), 6) if mov else None),
+            })
         return sorted(result, key=lambda r: r["genre_name"])
 
     all_gids = set(genre_by_id.keys())
@@ -342,16 +370,12 @@ def by_genre(db: Session = Depends(get_database)):
 
 
 @router.get("/scatter")
-def scatter(db: Session = Depends(get_database)):
-    movies, movie_score, person_movies, person_by_id = _load(db)
+def scatter(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+    uid = _target_user(db, ctx, user_id)
+    movies, movie_score, _, person_movies, person_by_id = _load(db, ctx, uid)
 
     movie_scatter = [
-        {
-            "movie_id": m.id,
-            "name": m.name,
-            "score": round(movie_score[m.id], 6),
-            "runtime_minutes": m.runtime_minutes,
-        }
+        {"movie_id": m.id, "name": m.name, "score": round(movie_score[m.id], 6), "runtime_minutes": m.runtime_minutes}
         for m in movies
     ]
 
@@ -362,58 +386,47 @@ def scatter(db: Session = Depends(get_database)):
             continue
         avg_score = mean(score for _, score in pairs)
         avg_rt = mean(m.runtime_minutes for m, _ in pairs)
-        cast_scatter.append(
-            {
-                "cast_member_id": pid,
-                "name": p.name,
-                "avg_score": round(avg_score, 6),
-                "avg_runtime_minutes": round(avg_rt, 2),
-            }
-        )
+        cast_scatter.append({
+            "cast_member_id": pid, "name": p.name,
+            "avg_score": round(avg_score, 6), "avg_runtime_minutes": round(avg_rt, 2),
+        })
 
-    return {
-        "movie_score_vs_runtime": movie_scatter,
-        "cast_member_score_vs_runtime": cast_scatter,
-    }
+    return {"movie_score_vs_runtime": movie_scatter, "cast_member_score_vs_runtime": cast_scatter}
 
 
 @router.get("/cast-member-detail/{pid}")
-def cast_member_detail(pid: int, db: Session = Depends(get_database)):
-    movies, movie_score, person_movies, person_by_id = _load(db)
+def cast_member_detail(pid: int, user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW),
+                       db: DbSession = Depends(get_database)):
+    uid = _target_user(db, ctx, user_id)
+    movies, movie_score, watches_by_movie, person_movies, person_by_id = _load(db, ctx, uid)
 
-    p = person_by_id.get(pid)
-    if p is None:
+    p = person_by_id.get(pid) or db.get(Person, pid)
+    if p is None or p.guild_id != ctx.guild_id:
         raise HTTPException(404, "Person not found")
 
     pairs = person_movies.get(pid, [])
     movie_ids = [m.id for m, _ in pairs]
 
     total_runtime_m = sum(m.runtime_minutes for m, _ in pairs)
-    total_watched_m = sum(m.runtime_minutes * m.watches for m, _ in pairs)
+    total_watched_m = sum(m.runtime_minutes * watches_by_movie.get(m.id, 1) for m, _ in pairs)
     avg_runtime_m = total_runtime_m / len(pairs) if pairs else 0
 
-    genre_rows = (
-        db.execute(select(movie_genres_junction.c.genre_id).where(movie_genres_junction.c.movie_id.in_(movie_ids)))
-        .scalars()
-        .all()
-    )
+    genre_rows = db.execute(
+        select(movie_genres_junction.c.genre_id).where(movie_genres_junction.c.movie_id.in_(movie_ids))
+    ).scalars().all() if movie_ids else []
     unique_genre_ids = set(genre_rows)
-    genre_names = sorted(g.name for g in db.scalars(select(Genre).where(Genre.id.in_(unique_genre_ids))).all())
+    genre_names = sorted(g.name for g in db.scalars(select(Genre).where(Genre.id.in_(unique_genre_ids))).all()) \
+        if unique_genre_ids else []
 
-    # Collaborators = other persons on the same movies
     collaborator_ids: set[int] = set()
     for movie_id in movie_ids:
         other_links = db.scalars(
-            select(MoviePerson.person_id).where(
-                MoviePerson.movie_id == movie_id,
-                MoviePerson.person_id != pid,
-            )
+            select(MoviePerson.person_id).where(MoviePerson.movie_id == movie_id, MoviePerson.person_id != pid)
         ).all()
         collaborator_ids.update(other_links)
     collaborator_names = (
         sorted(p2.name for p2 in db.scalars(select(Person).where(Person.id.in_(collaborator_ids))).all())
-        if collaborator_ids
-        else []
+        if collaborator_ids else []
     )
 
     return {

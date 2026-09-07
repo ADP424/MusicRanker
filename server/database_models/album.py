@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 from datetime import timedelta
-from typing import TYPE_CHECKING
 
-from sqlalchemy import CheckConstraint, Interval, Text
+from sqlalchemy import Index, Interval, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .album_game_soundtrack import album_game_soundtrack
@@ -11,18 +10,12 @@ from .album_genre import album_genres
 from .album_movie_soundtrack import album_movie_soundtrack
 from .album_television_soundtrack import album_television_show_soundtrack
 from .base import Base
-
-if TYPE_CHECKING:
-    from .album_artist import AlbumArtist
-    from .game import Game
-    from .genre import Genre
-    from .movie import Movie
-    from .television import TelevisionShow
+from .mixins import Audited, GuildScoped, NormalizedNames, guild_unique
 
 
-class Album(Base):
+class Album(GuildScoped, Audited, NormalizedNames, Base):
     __tablename__ = "albums"
-    __table_args__ = (CheckConstraint("listens >= 1", name="chk_album_listens_min"),)
+    __table_args__ = (guild_unique("albums"), Index("idx_albums_guild_norm", "guild_id", "name_norm"))
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(Text)
@@ -30,37 +23,19 @@ class Album(Base):
     runtime: Mapped[timedelta] = mapped_column(Interval)
     release_year: Mapped[int]
     alias: Mapped[str | None] = mapped_column(Text)
-    alias_link: Mapped[str | None] = mapped_column(Text)
-    listens: Mapped[int] = mapped_column(server_default="1")
-    listen_link: Mapped[str | None] = mapped_column(Text)
     notes: Mapped[str | None] = mapped_column(Text)
+    # `listens` / `listen_link` / `alias_link` are gone: the first is personal
+    # (UserAlbumRank), the last two are now labelled entries in `links`.
 
-    artist_links: Mapped[list[AlbumArtist]] = relationship(
-        "AlbumArtist",
-        back_populates="album",
-        cascade="all, delete-orphan",
-    )
-    genres: Mapped[list[Genre]] = relationship(
-        "Genre",
-        secondary=album_genres,
-    )
-    soundtrack_movies: Mapped[list[Movie]] = relationship(
-        "Movie",
-        secondary=album_movie_soundtrack,
-        back_populates="soundtrack_albums",
-    )
-    soundtrack_games: Mapped[list[Game]] = relationship(
-        "Game",
-        secondary=album_game_soundtrack,
-        back_populates="soundtrack_albums",
-    )
-    soundtrack_television_shows: Mapped[list[TelevisionShow]] = relationship(
-        "TelevisionShow",
-        secondary=album_television_show_soundtrack,
-        back_populates="soundtrack_albums",
-    )
+    artist_links = relationship("AlbumArtist", back_populates="album", cascade="all, delete-orphan",
+                                foreign_keys="AlbumArtist.album_id")
+    genres = relationship("Genre", secondary=album_genres)
+    soundtrack_movies = relationship("Movie", secondary=album_movie_soundtrack, back_populates="soundtrack_albums")
+    soundtrack_games = relationship("Game", secondary=album_game_soundtrack, back_populates="soundtrack_albums")
+    soundtrack_television_shows = relationship("TelevisionShow", secondary=album_television_show_soundtrack,
+                                               back_populates="soundtrack_albums")
+    links = relationship("AlbumLink", cascade="all, delete-orphan", order_by="AlbumLink.position")
 
     @property
     def runtime_seconds(self) -> int:
-        """Exposed to the API in place of the raw timedelta."""
         return int(self.runtime.total_seconds())

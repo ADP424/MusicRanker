@@ -1,45 +1,37 @@
-"""Factories for the genre CRUD/tree router and its category router.
+"""Factories for the guild-scoped genre CRUD/tree router and its category router.
 
-Music, Movie, and Game genres all live in one shared ``Genre`` table/tree
-(and its own three independent category tables), distinguished by the
-``is_music``/``is_movie``/``is_game`` flags. Game platforms are a separate,
-structurally similar but semantically distinct taxonomy with its own model.
-``make_genre_router`` is parameterized by ``media_flag`` (which boolean
-column scopes this domain's genre list) and ``category_junction_attr``
-(which of the model's category relationships this domain uses), so the same
-factory produces all four (music-genre, movie-genre, game-genre,
-game-platform) routers. Game platforms pass a ``media_flag`` too, but since
-``GamePlatform`` has no media-type split it's simply a column that's always
-true — see ``routers/game_platforms.py``.
+One factory serves music, movie, game and television genres (all rows of the
+shared `genres` table, distinguished by `is_*` flags) plus game platforms (their
+own table). Everything is scoped to a guild and gated on capabilities; the
+parent/child tree keeps the cycle guard.
 
-The parent/child tree is shared and unfiltered internally (a genre's
-``parents``/``children`` may reach across media types, since a parent link
-expresses pure taxonomy); only the *lists* returned to a given domain
-(``list``, ``roots``, ``descendants``) are filtered down to that domain's
-flagged genres.
-
-Categories are unordered tags assignable to root (parentless) genres; a
-genre's own ``category_ids`` are the categories assigned directly to it in
-this domain's category junction. Non-root genres don't carry categories
-themselves — callers resolve a genre's "effective" categories by walking up
-to its root ancestors (see the frontend's ``GenreChooser``), so no
-server-side traversal endpoint is needed for that.
+Deliberately no `from __future__ import annotations` here: these routes are
+defined inside a factory function and annotated with parameters captured from
+the *enclosing closure* (`in_schema`, `patch_schema`, `out_schema` — not
+module globals). Under postponed evaluation those annotations become plain
+strings that FastAPI's `get_type_hints()` can't resolve against the function's
+`__globals__` (the closure variable isn't in there), so it silently treats
+`body: in_schema` as un-annotated and routes it to query params instead of the
+JSON body — every POST/PATCH here would 422 with "field required" for `body`
+in the query. Real annotations (evaluated eagerly) don't have this problem.
 """
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..authz import Capability
 from ..database import get_database
+from ..deps import GuildContext, guild_ctx
+from ..guild_junction_helpers import link_guild_scoped
 
 
 def _cycle_path(start, target) -> list | None:
     """Walk *up* `start`'s parent links looking for `target`, breadth-first.
 
-    Returns the chain `[start, …, target]` when `target` is already an ancestor
-    of `start`, else None. `seen` doubles as protection against data that is
-    already cyclical (rows created before this guard existed), so the walk can
-    never spin — the guard must not itself be hangable.
+    Returns `[start, …, target]` when `target` is already an ancestor of `start`,
+    else None. `seen` doubles as protection against data that is already cyclical,
+    so the guard can never itself hang.
     """
     seen = {start.id}
     queue: list[list] = [[start]]
@@ -69,94 +61,93 @@ def make_genre_router(
     category_junction_attr: str = "categories",
     media_flag: str | None = None,
 ) -> APIRouter:
-    """``media_flag``, if given, is the boolean column (e.g. ``"is_movie"``)
-    that scopes this domain's slice of a shared genre table. Leave it unset
-    for taxonomies (like game platforms) that aren't split by media type."""
-    router = APIRouter(prefix=prefix, tags=[tag])
+    router = APIRouter(prefix=f"/guilds/{{guild_id}}{prefix}", tags=[tag])
 
-    def _get(db: Session, gid: int):
-        if g := db.get(model, gid):
-            return g
-        raise HTTPException(404, not_found)
+    VIEW = guild_ctx(Capability.VIEW)
+    CREATE = guild_ctx(Capability.CATALOG_CREATE)
+    EDIT = guild_ctx(Capability.CATALOG_EDIT)
+    DELETE = guild_ctx(Capability.CATALOG_DELETE)
 
-    def _get_category(db: Session, cid: int):
-        if c := db.get(category_model, cid):
-            return c
-        raise HTTPException(404, "Category not found")
+    def _get(db: Session, ctx: GuildContext, gid: int):
+        row = db.get(model, gid)
+        if row is None or row.guild_id != ctx.guild_id:
+            raise HTTPException(404, not_found)
+        return row
 
-    def _categories(genre):
-        return getattr(genre, category_junction_attr)
+    def _get_category(db: Session, ctx: GuildContext, cid: int):
+        cat = db.get(category_model, cid)
+        if cat is None or cat.guild_id != ctx.guild_id:
+            raise HTTPException(404, "Category not found")
+        return cat
 
-    def _in_domain(genre) -> bool:
-        return media_flag is None or bool(getattr(genre, media_flag))
+    def _categories(row):
+        return getattr(row, category_junction_attr)
 
-    def _with_refs(genre):
-        genre.parent_ids = [p.id for p in genre.parents]
-        genre.category_ids = [c.id for c in _categories(genre)]
-        return genre
+    def _in_domain(row) -> bool:
+        return media_flag is None or bool(getattr(row, media_flag))
 
+    def _with_refs(row):
+        row.parent_ids = [p.id for p in row.parents]
+        row.category_ids = [c.id for c in _categories(row)]
+        return row
+
+    # ── Literal paths must precede /{gid} ────────────────────────────────────
     @router.get("", response_model=list[out_schema])
-    def list_genres(db: Session = Depends(get_database)):
-        stmt = select(model).order_by(model.name)
+    def list_genres(ctx: GuildContext = Depends(VIEW), db: Session = Depends(get_database)):
+        stmt = select(model).where(model.guild_id == ctx.guild_id).order_by(model.name)
         if media_flag is not None:
             stmt = stmt.where(getattr(model, media_flag).is_(True))
-        genres = db.scalars(stmt).all()
-        return [_with_refs(g) for g in genres]
+        return [_with_refs(g) for g in db.scalars(stmt).all()]
 
     @router.get("/roots", response_model=list[out_schema])
-    def list_root_genres(db: Session = Depends(get_database)):
-        """This domain's genres that have no parent genres (top-level entries)."""
-        stmt = select(model).where(~model.parents.any()).order_by(model.name)
+    def list_root_genres(ctx: GuildContext = Depends(VIEW), db: Session = Depends(get_database)):
+        stmt = select(model).where(model.guild_id == ctx.guild_id, ~model.parents.any()).order_by(model.name)
         if media_flag is not None:
             stmt = stmt.where(getattr(model, media_flag).is_(True))
-        roots = db.scalars(stmt).all()
-        return [_with_refs(g) for g in roots]
-
-    @router.get("/{gid}", response_model=out_schema)
-    def get_genre(gid: int, db: Session = Depends(get_database)):
-        return _with_refs(_get(db, gid))
+        return [_with_refs(g) for g in db.scalars(stmt).all()]
 
     @router.post("", response_model=out_schema, status_code=201)
-    def create_genre(body: in_schema, db: Session = Depends(get_database)):
+    def create_genre(body: in_schema, ctx: GuildContext = Depends(CREATE), db: Session = Depends(get_database)):
         data = body.model_dump()
         if media_flag is not None:
-            # The domain being posted to always applies; the client may
-            # additionally flag other media types up front (e.g. creating a
-            # genre from the Movies section but also checking "Game"). Only
-            # in_schemas with a media-type mixin (i.e. real genre domains,
-            # not GamePlatform) carry these fields at all.
             data[media_flag] = True
-        genre = model(**data)
-        db.add(genre)
+        row = model(guild_id=ctx.guild_id, created_by_user_id=ctx.user_id, **data)
+        db.add(row)
         db.flush()
-        return _with_refs(genre)
+        return _with_refs(row)
+
+    @router.get("/{gid}", response_model=out_schema)
+    def get_genre(gid: int, ctx: GuildContext = Depends(VIEW), db: Session = Depends(get_database)):
+        return _with_refs(_get(db, ctx, gid))
 
     @router.patch("/{gid}", response_model=out_schema)
-    def update_genre(gid: int, body: patch_schema, db: Session = Depends(get_database)):
-        genre = _get(db, gid)
+    def update_genre(gid: int, body: patch_schema, ctx: GuildContext = Depends(EDIT),
+                     db: Session = Depends(get_database)):
+        row = _get(db, ctx, gid)
         for k, v in body.model_dump(exclude_unset=True).items():
-            setattr(genre, k, v)
-        return _with_refs(genre)
+            setattr(row, k, v)
+        row.updated_by_user_id = ctx.user_id
+        return _with_refs(row)
 
     @router.delete("/{gid}", status_code=204)
-    def delete_genre(gid: int, db: Session = Depends(get_database)):
-        db.delete(_get(db, gid))
+    def delete_genre(gid: int, ctx: GuildContext = Depends(DELETE), db: Session = Depends(get_database)):
+        db.delete(_get(db, ctx, gid))
 
     @router.get("/{gid}/parents", response_model=list[out_schema])
-    def get_parents(gid: int, db: Session = Depends(get_database)):
-        return [_with_refs(g) for g in sorted(_get(db, gid).parents, key=lambda g: g.name)]
+    def get_parents(gid: int, ctx: GuildContext = Depends(VIEW), db: Session = Depends(get_database)):
+        return [_with_refs(g) for g in sorted(_get(db, ctx, gid).parents, key=lambda g: g.name)]
 
     @router.get("/{gid}/children", response_model=list[out_schema])
-    def get_children(gid: int, db: Session = Depends(get_database)):
-        return [_with_refs(g) for g in sorted(_get(db, gid).children, key=lambda g: g.name)]
+    def get_children(gid: int, ctx: GuildContext = Depends(VIEW), db: Session = Depends(get_database)):
+        return [_with_refs(g) for g in sorted(_get(db, ctx, gid).children, key=lambda g: g.name)]
 
     @router.get("/{gid}/descendants", response_model=list[out_schema])
-    def get_descendants(gid: int, db: Session = Depends(get_database)):
-        """All genres reachable downward from this one (breadth-first, deduplicated),
-        filtered to this domain's genres — the walk itself traverses the full shared
-        tree so a domain-filtered intermediate node doesn't sever the chain."""
+    def get_descendants(gid: int, ctx: GuildContext = Depends(VIEW), db: Session = Depends(get_database)):
+        """Everything reachable downward, filtered to this domain. The walk
+        traverses the whole shared tree so a filtered intermediate node doesn't
+        sever the chain; `visited` makes it safe on cyclical data."""
         visited: set[int] = set()
-        queue = list(_get(db, gid).children)
+        queue = list(_get(db, ctx, gid).children)
         result = []
         while queue:
             g = queue.pop(0)
@@ -169,80 +160,75 @@ def make_genre_router(
         return [_with_refs(g) for g in sorted(result, key=lambda g: g.name)]
 
     @router.put("/{gid}/parents/{pid}", status_code=204)
-    def add_parent(gid: int, pid: int, db: Session = Depends(get_database)):
-        genre, parent = _get(db, gid), _get(db, pid)
-        if genre.id == parent.id:
-            raise HTTPException(422, f"'{genre.name}' cannot be its own parent")
-        if parent in genre.parents:
-            return  # idempotent
-        # Putting `parent` above `genre` closes a loop exactly when `genre` is
-        # already somewhere above `parent`. The DB only rejects self-parenting,
-        # so A→B→A was perfectly insertable — and a cycle makes the tree view's
-        # longest-path walk diverge (see GenreTree).
-        loop = _cycle_path(parent, genre)
+    def add_parent(gid: int, pid: int, ctx: GuildContext = Depends(EDIT), db: Session = Depends(get_database)):
+        row, parent = _get(db, ctx, gid), _get(db, ctx, pid)
+        if row.id == parent.id:
+            raise HTTPException(422, f"'{row.name}' cannot be its own parent")
+        if parent in row.parents:
+            return
+        loop = _cycle_path(parent, row)
         if loop is not None:
-            chain = " → ".join(g.name for g in [genre, *loop])
+            chain = " → ".join(g.name for g in [row, *loop])
             raise HTTPException(409, f"That would create a circular parent chain: {chain}")
-        genre.parents.append(parent)
+        link_guild_scoped(db, row, model.parents, parent, guild_id=ctx.guild_id)
 
     @router.delete("/{gid}/parents/{pid}", status_code=204)
-    def remove_parent(gid: int, pid: int, db: Session = Depends(get_database)):
-        genre = _get(db, gid)
-        if (parent := db.get(model, pid)) and parent in genre.parents:
-            genre.parents.remove(parent)
+    def remove_parent(gid: int, pid: int, ctx: GuildContext = Depends(EDIT), db: Session = Depends(get_database)):
+        row = _get(db, ctx, gid)
+        parent = db.get(model, pid)
+        if parent is not None and parent in row.parents:
+            row.parents.remove(parent)
 
     @router.put("/{gid}/categories/{cid}", status_code=204)
-    def add_category(gid: int, cid: int, db: Session = Depends(get_database)):
-        genre, category = _get(db, gid), _get_category(db, cid)
-        if category not in _categories(genre):
-            _categories(genre).append(category)
+    def add_category(gid: int, cid: int, ctx: GuildContext = Depends(EDIT), db: Session = Depends(get_database)):
+        row, cat = _get(db, ctx, gid), _get_category(db, ctx, cid)
+        if cat not in _categories(row):
+            link_guild_scoped(db, row, getattr(model, category_junction_attr), cat, guild_id=ctx.guild_id)
 
     @router.delete("/{gid}/categories/{cid}", status_code=204)
-    def remove_category(gid: int, cid: int, db: Session = Depends(get_database)):
-        genre = _get(db, gid)
-        if (category := db.get(category_model, cid)) and category in _categories(genre):
-            _categories(genre).remove(category)
+    def remove_category(gid: int, cid: int, ctx: GuildContext = Depends(EDIT), db: Session = Depends(get_database)):
+        row = _get(db, ctx, gid)
+        cat = db.get(category_model, cid)
+        if cat is not None and cat in _categories(row):
+            _categories(row).remove(cat)
 
     return router
 
 
-def make_category_router(
-    *,
-    model,
-    in_schema,
-    patch_schema,
-    out_schema,
-    prefix: str,
-    tag: str,
-) -> APIRouter:
-    """CRUD for a genre domain's (unordered, non-hierarchical) categories."""
-    router = APIRouter(prefix=prefix, tags=[tag])
+def make_category_router(*, model, in_schema, patch_schema, out_schema, prefix: str, tag: str) -> APIRouter:
+    router = APIRouter(prefix=f"/guilds/{{guild_id}}{prefix}", tags=[tag])
+    VIEW = guild_ctx(Capability.VIEW)
+    CREATE = guild_ctx(Capability.CATALOG_CREATE)
+    EDIT = guild_ctx(Capability.CATALOG_EDIT)
+    DELETE = guild_ctx(Capability.CATALOG_DELETE)
 
-    def _get(db: Session, cid: int):
-        if c := db.get(model, cid):
-            return c
-        raise HTTPException(404, "Category not found")
+    def _get(db: Session, ctx: GuildContext, cid: int):
+        cat = db.get(model, cid)
+        if cat is None or cat.guild_id != ctx.guild_id:
+            raise HTTPException(404, "Category not found")
+        return cat
 
     @router.get("", response_model=list[out_schema])
-    def list_categories(db: Session = Depends(get_database)):
-        return db.scalars(select(model).order_by(model.name)).all()
+    def list_categories(ctx: GuildContext = Depends(VIEW), db: Session = Depends(get_database)):
+        return db.scalars(select(model).where(model.guild_id == ctx.guild_id).order_by(model.name)).all()
 
     @router.post("", response_model=out_schema, status_code=201)
-    def create_category(body: in_schema, db: Session = Depends(get_database)):
-        category = model(**body.model_dump())
-        db.add(category)
+    def create_category(body: in_schema, ctx: GuildContext = Depends(CREATE), db: Session = Depends(get_database)):
+        cat = model(guild_id=ctx.guild_id, created_by_user_id=ctx.user_id, **body.model_dump())
+        db.add(cat)
         db.flush()
-        return category
+        return cat
 
     @router.patch("/{cid}", response_model=out_schema)
-    def update_category(cid: int, body: patch_schema, db: Session = Depends(get_database)):
-        category = _get(db, cid)
+    def update_category(cid: int, body: patch_schema, ctx: GuildContext = Depends(EDIT),
+                        db: Session = Depends(get_database)):
+        cat = _get(db, ctx, cid)
         for k, v in body.model_dump(exclude_unset=True).items():
-            setattr(category, k, v)
-        return category
+            setattr(cat, k, v)
+        return cat
 
     @router.delete("/{cid}", status_code=204)
-    def delete_category(cid: int, db: Session = Depends(get_database)):
-        db.delete(_get(db, cid))
+    def delete_category(cid: int, ctx: GuildContext = Depends(DELETE), db: Session = Depends(get_database)):
+        db.delete(_get(db, ctx, cid))
 
     return router

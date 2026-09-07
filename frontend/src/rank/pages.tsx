@@ -1,24 +1,12 @@
-import { useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
 import { NavLink, useParams } from "react-router-dom";
-import { api } from "../api/client";
 import {
-  COMPARISONS,
-  useArtists,
-  useComparisonMutations,
-  useComparisons,
-  useGamesRanked,
-  useMoviesRanked,
-  useReorderArtistAlbums,
-  useReorderArtists,
-  useReorderGames,
-  useReorderMovies,
-  useReorderTelevisionEpisodes,
-  useReorderTelevisionShows,
-  useTelevisionShowsRanked,
-  type ComparisonEndpoint,
+  useArtistCatalog, useComparisonMutations, useComparisons, useGuildApi, useRankedMovies,
+  useRankedGames, useRankedTelevisionShows, useReorder, useTelevisionShow, useArtist,
 } from "../api/hooks";
-import type { Album, Artist, TelevisionShow } from "../api/types";
+import { api } from "../api/client";
+import { useQuery } from "@tanstack/react-query";
+import type { Album } from "../api/types";
 import { PairwiseRankPage, type RankItem } from "./PairwiseRankPage";
 
 function mins(m: number) {
@@ -31,9 +19,9 @@ function secs(s: number) {
 }
 
 /** Bundles the four comparison callbacks the page needs. */
-function useAnswers(ep: ComparisonEndpoint) {
-  const { data: comparisons = [], isLoading } = useComparisons(ep);
-  const { upsert, remove, clear } = useComparisonMutations(ep);
+function useAnswers(path: string) {
+  const { data: comparisons = [], isLoading } = useComparisons(path);
+  const { upsert, remove, clear } = useComparisonMutations(path);
   return {
     comparisons,
     isLoading,
@@ -46,9 +34,9 @@ function useAnswers(ep: ComparisonEndpoint) {
 // ── Artists ────────────────────────────────────────────────────────────────────
 
 export function ArtistsRankPage() {
-  const { data: artists = [], isLoading } = useArtists();
-  const answers = useAnswers(COMPARISONS.artists);
-  const reorder = useReorderArtists();
+  const { data: artists = [], isLoading } = useArtistCatalog();
+  const answers = useAnswers("artists");
+  const reorder = useReorder("artists", "artists");
 
   const items: RankItem[] = useMemo(
     () => artists.map((a) => ({ id: a.id, label: a.name, sublabel: a.name_en, meta: a.core_nationality })),
@@ -77,19 +65,16 @@ export function ArtistsRankPage() {
 export function ArtistAlbumsRankPage() {
   const { id } = useParams<{ id: string }>();
   const aid = Number(id);
+  const { guildId, base } = useGuildApi();
 
-  const { data: artist } = useQuery({
-    queryKey: ["artists", aid],
-    queryFn: () => api.get<Artist>(`/artists/${aid}`),
-    enabled: !Number.isNaN(aid),
-  });
+  const { data: artist } = useArtist(aid);
   const { data: albums = [], isLoading } = useQuery({
-    queryKey: ["artists", aid, "albums"],
-    queryFn: () => api.get<Album[]>(`/artists/${aid}/albums`),
+    queryKey: ["g", guildId, "artists", aid, "albums"],
+    queryFn: () => api.get<Album[]>(`${base}/artists/${aid}/albums`),
     enabled: !Number.isNaN(aid),
   });
-  const answers = useAnswers(COMPARISONS.artistAlbums(aid));
-  const reorder = useReorderArtistAlbums(aid);
+  const answers = useAnswers(`artists/${aid}/albums`);
+  const reorder = useReorder(`artists/${aid}/albums`, "artists");
 
   const items: RankItem[] = useMemo(
     () =>
@@ -97,17 +82,17 @@ export function ArtistAlbumsRankPage() {
         id: a.id,
         label: a.name,
         sublabel: a.name_en,
-        meta: `${a.release_year} · ${secs(a.runtime_seconds)} · ${a.listens}×`,
+        meta: `${a.release_year} · ${secs(a.runtime_seconds)}`,
       })),
     [albums],
   );
 
   const tabs = (
     <div className="page-tabs">
-      <NavLink to={`/music/artists/${aid}`} end>
+      <NavLink to={`/g/${guildId}/music/artists/${aid}`} end>
         Overview
       </NavLink>
-      <NavLink to={`/music/artists/${aid}/rank`}>Rank Albums</NavLink>
+      <NavLink to={`/g/${guildId}/music/artists/${aid}/rank`}>Rank Albums</NavLink>
     </div>
   );
 
@@ -132,22 +117,22 @@ export function ArtistAlbumsRankPage() {
 // ── Movies ─────────────────────────────────────────────────────────────────────
 
 export function MoviesRankPage() {
-  const { data: movies = [], isLoading } = useMoviesRanked();
-  const answers = useAnswers(COMPARISONS.movies);
-  const reorder = useReorderMovies();
+  const { data: ranked = [], isLoading } = useRankedMovies();
+  const answers = useAnswers("movies");
+  const reorder = useReorder("movies", "movies");
 
   const items: RankItem[] = useMemo(
     () =>
-      movies.map((m) => {
-        const directors = m.persons.filter((p) => p.role === "director").map((p) => p.name);
+      ranked.map((r) => {
+        const directors = r.movie.persons.filter((p) => p.role === "director").map((p) => p.name);
         return {
-          id: m.id,
-          label: m.name,
-          sublabel: m.name_en,
-          meta: `${m.release_year} · ${mins(m.runtime_minutes)}${directors.length ? ` · ${directors.join(", ")}` : ""}`,
+          id: r.movie.id,
+          label: r.movie.name,
+          sublabel: r.movie.name_en,
+          meta: `${r.movie.release_year} · ${mins(r.movie.runtime_minutes)}${directors.length ? ` · ${directors.join(", ")}` : ""}`,
         };
       }),
-    [movies],
+    [ranked],
   );
 
   return (
@@ -170,19 +155,19 @@ export function MoviesRankPage() {
 // ── Games ──────────────────────────────────────────────────────────────────────
 
 export function GamesRankPage() {
-  const { data: games = [], isLoading } = useGamesRanked();
-  const answers = useAnswers(COMPARISONS.games);
-  const reorder = useReorderGames();
+  const { data: ranked = [], isLoading } = useRankedGames();
+  const answers = useAnswers("games");
+  const reorder = useReorder("games", "games");
 
   const items: RankItem[] = useMemo(
     () =>
-      games.map((g) => ({
-        id: g.id,
-        label: g.name,
-        sublabel: g.name_en,
-        meta: `${g.release_year}${g.hours_played != null ? ` · ${g.hours_played}h played` : ""}`,
+      ranked.map((r) => ({
+        id: r.game.id,
+        label: r.game.name,
+        sublabel: r.game.name_en,
+        meta: `${r.game.release_year}${r.hours_played != null ? ` · ${r.hours_played}h played` : ""}`,
       })),
-    [games],
+    [ranked],
   );
 
   return (
@@ -205,19 +190,19 @@ export function GamesRankPage() {
 // ── Television shows ───────────────────────────────────────────────────────────
 
 export function TelevisionShowsRankPage() {
-  const { data: shows = [], isLoading } = useTelevisionShowsRanked();
-  const answers = useAnswers(COMPARISONS.televisionShows);
-  const reorder = useReorderTelevisionShows();
+  const { data: ranked = [], isLoading } = useRankedTelevisionShows();
+  const answers = useAnswers("television/shows");
+  const reorder = useReorder("television/shows", "television");
 
   const items: RankItem[] = useMemo(
     () =>
-      shows.map((s) => ({
-        id: s.id,
-        label: s.name,
-        sublabel: s.name_en,
-        meta: `${s.release_year} · ${s.episode_count} episode${s.episode_count === 1 ? "" : "s"}`,
+      ranked.map((r) => ({
+        id: r.show.id,
+        label: r.show.name,
+        sublabel: r.show.name_en,
+        meta: `${r.show.release_year} · ${r.show.episode_count} episode${r.show.episode_count === 1 ? "" : "s"}`,
       })),
-    [shows],
+    [ranked],
   );
 
   return (
@@ -242,32 +227,30 @@ export function TelevisionShowsRankPage() {
 export function TelevisionEpisodesRankPage() {
   const { id } = useParams<{ id: string }>();
   const sid = Number(id);
+  const { guildId } = useGuildApi();
 
-  const { data: show, isLoading } = useQuery({
-    queryKey: ["television", "shows", sid],
-    queryFn: () => api.get<TelevisionShow>(`/television/shows/${sid}`),
-    enabled: !Number.isNaN(sid),
-  });
-  const answers = useAnswers(COMPARISONS.televisionEpisodes(sid));
-  const reorder = useReorderTelevisionEpisodes(sid);
+  const { data: show, isLoading: showLoading } = useTelevisionShow(sid);
+  const answers = useAnswers(`television/shows/${sid}/episodes`);
+  const reorder = useReorder(`television/shows/${sid}/episodes`, "television");
+  const { data: episodesRanked = [], isLoading } = useEpisodesForRank(sid);
 
   const items: RankItem[] = useMemo(
     () =>
-      (show?.episodes ?? []).map((e) => ({
+      episodesRanked.map((e) => ({
         id: e.id,
         label: e.name,
         sublabel: e.name_en,
-        meta: `${e.release_year} · ${mins(e.runtime_minutes)} · ${e.watches}×`,
+        meta: `${e.release_year} · ${mins(e.runtime_minutes)}`,
       })),
-    [show],
+    [episodesRanked],
   );
 
   const tabs = (
     <div className="page-tabs">
-      <NavLink to={`/television/${sid}`} end>
+      <NavLink to={`/g/${guildId}/television/shows/${sid}`} end>
         Overview
       </NavLink>
-      <NavLink to={`/television/${sid}/rank`}>Rank Episodes</NavLink>
+      <NavLink to={`/g/${guildId}/television/shows/${sid}/rank`}>Rank Episodes</NavLink>
     </div>
   );
 
@@ -278,7 +261,7 @@ export function TelevisionEpisodesRankPage() {
       noun="episode"
       nounPlural="episodes"
       items={items}
-      isLoading={isLoading || answers.isLoading}
+      isLoading={showLoading || isLoading || answers.isLoading}
       comparisons={answers.comparisons}
       onAnswer={answers.onAnswer}
       onDeleteAnswer={answers.onDeleteAnswer}
@@ -287,4 +270,15 @@ export function TelevisionEpisodesRankPage() {
       tabs={tabs}
     />
   );
+}
+
+function useEpisodesForRank(sid: number) {
+  const { guildId, base } = useGuildApi();
+  return useQuery({
+    queryKey: ["g", guildId, "television", "shows", sid, "episodes"],
+    queryFn: () => api.get<{ id: number; name: string; name_en: string | null; release_year: number; runtime_minutes: number }[]>(
+      `${base}/television/shows/${sid}/episodes`,
+    ),
+    enabled: !Number.isNaN(sid),
+  });
 }

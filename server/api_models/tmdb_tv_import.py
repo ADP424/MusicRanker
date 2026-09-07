@@ -23,6 +23,10 @@ class TmdbTvDbPersonMatchOut(ORMSchema):
     person_id: int
     person_name: str
     has_screen_entries: bool
+    #: True iff `has_screen_entries` and at least one of those credits overlaps
+    #: this TMDB filmography. False (with `has_screen_entries=True`) means this
+    #: is a name-only match against a differing filmography.
+    filmography_overlap: bool
     artist_summary: str
     game_summary: str
 
@@ -102,8 +106,6 @@ class TmdbTvImportEpisodeIn(ORMSchema):
     name_en: str | None = None
     runtime_minutes: int = Field(default=0, ge=0)
     release_year: int
-    watches: int = Field(default=1, ge=1)
-    watch_link: str | None = None
     notes: str | None = None
     people: list[TmdbTvImportPersonIn] = []
     #: Off by default: a TMDB-imported episode gets its own credits, and the
@@ -116,7 +118,6 @@ class TmdbTvImportIn(ORMSchema):
     name: str
     name_en: str | None = None
     release_year: int
-    watch_link: str | None = None
     notes: str | None = None
     people: list[TmdbTvImportPersonIn] = []
     genre_ids: list[int] = []

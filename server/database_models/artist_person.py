@@ -1,24 +1,23 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
-from sqlalchemy import ForeignKey
+from sqlalchemy import ForeignKey, ForeignKeyConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .artist_band_role import BandRole, band_role_type
 from .base import Base
 
-if TYPE_CHECKING:
-    from .artist import Artist
-    from .person import Person
-
 
 class ArtistPerson(Base):
     __tablename__ = "artist_people"
+    __table_args__ = (
+        ForeignKeyConstraint(["artist_id", "guild_id"], ["artists.id", "artists.guild_id"], ondelete="CASCADE"),
+        ForeignKeyConstraint(["person_id", "guild_id"], ["people.id", "people.guild_id"], ondelete="CASCADE"),
+    )
 
-    artist_id: Mapped[int] = mapped_column(ForeignKey("artists.id", ondelete="CASCADE"), primary_key=True)
-    person_id: Mapped[int] = mapped_column(ForeignKey("people.id", ondelete="CASCADE"), primary_key=True)
+    artist_id: Mapped[int] = mapped_column(primary_key=True)
+    person_id: Mapped[int] = mapped_column(primary_key=True)
     role: Mapped[BandRole] = mapped_column(band_role_type, primary_key=True)
+    guild_id: Mapped[int] = mapped_column(ForeignKey("guilds.id", ondelete="CASCADE"), nullable=False, index=True)
 
-    artist: Mapped[Artist] = relationship("Artist", back_populates="person_links")
-    person: Mapped[Person] = relationship("Person", back_populates="artist_links")
+    artist = relationship("Artist", back_populates="person_links", foreign_keys=[artist_id])
+    person = relationship("Person", back_populates="artist_links", foreign_keys=[person_id])

@@ -1,21 +1,14 @@
 from __future__ import annotations
 
-from decimal import Decimal
 from typing import TYPE_CHECKING
 
-from sqlalchemy import (
-    CheckConstraint,
-    Column,
-    ForeignKey,
-    Index,
-    Numeric,
-    Table,
-    Text,
-)
+from sqlalchemy import Index, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .album_game_soundtrack import album_game_soundtrack
 from .base import Base
+from .junctions import game_genres_junction, game_platforms_junction
+from .mixins import Audited, GuildScoped, NormalizedNames, guild_unique
 
 if TYPE_CHECKING:
     from .album import Album
@@ -23,62 +16,26 @@ if TYPE_CHECKING:
     from .game_platform import GamePlatform
     from .genre import Genre
 
-game_genres_junction = Table(
-    "game_genres_junction",
-    Base.metadata,
-    Column("game_id", ForeignKey("games.id", ondelete="CASCADE"), primary_key=True),
-    Column(
-        "genre_id",
-        ForeignKey("genres.id", ondelete="CASCADE"),
-        primary_key=True,
-    ),
-    Index("idx_game_genres_junction_genre", "genre_id"),
-)
 
-game_platforms_junction = Table(
-    "game_platforms_junction",
-    Base.metadata,
-    Column("game_id", ForeignKey("games.id", ondelete="CASCADE"), primary_key=True),
-    Column(
-        "platform_id",
-        ForeignKey("game_platforms.id", ondelete="CASCADE"),
-        primary_key=True,
-    ),
-    Index("idx_game_platforms_junction_platform", "platform_id"),
-)
-
-
-class Game(Base):
+class Game(GuildScoped, Audited, NormalizedNames, Base):
     __tablename__ = "games"
-    __table_args__ = (
-        CheckConstraint("hours_played >= 0", name="chk_game_hours_played_min"),
-        CheckConstraint("global_rank > 0", name="chk_game_global_rank_positive"),
-    )
+    __table_args__ = (guild_unique("games"), Index("idx_games_guild_norm", "guild_id", "name_norm"))
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(Text)
     name_en: Mapped[str | None] = mapped_column(Text)
     release_year: Mapped[int]
-    hours_played: Mapped[Decimal | None] = mapped_column(Numeric(7, 1))
-    play_link: Mapped[str | None] = mapped_column(Text)
     notes: Mapped[str | None] = mapped_column(Text)
-    global_rank: Mapped[Decimal | None] = mapped_column(Numeric, unique=True)
+    # `hours_played` / `play_link` / `global_rank` are gone: personal (UserGameRank)
+    # or now labelled entries in `links`.
 
     person_links: Mapped[list[GamePerson]] = relationship(
-        "GamePerson",
-        back_populates="game",
-        cascade="all, delete-orphan",
+        "GamePerson", back_populates="game", cascade="all, delete-orphan",
+        foreign_keys="GamePerson.game_id",
     )
-    genres: Mapped[list[Genre]] = relationship(
-        "Genre",
-        secondary=game_genres_junction,
-    )
-    platforms: Mapped[list[GamePlatform]] = relationship(
-        "GamePlatform",
-        secondary=game_platforms_junction,
-    )
+    genres: Mapped[list[Genre]] = relationship("Genre", secondary=game_genres_junction)
+    platforms: Mapped[list[GamePlatform]] = relationship("GamePlatform", secondary=game_platforms_junction)
     soundtrack_albums: Mapped[list[Album]] = relationship(
-        "Album",
-        secondary=album_game_soundtrack,
-        back_populates="soundtrack_games",
+        "Album", secondary=album_game_soundtrack, back_populates="soundtrack_games"
     )
+    links = relationship("GameLink", cascade="all, delete-orphan", order_by="GameLink.position")

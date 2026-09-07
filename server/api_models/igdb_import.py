@@ -13,6 +13,10 @@ class DbPersonMatchOut(ORMSchema):
     person_id: int
     person_name: str
     has_game_entries: bool
+    #: True iff `has_game_entries` and at least one of those credits' titles
+    #: overlaps this IGDB game. False (with `has_game_entries=True`) means this
+    #: is a name-only match against a differing catalog of games.
+    filmography_overlap: bool
     artist_summary: str
 
 

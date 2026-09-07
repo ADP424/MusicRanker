@@ -1,18 +1,19 @@
 """
-Game stats router — all aggregate / analytical endpoints.
+Game stats router — aggregate / analytical endpoints, computed from one guild
+member's personal ranking (defaults to the caller).
 
 Game score formula
 -------------------
-Each game has its own global_rank. Score = 1 / position (1-based rank order).
-Person score = mean of scores of all their games.
+Score = 1 / position (1-based, per the viewing member's own ranking).
+Person score = mean of scores of all their (ranked) games.
 
 Differences from movie stats
 -----------------------------
 * Movies have a fixed ``runtime_minutes`` plus a ``watches`` multiplier; games
-  have a single nullable ``hours_played`` that already *is* the total time
-  invested. So there is no "unique vs total" runtime split — instead there is a
-  tracked/untracked split, and every hours aggregate ignores untracked games
-  rather than treating them as zero.
+  have a single nullable ``hours_played`` (now on the personal rank row) that
+  already *is* the total time invested. So there is no "unique vs total"
+  runtime split — instead there is a tracked/untracked split, and every hours
+  aggregate ignores untracked games rather than treating them as zero.
 * Games carry a second hierarchical taxonomy (platforms) alongside genres, so
   there is a ``/by-platform`` endpoint shaped exactly like ``/by-genre``.
 """
@@ -23,54 +24,80 @@ from collections import defaultdict
 from statistics import mean
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session as DbSession
 
+from ..authz import Capability
 from ..database import get_database
-from ..database_models import Game, GamePerson, GamePlatform, Genre, Person
+from ..database_models import Game, GamePerson, GamePlatform, Genre, GuildMember, Person, UserGameRank
 from ..database_models.game_credit import GameRole
+from ..deps import GuildContext, guild_ctx
 
-router = APIRouter(prefix="/game-stats", tags=["game-stats"])
+router = APIRouter(prefix="/guilds/{guild_id}/game-stats", tags=["game-stats"])
+VIEW = guild_ctx(Capability.VIEW)
+
+
+def _target_user(db: DbSession, ctx: GuildContext, user_id: int | None) -> int:
+    if user_id is None or user_id == ctx.user_id:
+        return ctx.user_id
+    if db.get(GuildMember, (ctx.guild_id, user_id)) is None:
+        raise HTTPException(404, "Not a member of this guild")
+    return user_id
 
 
 # ---------------------------------------------------------------------------
 # Shared data loader
 # ---------------------------------------------------------------------------
-def _load(db: Session):
+def _load(db: DbSession, ctx: GuildContext, uid: int):
     """
     Returns:
-        games:        list of Game in global_rank order
-        game_score:   dict[game_id, float]
-        person_games: dict[person_id, list[(Game, score)]]
-        person_by_id: dict[int, Person]
+        games:            list of Game in the viewing member's rank order
+        game_score:       dict[game_id, float]
+        hours_by_game:    dict[game_id, float | None]
+        person_games:     dict[person_id, list[(Game, score)]]
+        person_by_id:     dict[int, Person]
     """
-    games: list[Game] = list(db.scalars(select(Game).order_by(Game.global_rank)).all())
+    rank_rows = list(db.scalars(
+        select(UserGameRank)
+        .where(UserGameRank.user_id == uid, UserGameRank.guild_id == ctx.guild_id)
+        .order_by(UserGameRank.rank, UserGameRank.game_id)
+    ).all())
+    game_ids = [r.game_id for r in rank_rows]
+    game_by_id: dict[int, Game] = {g.id: g for g in db.scalars(
+        select(Game).where(Game.id.in_(game_ids))
+    ).all()} if game_ids else {}
+    games = [game_by_id[gid] for gid in game_ids if gid in game_by_id]
     game_score: dict[int, float] = {g.id: 1.0 / pos for g, pos in zip(games, range(1, len(games) + 1))}
+    hours_by_game: dict[int, float | None] = {
+        r.game_id: float(r.hours_played) if r.hours_played is not None else None for r in rank_rows
+    }
 
-    links: list[GamePerson] = list(db.scalars(select(GamePerson)).all())
-    game_by_id: dict[int, Game] = {g.id: g for g in games}
+    links: list[GamePerson] = list(db.scalars(
+        select(GamePerson).where(GamePerson.game_id.in_(game_ids))
+    ).all()) if game_ids else []
     person_games: dict[int, list[tuple[Game, float]]] = defaultdict(list)
     for link in links:
         g = game_by_id.get(link.game_id)
         if g is not None:
             person_games[link.person_id].append((g, game_score[g.id]))
 
-    persons: list[Person] = list(db.scalars(select(Person)).all())
-    person_by_id: dict[int, Person] = {p.id: p for p in persons}
-    return games, game_score, person_games, person_by_id
+    person_ids = set(person_games.keys())
+    person_by_id: dict[int, Person] = {p.id: p for p in db.scalars(
+        select(Person).where(Person.id.in_(person_ids))
+    ).all()} if person_ids else {}
+    return games, game_score, hours_by_game, person_games, person_by_id
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-def _hours(game: Game) -> float | None:
-    """hours_played is NUMERIC and nullable — None means 'never tracked'."""
-    return float(game.hours_played) if game.hours_played is not None else None
+def _hours(hours_by_game: dict[int, float | None], game: Game) -> float | None:
+    return hours_by_game.get(game.id)
 
 
-def _tracked(games: list[Game]) -> list[Game]:
-    return [g for g in games if g.hours_played is not None]
+def _tracked(hours_by_game: dict[int, float | None], games: list[Game]) -> list[Game]:
+    return [g for g in games if hours_by_game.get(g.id) is not None]
 
 
 def _best_worst(items: list[Any], key_fn, val_fn, higher_is_better: bool = True):
@@ -106,20 +133,19 @@ def _decade(y: int) -> int:
     return (y // 10) * 10
 
 
-def _directors(db: Session, person_by_id: dict[int, Person]) -> dict[int, Person]:
+def _directors(db: DbSession, games: list[Game], person_by_id: dict[int, Person]) -> dict[int, Person]:
     """game_id -> first-linked director, for nationality attribution."""
-    links = list(db.scalars(select(GamePerson).where(GamePerson.role == GameRole.director)).all())
+    game_ids = [g.id for g in games]
+    links = list(db.scalars(
+        select(GamePerson).where(GamePerson.game_id.in_(game_ids), GamePerson.role == GameRole.director)
+    ).all()) if game_ids else []
     out: dict[int, Person] = {}
     for link in links:
         if link.game_id not in out:
-            if p := person_by_id.get(link.person_id):
+            p = person_by_id.get(link.person_id) or db.get(Person, link.person_id)
+            if p:
                 out[link.game_id] = p
     return out
-
-
-# --- taxonomy (genre / platform) helpers -----------------------------------
-# Both walk ORM `parents`/`children` rather than junction columns, so they are
-# immune to the two junction tables naming their columns differently.
 
 
 def _ancestors(nodes: list[Any]) -> dict[int, set[int]]:
@@ -139,20 +165,9 @@ def _ancestors(nodes: list[Any]) -> dict[int, set[int]]:
 
 
 def _taxonomy_rows(
-    games: list[Game],
-    game_score: dict[int, float],
-    nodes: list[Any],
-    member_fn,
-    id_key: str,
-    name_key: str,
-    count_key: str,
+    games: list[Game], game_score: dict[int, float], hours_by_game: dict[int, float | None],
+    nodes: list[Any], member_fn, id_key: str, name_key: str, count_key: str,
 ) -> dict[str, list[dict]]:
-    """Build the {by_x, by_root_x} payload for a hierarchical taxonomy.
-
-    `member_fn(game)` returns that game's directly-assigned nodes. Counts roll
-    up: a game tagged "JRPG" also counts toward "RPG" and every further
-    ancestor, matching movie /by-genre semantics.
-    """
     by_id = {n.id: n for n in nodes}
     ancestors = _ancestors(nodes)
     roots = {n.id for n in nodes if not n.parents}
@@ -176,17 +191,15 @@ def _taxonomy_rows(
             if node is None:
                 continue
             members = rolled.get(nid, [])
-            tracked = _tracked(members)
-            out.append(
-                {
-                    id_key: nid,
-                    name_key: node.name,
-                    count_key: len(members),
-                    f"{count_key}_direct": len(direct.get(nid, [])),
-                    "avg_game_score": (round(mean(game_score[g.id] for g in members), 6) if members else None),
-                    "total_hours": (round(sum(_hours(g) for g in tracked), 1) if tracked else None),
-                }
-            )
+            tracked = _tracked(hours_by_game, members)
+            out.append({
+                id_key: nid,
+                name_key: node.name,
+                count_key: len(members),
+                f"{count_key}_direct": len(direct.get(nid, [])),
+                "avg_game_score": (round(mean(game_score[g.id] for g in members), 6) if members else None),
+                "total_hours": (round(sum(_hours(hours_by_game, g) for g in tracked), 1) if tracked else None),
+            })
         return sorted(out, key=lambda r: r[name_key])
 
     return {"all": _build(by_id.keys()), "roots": _build(roots)}
@@ -196,59 +209,47 @@ def _taxonomy_rows(
 # Endpoints
 # ---------------------------------------------------------------------------
 @router.get("/summary")
-def summary(db: Session = Depends(get_database)):
-    games, game_score, person_games, person_by_id = _load(db)
+def summary(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+    uid = _target_user(db, ctx, user_id)
+    games, game_score, hours_by_game, person_games, person_by_id = _load(db, ctx, uid)
 
     total_games = len(games)
-    tracked = _tracked(games)
-    total_hours = sum(_hours(g) for g in tracked)
+    tracked = _tracked(hours_by_game, games)
+    total_hours = sum(_hours(hours_by_game, g) for g in tracked)
     avg_hours = total_hours / len(tracked) if tracked else 0
 
-    # Only people who actually have a game credit — counting every Person row
-    # would report the whole shared people table, which says nothing about games.
     people_credited = len(person_games)
     avg_games_per_person = mean(len(v) for v in person_games.values()) if person_games else 0
 
-    best_year, worst_year = _best_worst(
-        games, lambda g: g.release_year, lambda grp: mean(game_score[g.id] for g in grp)
-    )
+    best_year, worst_year = _best_worst(games, lambda g: g.release_year, lambda grp: mean(game_score[g.id] for g in grp))
     best_decade, worst_decade = _best_worst(
         games, lambda g: _decade(g.release_year), lambda grp: mean(game_score[g.id] for g in grp)
     )
 
-    game_director = _directors(db, person_by_id)
+    game_director = _directors(db, games, person_by_id)
     games_with_director = [g for g in games if g.id in game_director]
     best_core_nat_games, worst_core_nat_games = _best_worst(
-        games_with_director,
-        lambda g: game_director[g.id].core_nationality,
+        games_with_director, lambda g: game_director[g.id].core_nationality,
         lambda grp: mean(game_score[g.id] for g in grp),
     )
     best_birth_nat_games, worst_birth_nat_games = _best_worst(
-        games_with_director,
-        lambda g: game_director[g.id].birth_nationality,
+        games_with_director, lambda g: game_director[g.id].birth_nationality,
         lambda grp: mean(game_score[g.id] for g in grp),
     )
 
     persons_with_games = [(p, pairs) for pid, pairs in person_games.items() if (p := person_by_id.get(pid)) is not None]
     best_core_nat_people, worst_core_nat_people = _best_worst(
-        persons_with_games,
-        lambda t: t[0].core_nationality,
-        lambda grp: mean(mean(s for _, s in t[1]) for t in grp),
+        persons_with_games, lambda t: t[0].core_nationality, lambda grp: mean(mean(s for _, s in t[1]) for t in grp),
     )
     best_birth_nat_people, worst_birth_nat_people = _best_worst(
-        persons_with_games,
-        lambda t: t[0].birth_nationality,
-        lambda grp: mean(mean(s for _, s in t[1]) for t in grp),
+        persons_with_games, lambda t: t[0].birth_nationality, lambda grp: mean(mean(s for _, s in t[1]) for t in grp),
     )
 
-    # Platform is the game-only axis, so it gets a best/worst pair of its own.
     platform_pairs = [(g, p) for g in games for p in g.platforms]
     best_platform, worst_platform = _best_worst(
-        platform_pairs,
-        lambda t: t[1].name,
-        lambda grp: mean(game_score[t[0].id] for t in grp),
+        platform_pairs, lambda t: t[1].name, lambda grp: mean(game_score[t[0].id] for t in grp),
     )
-    most_played = max(tracked, key=lambda g: _hours(g)) if tracked else None
+    most_played = max(tracked, key=lambda g: _hours(hours_by_game, g)) if tracked else None
 
     return {
         "total_games": total_games,
@@ -260,7 +261,7 @@ def summary(db: Session = Depends(get_database)):
         "total_days_played": round(total_hours / 24, 2),
         "avg_hours_played": round(avg_hours, 2),
         "most_played_game": most_played.name if most_played else None,
-        "most_played_hours": round(_hours(most_played), 1) if most_played else None,
+        "most_played_hours": round(_hours(hours_by_game, most_played), 1) if most_played else None,
         "best_year_games": best_year,
         "worst_year_games": worst_year,
         "best_decade_games": best_decade,
@@ -279,8 +280,9 @@ def summary(db: Session = Depends(get_database)):
 
 
 @router.get("/by-year")
-def by_year(db: Session = Depends(get_database)):
-    games, game_score, _, _ = _load(db)
+def by_year(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+    uid = _target_user(db, ctx, user_id)
+    games, game_score, *_ = _load(db, ctx, uid)
     rows = _group_stats(games, key_fn=lambda g: g.release_year, score_fn=lambda g: game_score[g.id])
     for row in rows:
         row["game_count"] = row.pop("count")
@@ -289,8 +291,9 @@ def by_year(db: Session = Depends(get_database)):
 
 
 @router.get("/by-decade")
-def by_decade(db: Session = Depends(get_database)):
-    games, game_score, _, _ = _load(db)
+def by_decade(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+    uid = _target_user(db, ctx, user_id)
+    games, game_score, *_ = _load(db, ctx, uid)
     rows = _group_stats(games, key_fn=lambda g: _decade(g.release_year), score_fn=lambda g: game_score[g.id])
     for row in rows:
         row["game_count"] = row.pop("count")
@@ -299,73 +302,58 @@ def by_decade(db: Session = Depends(get_database)):
 
 
 @router.get("/by-nationality")
-def by_nationality(db: Session = Depends(get_database)):
-    games, game_score, _, person_by_id = _load(db)
-    game_director = _directors(db, person_by_id)
+def by_nationality(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW),
+                   db: DbSession = Depends(get_database)):
+    uid = _target_user(db, ctx, user_id)
+    games, game_score, _, _, person_by_id = _load(db, ctx, uid)
+    game_director = _directors(db, games, person_by_id)
     games_with_director = [g for g in games if g.id in game_director]
 
     result = {}
     for nat_type in ("core_nationality", "birth_nationality"):
         rows = _group_stats(
-            games_with_director,
-            key_fn=lambda g, nt=nat_type: getattr(game_director[g.id], nt),
+            games_with_director, key_fn=lambda g, nt=nat_type: getattr(game_director[g.id], nt),
             score_fn=lambda g: game_score[g.id],
         )
         result[nat_type] = [
-            {
-                "nationality": r["key"],
-                "game_count": r["count"],
-                "avg_game_score": r.get("avg_score"),
-            }
+            {"nationality": r["key"], "game_count": r["count"], "avg_game_score": r.get("avg_score")}
             for r in rows
         ]
     return result
 
 
 @router.get("/by-genre")
-def by_genre(db: Session = Depends(get_database)):
-    games, game_score, _, _ = _load(db)
-    genres = list(db.scalars(select(Genre).where(Genre.is_game.is_(True))).all())
+def by_genre(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+    uid = _target_user(db, ctx, user_id)
+    games, game_score, hours_by_game, *_ = _load(db, ctx, uid)
+    genres = list(db.scalars(select(Genre).where(Genre.guild_id == ctx.guild_id, Genre.is_game.is_(True))).all())
     built = _taxonomy_rows(
-        games,
-        game_score,
-        genres,
-        member_fn=lambda g: g.genres,
-        id_key="genre_id",
-        name_key="genre_name",
-        count_key="game_count",
+        games, game_score, hours_by_game, genres,
+        member_fn=lambda g: g.genres, id_key="genre_id", name_key="genre_name", count_key="game_count",
     )
     return {"by_genre": built["all"], "by_root_genre": built["roots"]}
 
 
 @router.get("/by-platform")
-def by_platform(db: Session = Depends(get_database)):
-    games, game_score, _, _ = _load(db)
-    platforms = list(db.scalars(select(GamePlatform)).all())
+def by_platform(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+    uid = _target_user(db, ctx, user_id)
+    games, game_score, hours_by_game, *_ = _load(db, ctx, uid)
+    platforms = list(db.scalars(select(GamePlatform).where(GamePlatform.guild_id == ctx.guild_id)).all())
     built = _taxonomy_rows(
-        games,
-        game_score,
-        platforms,
-        member_fn=lambda g: g.platforms,
-        id_key="platform_id",
-        name_key="platform_name",
-        count_key="game_count",
+        games, game_score, hours_by_game, platforms,
+        member_fn=lambda g: g.platforms, id_key="platform_id", name_key="platform_name", count_key="game_count",
     )
     return {"by_platform": built["all"], "by_root_platform": built["roots"]}
 
 
 @router.get("/scatter")
-def scatter(db: Session = Depends(get_database)):
-    games, game_score, person_games, person_by_id = _load(db)
+def scatter(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+    uid = _target_user(db, ctx, user_id)
+    games, game_score, hours_by_game, person_games, person_by_id = _load(db, ctx, uid)
 
     game_scatter = [
-        {
-            "game_id": g.id,
-            "name": g.name,
-            "score": round(game_score[g.id], 6),
-            "hours_played": _hours(g),
-        }
-        for g in _tracked(games)
+        {"game_id": g.id, "name": g.name, "score": round(game_score[g.id], 6), "hours_played": _hours(hours_by_game, g)}
+        for g in _tracked(hours_by_game, games)
     ]
 
     person_scatter = []
@@ -373,52 +361,45 @@ def scatter(db: Session = Depends(get_database)):
         p = person_by_id.get(pid)
         if not p or not pairs:
             continue
-        tracked = [(g, s) for g, s in pairs if g.hours_played is not None]
+        tracked = [(g, s) for g, s in pairs if hours_by_game.get(g.id) is not None]
         if not tracked:
             continue
-        person_scatter.append(
-            {
-                "person_id": pid,
-                "name": p.name,
-                "avg_score": round(mean(s for _, s in tracked), 6),
-                "avg_hours_played": round(mean(_hours(g) for g, _ in tracked), 2),
-            }
-        )
+        person_scatter.append({
+            "person_id": pid, "name": p.name,
+            "avg_score": round(mean(s for _, s in tracked), 6),
+            "avg_hours_played": round(mean(_hours(hours_by_game, g) for g, _ in tracked), 2),
+        })
 
-    return {
-        "game_score_vs_hours": game_scatter,
-        "person_score_vs_hours": person_scatter,
-    }
+    return {"game_score_vs_hours": game_scatter, "person_score_vs_hours": person_scatter}
 
 
 @router.get("/person-detail/{pid}")
-def person_detail(pid: int, db: Session = Depends(get_database)):
-    _, game_score, person_games, person_by_id = _load(db)
-    if person_by_id.get(pid) is None:
+def person_detail(pid: int, user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW),
+                  db: DbSession = Depends(get_database)):
+    uid = _target_user(db, ctx, user_id)
+    _, game_score, hours_by_game, person_games, person_by_id = _load(db, ctx, uid)
+    p = person_by_id.get(pid) or db.get(Person, pid)
+    if p is None or p.guild_id != ctx.guild_id:
         raise HTTPException(404, "Person not found")
 
     pairs = person_games.get(pid, [])
     games = [g for g, _ in pairs]
-    tracked = _tracked(games)
-    total_hours = sum(_hours(g) for g in tracked)
+    tracked = _tracked(hours_by_game, games)
+    total_hours = sum(_hours(hours_by_game, g) for g in tracked)
 
     genre_names = sorted({genre.name for g in games for genre in g.genres})
-    platform_names = sorted({p.name for g in games for p in g.platforms})
+    platform_names = sorted({pl.name for g in games for pl in g.platforms})
 
     collaborator_ids: set[int] = set()
     for game in games:
         collaborator_ids.update(
             db.scalars(
-                select(GamePerson.person_id).where(
-                    GamePerson.game_id == game.id,
-                    GamePerson.person_id != pid,
-                )
+                select(GamePerson.person_id).where(GamePerson.game_id == game.id, GamePerson.person_id != pid)
             ).all()
         )
     collaborator_names = (
-        sorted(p.name for p in db.scalars(select(Person).where(Person.id.in_(collaborator_ids))).all())
-        if collaborator_ids
-        else []
+        sorted(p2.name for p2 in db.scalars(select(Person).where(Person.id.in_(collaborator_ids))).all())
+        if collaborator_ids else []
     )
 
     return {

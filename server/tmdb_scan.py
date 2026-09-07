@@ -63,10 +63,17 @@ class LPerson:
     name_en: Optional[str]
 
 
-def _load_db(db):
-    movies = [LMovie(*r) for r in db.query(Movie.id, Movie.name, Movie.name_en, Movie.release_year).all()]
-    people = [LPerson(*r) for r in db.query(Person.id, Person.name, Person.name_en).all()]
-    links = db.query(MoviePerson.person_id, MoviePerson.movie_id, MoviePerson.role).all()
+def _load_db(db, guild_id: int):
+    movies = [
+        LMovie(*r) for r in db.query(Movie.id, Movie.name, Movie.name_en, Movie.release_year)
+        .filter(Movie.guild_id == guild_id).all()
+    ]
+    people = [
+        LPerson(*r) for r in db.query(Person.id, Person.name, Person.name_en)
+        .filter(Person.guild_id == guild_id).all()
+    ]
+    links = db.query(MoviePerson.person_id, MoviePerson.movie_id, MoviePerson.role) \
+        .filter(MoviePerson.guild_id == guild_id).all()
     return movies, people, [(r[0], r[1], r[2]) for r in links]
 
 
@@ -337,6 +344,7 @@ class ScanStats:
 @dataclass
 class ScanJob:
     id: str
+    guild_id: int = 0
     status: str = "pending"  # pending | running | done | cancelled | error
     phase: str = "queued"  # queued | loading | fetching | matching | finished
     processed: int = 0
@@ -374,24 +382,26 @@ class JobRegistry:
         self._jobs: dict[str, ScanJob] = {}
         self._lock = threading.Lock()
 
-    def create(self) -> ScanJob:
-        job = ScanJob(id=uuid.uuid4().hex[:12])
+    def create(self, guild_id: int) -> ScanJob:
+        job = ScanJob(id=uuid.uuid4().hex[:12], guild_id=guild_id)
         with self._lock:
             self._jobs[job.id] = job
         return job
 
-    def get(self, jid: str) -> Optional[ScanJob]:
+    def get(self, jid: str, guild_id: int) -> Optional[ScanJob]:
         with self._lock:
-            return self._jobs.get(jid)
+            job = self._jobs.get(jid)
+        return job if job is not None and job.guild_id == guild_id else None
 
-    def list(self) -> list[ScanJob]:
+    def list(self, guild_id: int) -> list[ScanJob]:
         with self._lock:
-            return sorted(self._jobs.values(), key=lambda j: j.created_at, reverse=True)
+            jobs = [j for j in self._jobs.values() if j.guild_id == guild_id]
+        return sorted(jobs, key=lambda j: j.created_at, reverse=True)
 
-    def running(self) -> Optional[ScanJob]:
+    def running(self, guild_id: int) -> Optional[ScanJob]:
         with self._lock:
             for j in self._jobs.values():
-                if j.status in ("pending", "running"):
+                if j.guild_id == guild_id and j.status in ("pending", "running"):
                     return j
         return None
 
@@ -430,7 +440,7 @@ def _fetch_one(client: TmdbClient, m: LMovie, in_scope: bool, cancel: threading.
         return None  # one bad movie must not kill the scan
 
 
-def run_scan(job_id: str, movie_ids: Optional[list[int]], force_refresh: bool) -> None:
+def run_scan(job_id: str, guild_id: int, movie_ids: Optional[list[int]], force_refresh: bool) -> None:
     """Runs in a FastAPI BackgroundTask. Must swallow every exception:
     an escaped error would leave the client polling `running` forever.
 
@@ -442,7 +452,7 @@ def run_scan(job_id: str, movie_ids: Optional[list[int]], force_refresh: bool) -
     looking it up lazily via the module (as `database.get_database` itself
     does) always sees the current value.
     """
-    job = REGISTRY.get(job_id)
+    job = REGISTRY.get(job_id, guild_id)
     if job is None:
         return
 
@@ -450,7 +460,7 @@ def run_scan(job_id: str, movie_ids: Optional[list[int]], force_refresh: bool) -
         job.mark(status="running", phase="loading")
 
         with database.SessionLocal() as db:
-            movies, people, links = _load_db(db)
+            movies, people, links = _load_db(db, guild_id)
 
         by_norm: dict[str, set[int]] = defaultdict(set)
         for p in people:

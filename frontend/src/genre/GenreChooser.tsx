@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 
 import { api } from "../api/client";
+import { LoadingState } from "../components/Spinner";
 import type { GenreDomain, GenreLike } from "./config";
 
 /**
@@ -26,7 +27,8 @@ export function GenreChooser(props: {
   excludeId?: number;
 }) {
   const { domain, selected, onChange, single, excludeId } = props;
-  const { data: allGenres = [] } = domain.useAll();
+  const apiBase = domain.useApiBase();
+  const { data: allGenres = [], isLoading: genresLoading } = domain.useAll();
   const { data: categories = [] } = domain.useCategories();
 
   const [search, setSearch] = useState("");
@@ -34,14 +36,14 @@ export function GenreChooser(props: {
   const [parentFilter, setParentFilter] = useState<number | null>(null);
 
   const { data: rootGenres = [] } = useQuery({
-    queryKey: [domain.key, "roots"],
-    queryFn: () => api.get<GenreLike[]>(`${domain.apiBase}/roots`),
+    queryKey: [domain.key, apiBase, "roots"],
+    queryFn: () => api.get<GenreLike[]>(`${apiBase}/roots`),
   });
 
   // Fetch ALL descendants of the active filter (not just direct children)
-  const { data: descendants = [] } = useQuery({
-    queryKey: [domain.key, parentFilter, "descendants"],
-    queryFn: () => api.get<GenreLike[]>(`${domain.apiBase}/${parentFilter}/descendants`),
+  const { data: descendants = [], isLoading: descendantsLoading } = useQuery({
+    queryKey: [domain.key, apiBase, parentFilter, "descendants"],
+    queryFn: () => api.get<GenreLike[]>(`${apiBase}/${parentFilter}/descendants`),
     enabled: parentFilter !== null,
   });
   // A root is part of its own scope — otherwise filtering by "Rock" makes
@@ -190,19 +192,23 @@ export function GenreChooser(props: {
           ))}
         </div>
       </div>
-      <div className="chips">
-        {candidates.map((g) => (
-          <label key={g.id} className="chip">
-            <input
-              type="checkbox"
-              checked={selected.has(g.id)}
-              onChange={(e) => toggle(g.id, e.target.checked)}
-            />
-            {g.name}
-          </label>
-        ))}
-        {candidates.length === 0 && <small>No {domain.noun} match.</small>}
-      </div>
+      {genresLoading || (parentFilter !== null && descendantsLoading) ? (
+        <LoadingState compact label={`Loading ${domain.noun}…`} />
+      ) : (
+        <div className="chips">
+          {candidates.map((g) => (
+            <label key={g.id} className="chip">
+              <input
+                type="checkbox"
+                checked={selected.has(g.id)}
+                onChange={(e) => toggle(g.id, e.target.checked)}
+              />
+              {g.name}
+            </label>
+          ))}
+          {candidates.length === 0 && <small>No {domain.noun} match.</small>}
+        </div>
+      )}
     </div>
   );
 }

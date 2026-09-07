@@ -1,94 +1,92 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 
 import { api } from "../api/client";
-import { useMovieGenres, usePeople, useStartScan } from "../api/hooks";
-import type { CastRole, Genre, Movie, MoviePersonRef, Person } from "../api/types";
-import { CAST_ROLES, CAST_ROLE_LABELS } from "../api/types";
+import { useEntryMutations, useGuildApi, useMovieEntry, useMovieGenres, usePeople, useUpdateMovieEntry } from "../api/hooks";
+import { gk } from "../api/keys";
+import type { CastRole, Genre, Movie, Person } from "../api/types";
+import { CAST_ROLE_LABELS, MOVIE_ROLES } from "../api/types";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { LinksSection } from "../components/LinksSection";
 import { MovieForm } from "../components/MovieForm";
-import { MovieGenreChooser } from "../components/MovieGenreChooser";
 import { PersonForm } from "../components/PersonForm";
 import { matchesPersonSearch, PersonPicker, type PersonSearchField } from "../components/PersonPicker";
+import { GenreChooser } from "../genre/GenreChooser";
+import { MOVIE_GENRES } from "../genre/config";
+import { useCan } from "../guild/GuildProvider";
+import { BusyButton, InlineBusy, LoadingState } from "../components/Spinner";
 
 function fmtRuntime(minutes: number) {
   const h = Math.floor(minutes / 60);
   const m = minutes % 60;
-  if (h > 0) return `${h}h ${m > 0 ? `${m}m` : ""}`.trim();
+  if (h > 0) return `${h}:${String(m).padStart(2, "0")}`;
   return `${m}m`;
 }
 
-// ── People section ─────────────────────────────────────────────────────────────
+type PendingLink = { personId: number; role: CastRole };
+function linkKey(l: PendingLink) { return `${l.personId}:${l.role}`; }
 
-function MoviePeopleSection({ movie }: { movie: Movie }) {
+// ── People section ──────────────────────────────────────────────────────────
+
+function MoviePeopleSection({ movieId, movie }: { movieId: number; movie: Movie }) {
   const qc = useQueryClient();
-  const { data: allPeople = [] } = usePeople();
+  const { guildId, base } = useGuildApi();
+  const canEdit = useCan("catalog_edit");
+  const { data: allPeople = [], isLoading: peopleLoading } = usePeople();
   const [editing, setEditing] = useState(false);
-  const [confirmUnlink, setConfirmUnlink] = useState<MoviePersonRef | null>(null);
-  const [castSearch, setCastSearch] = useState("");
-  const [searchField, setSearchField] = useState<PersonSearchField>("all");
-  const [addRole, setAddRole] = useState<CastRole>("director");
   const [creatingPerson, setCreatingPerson] = useState(false);
   const [dupWarning, setDupWarning] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+  const [searchField, setSearchField] = useState<PersonSearchField>("all");
+  const [addRole, setAddRole] = useState<CastRole>("director");
 
-  // Track the current set of (personId, role) links as "id:role" keys
-  const [castKeys, setCastKeys] = useState<Set<string>>(
-    () => new Set(movie.persons.map((p) => `${p.id}:${p.role}`))
-  );
+  const castKeys = useMemo(() => new Set(movie.persons.map((p) => linkKey({ personId: p.id, role: p.role }))), [movie.persons]);
 
-  useEffect(() => {
-    setCastKeys(new Set(movie.persons.map((p) => `${p.id}:${p.role}`)));
-  }, [movie.persons]);
+  const filteredPeople = useMemo(() => {
+    return allPeople
+      .filter((p) => matchesPersonSearch(p, searchField, search))
+      .sort((a, b) => {
+        const aKey = linkKey({ personId: a.id, role: addRole });
+        const bKey = linkKey({ personId: b.id, role: addRole });
+        return (castKeys.has(aKey) ? 0 : 1) - (castKeys.has(bKey) ? 0 : 1);
+      });
+  }, [search, searchField, allPeople, castKeys, addRole]);
 
-  const filteredPeople = useMemo(
-    () => allPeople.filter((p) => matchesPersonSearch(p, searchField, castSearch)),
-    [castSearch, searchField, allPeople],
-  );
+  const invalidate = () => qc.invalidateQueries({ queryKey: gk(guildId, "movies", movieId) });
 
   const link = useMutation({
-    mutationFn: ({ personId, role }: { personId: number; role: CastRole }) =>
-      api.put(`/movies/${movie.id}/persons/${personId}/${role}`),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["movies", movie.id] });
-      qc.invalidateQueries({ queryKey: ["movies", "ranked"] });
-    },
+    mutationFn: ({ pid, role }: { pid: number; role: CastRole }) =>
+      api.put(`${base}/movies/${movieId}/persons/${pid}/${role}`),
+    onSuccess: invalidate,
   });
-
   const unlink = useMutation({
-    mutationFn: ({ personId, role }: { personId: number; role: CastRole }) =>
-      api.delete(`/movies/${movie.id}/persons/${personId}/${role}`),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["movies", movie.id] });
-      qc.invalidateQueries({ queryKey: ["movies", "ranked"] });
-    },
+    mutationFn: ({ pid, role }: { pid: number; role: CastRole }) =>
+      api.delete(`${base}/movies/${movieId}/persons/${pid}/${role}`),
+    onSuccess: invalidate,
   });
 
   function toggleLink(person: Person, role: CastRole) {
-    const key = `${person.id}:${role}`;
-    if (castKeys.has(key)) {
-      const ref = movie.persons.find((p) => p.id === person.id && p.role === role);
-      if (ref) setConfirmUnlink(ref);
-    } else {
-      link.mutate({ personId: person.id, role });
-      setCastKeys((prev) => new Set([...prev, key]));
-    }
+    const key = linkKey({ personId: person.id, role });
+    if (castKeys.has(key)) unlink.mutate({ pid: person.id, role });
+    else link.mutate({ pid: person.id, role });
   }
 
-  // Group persons by role for display
-  const byRole: Record<string, MoviePersonRef[]> = {};
-  for (const p of movie.persons) {
-    if (!byRole[p.role]) byRole[p.role] = [];
-    byRole[p.role].push(p);
-  }
+  const byRole: Partial<Record<CastRole, Movie["persons"]>> = {};
+  for (const p of movie.persons) (byRole[p.role] ??= []).push(p);
 
   return (
     <section style={{ marginBottom: "1.5rem" }}>
       <header className="page-head" style={{ marginBottom: "0.5rem" }}>
-        <h2 style={{ margin: 0 }}>People</h2>
-        <button style={{ fontSize: 12 }} onClick={() => setEditing((o) => !o)}>
-          {editing ? "Done" : "Edit"}
-        </button>
+        <span className="inline">
+          <h2 style={{ margin: 0 }}>People</h2>
+          {(link.isPending || unlink.isPending) && <InlineBusy label="Saving…" />}
+        </span>
+        {canEdit && (
+          <button style={{ fontSize: 12 }} onClick={() => setEditing((o) => !o)}>
+            {editing ? "Done" : "Edit"}
+          </button>
+        )}
       </header>
 
       {editing && (
@@ -99,46 +97,38 @@ function MoviePeopleSection({ movie }: { movie: Movie }) {
               <button className="icon" onClick={() => setDupWarning(null)}>✕</button>
             </div>
           )}
-
           <div style={{ marginBottom: "0.75rem" }}>
             <PersonPicker
-              roles={CAST_ROLES}
+              roles={MOVIE_ROLES}
               roleLabels={CAST_ROLE_LABELS}
               activeRole={addRole}
               onRole={setAddRole}
               searchField={searchField}
               onSearchField={setSearchField}
-              search={castSearch}
-              onSearch={setCastSearch}
+              search={search}
+              onSearch={setSearch}
               onNewPerson={() => setCreatingPerson(true)}
               people={filteredPeople}
-              isChecked={(p, role) => castKeys.has(`${p.id}:${role}`)}
+              isChecked={(p, role) => castKeys.has(linkKey({ personId: p.id, role }))}
               onToggle={toggleLink}
+              loading={peopleLoading}
+              busy={link.isPending || unlink.isPending}
             />
           </div>
         </>
       )}
 
       {movie.persons.length > 0 ? (
-        CAST_ROLES.filter((r) => byRole[r]?.length).map((role) => (
+        MOVIE_ROLES.filter((r) => byRole[r]?.length).map((role) => (
           <div key={role} style={{ marginBottom: "0.75rem" }}>
-            <div className="detail-label" style={{ marginBottom: "0.25rem" }}>
-              {CAST_ROLE_LABELS[role]}
-            </div>
+            <div className="detail-label" style={{ marginBottom: "0.25rem" }}>{CAST_ROLE_LABELS[role]}</div>
             <ul className="sortable plain-list">
-              {byRole[role].map((p) => (
+              {byRole[role]!.map((p) => (
                 <li key={`${p.id}:${p.role}`} className="sortable-item">
-                  <div className="row" style={{ gridTemplateColumns: "1fr auto" }}>
-                    <Link className="name" to={`/people/${p.id}`}>
+                  <div className="row" style={{ gridTemplateColumns: "1fr" }}>
+                    <Link className="name" to={`/g/${guildId}/people/${p.id}`}>
                       {p.name}{p.name_en && <span style={{ opacity: 0.6 }}> ({p.name_en})</span>}
                     </Link>
-                    {editing && (
-                      <button
-                        className="icon"
-                        title="Remove"
-                        onClick={() => setConfirmUnlink(p)}
-                      >✕</button>
-                    )}
                   </div>
                 </li>
               ))}
@@ -149,22 +139,6 @@ function MoviePeopleSection({ movie }: { movie: Movie }) {
         <p style={{ opacity: 0.5, margin: "0.25rem 0 0" }}>No people linked.</p>
       )}
 
-      {confirmUnlink && (
-        <ConfirmDialog
-          message={`Remove "${confirmUnlink.name}" (${CAST_ROLE_LABELS[confirmUnlink.role]}) from this movie?`}
-          onConfirm={() => {
-            unlink.mutate({ personId: confirmUnlink.id, role: confirmUnlink.role });
-            setCastKeys((prev) => {
-              const next = new Set(prev);
-              next.delete(`${confirmUnlink!.id}:${confirmUnlink!.role}`);
-              return next;
-            });
-            setConfirmUnlink(null);
-          }}
-          onCancel={() => setConfirmUnlink(null)}
-        />
-      )}
-
       {creatingPerson && (
         <div className="modal-backdrop" onClick={() => setCreatingPerson(false)}>
           <div onClick={(e) => e.stopPropagation()}>
@@ -172,9 +146,8 @@ function MoviePeopleSection({ movie }: { movie: Movie }) {
               onClose={(savedName, savedId) => {
                 setCreatingPerson(false);
                 if (savedId != null) {
-                  qc.invalidateQueries({ queryKey: ["people"] });
-                  link.mutate({ personId: savedId, role: addRole });
-                  setCastKeys((prev) => new Set([...prev, `${savedId}:${addRole}`]));
+                  qc.invalidateQueries({ queryKey: gk(guildId, "people") });
+                  link.mutate({ pid: savedId, role: addRole });
                 }
                 if (savedName != null) {
                   const nameLower = savedName.toLowerCase();
@@ -190,54 +163,38 @@ function MoviePeopleSection({ movie }: { movie: Movie }) {
   );
 }
 
-// ── Genres section ─────────────────────────────────────────────────────────────
+// ── Genres section ───────────────────────────────────────────────────────────
 
-function GenresSection({ movie }: { movie: Movie }) {
+function MovieGenresSection({ movieId, movie }: { movieId: number; movie: Movie }) {
   const qc = useQueryClient();
+  const { guildId, base } = useGuildApi();
+  const canEdit = useCan("catalog_edit");
   const [editing, setEditing] = useState(false);
   const [confirmUnlink, setConfirmUnlink] = useState<Genre | null>(null);
   const { data: allGenres = [] } = useMovieGenres();
 
-  const { data: movieGenres = [] } = useQuery({
-    queryKey: ["movies", movie.id, "genres"],
-    queryFn: () => api.get<Genre[]>(`/movies/${movie.id}/genres`),
-  });
-
   const [genreIds, setGenreIds] = useState<Set<number>>(new Set());
-  useEffect(() => {
-    setGenreIds(new Set(movieGenres.map((g) => g.id)));
-  }, [movieGenres]);
+  useEffect(() => { setGenreIds(new Set(movie.genre_ids)); }, [movie.genre_ids]);
 
   const genreMap = Object.fromEntries(allGenres.map((g) => [g.id, g]));
+  const movieGenres = movie.genre_ids.map((id) => genreMap[id]).filter(Boolean);
 
   const addGenre = useMutation({
-    mutationFn: (gid: number) => api.put(`/movies/${movie.id}/genres/${gid}`),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["movies", movie.id, "genres"] });
-      qc.invalidateQueries({ queryKey: ["movies", movie.id] });
-    },
+    mutationFn: (gid: number) => api.put(`${base}/movies/${movieId}/genres/${gid}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: gk(guildId, "movies") }),
   });
-
   const removeGenre = useMutation({
-    mutationFn: (gid: number) => api.delete(`/movies/${movie.id}/genres/${gid}`),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["movies", movie.id, "genres"] });
-      qc.invalidateQueries({ queryKey: ["movies", movie.id] });
-    },
+    mutationFn: (gid: number) => api.delete(`${base}/movies/${movieId}/genres/${gid}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: gk(guildId, "movies") }),
   });
 
   function handleChange(next: Set<number>) {
     const prev = genreIds;
-    for (const id of next) {
-      if (!prev.has(id)) addGenre.mutate(id);
-    }
+    for (const id of next) if (!prev.has(id)) addGenre.mutate(id);
     for (const id of prev) {
       if (!next.has(id)) {
         const g = genreMap[id];
-        if (g) {
-          setConfirmUnlink(g);
-          return;
-        }
+        if (g) { setConfirmUnlink(g); return; }
       }
     }
     setGenreIds(next);
@@ -246,15 +203,20 @@ function GenresSection({ movie }: { movie: Movie }) {
   return (
     <section style={{ marginBottom: "1.5rem" }}>
       <header className="page-head" style={{ marginBottom: "0.5rem" }}>
-        <h2 style={{ margin: 0 }}>Genres</h2>
-        <button style={{ fontSize: 12 }} onClick={() => setEditing((o) => !o)}>
-          {editing ? "Done" : "Edit"}
-        </button>
+        <span className="inline">
+          <h2 style={{ margin: 0 }}>Genres</h2>
+          {(addGenre.isPending || removeGenre.isPending) && <InlineBusy label="Saving…" />}
+        </span>
+        {canEdit && (
+          <button style={{ fontSize: 12 }} onClick={() => setEditing((o) => !o)}>
+            {editing ? "Done" : "Edit"}
+          </button>
+        )}
       </header>
 
       {editing && (
         <div style={{ marginBottom: "0.75rem" }}>
-          <MovieGenreChooser selected={genreIds} onChange={handleChange} />
+          <GenreChooser domain={MOVIE_GENRES} selected={genreIds} onChange={handleChange} />
         </div>
       )}
 
@@ -263,7 +225,7 @@ function GenresSection({ movie }: { movie: Movie }) {
           {movieGenres.map((g) => (
             <li key={g.id} className="sortable-item">
               <div className="row" style={{ gridTemplateColumns: "1fr" }}>
-                <Link className="name" to={`/movies/genres/${g.id}`}>{g.name}</Link>
+                <Link className="name" to={`/g/${guildId}/movies/genres/${g.id}`}>{g.name}</Link>
               </div>
             </li>
           ))}
@@ -275,16 +237,108 @@ function GenresSection({ movie }: { movie: Movie }) {
       {confirmUnlink && (
         <ConfirmDialog
           message={`Remove genre "${confirmUnlink.name}" from this movie?`}
+          busy={removeGenre.isPending}
           onConfirm={() => {
-            removeGenre.mutate(confirmUnlink.id);
-            setGenreIds((prev) => {
-              const next = new Set(prev);
-              next.delete(confirmUnlink!.id);
-              return next;
-            });
-            setConfirmUnlink(null);
+            const id = confirmUnlink.id;
+            setGenreIds((prev) => { const next = new Set(prev); next.delete(id); return next; });
+            removeGenre.mutate(id, { onSettled: () => setConfirmUnlink(null) });
           }}
           onCancel={() => setConfirmUnlink(null)}
+        />
+      )}
+    </section>
+  );
+}
+
+// ── My list section ──────────────────────────────────────────────────────────
+
+function MyMovieListSection({ movieId }: { movieId: number }) {
+  const canRank = useCan("rank");
+  const { data: entry, isLoading } = useMovieEntry(movieId);
+  const update = useUpdateMovieEntry(movieId);
+  const entryMutations = useEntryMutations("movies");
+  const [editing, setEditing] = useState(false);
+  const [notes, setNotes] = useState("");
+  const [confirmRemove, setConfirmRemove] = useState(false);
+
+  useEffect(() => {
+    if (entry) setNotes(entry.notes ?? "");
+  }, [entry]);
+
+  if (!canRank) return null;
+  const saving = update.isPending || entryMutations.add.isPending || entryMutations.remove.isPending;
+
+  return (
+    <section style={{ marginBottom: "1.5rem" }}>
+      <header className="page-head" style={{ marginBottom: "0.5rem" }}>
+        <span className="inline">
+          <h2 style={{ margin: 0 }}>My List</h2>
+          {saving && <InlineBusy label="Saving…" />}
+        </span>
+        {entry && (
+          <button style={{ fontSize: 12 }} onClick={() => setEditing((o) => !o)}>
+            {editing ? "Done" : "Edit"}
+          </button>
+        )}
+      </header>
+
+      {isLoading ? (
+        <LoadingState compact />
+      ) : !entry ? (
+        <p style={{ opacity: 0.5, margin: "0.25rem 0 0" }}>
+          Not in your list. <BusyButton busy={entryMutations.add.isPending} busyLabel="Adding…"
+                                        onClick={() => entryMutations.add.mutate(movieId)}>+ Add to my list</BusyButton>
+        </p>
+      ) : (
+        <>
+          <div className="artist-detail-grid">
+            <div>
+              <span className="detail-label">Watches</span>
+              <span className="listens-ctrl">
+                <button className="icon" title="Remove one watch" disabled={entry.watches <= 1}
+                        onClick={() => update.mutate({ watches: entry.watches - 1 })}>−</button>
+                <input
+                  type="number" min={1} className="listens-input" value={entry.watches}
+                  onChange={(e) => {
+                    const n = Number(e.target.value);
+                    if (Number.isFinite(n) && n >= 1) update.mutate({ watches: n });
+                  }}
+                />
+                <button className="icon" title="Add one watch"
+                        onClick={() => update.mutate({ watches: entry.watches + 1 })}>+</button>
+              </span>
+            </div>
+          </div>
+
+          {editing ? (
+            <div className="detail-section-form" style={{ marginTop: "0.75rem" }}>
+              <label>My notes
+                <textarea rows={3} value={notes} onChange={(e) => setNotes(e.target.value)} />
+              </label>
+              <div style={{ marginTop: "0.5rem", display: "flex", gap: "0.5rem" }}>
+                <BusyButton busy={update.isPending} busyLabel="Saving…"
+                            onClick={() => update.mutate({ notes: notes.trim() === "" ? null : notes })}>Save notes</BusyButton>
+                <button className="danger" onClick={() => setConfirmRemove(true)}>✕ Remove from my list</button>
+              </div>
+            </div>
+          ) : (
+            entry.notes && (
+              <div className="detail-tags" style={{ marginTop: "0.5rem" }}>
+                <span className="detail-label">My notes</span>
+                <span>{entry.notes}</span>
+              </div>
+            )
+          )}
+        </>
+      )}
+
+      {confirmRemove && (
+        <ConfirmDialog
+          message="Remove this movie from your list? Your watch count and personal notes for it will be lost."
+          confirmLabel="Remove"
+          busy={entryMutations.remove.isPending}
+          onConfirm={() => entryMutations.remove.mutate(movieId, { onSettled: () => { setConfirmRemove(false); setEditing(false); } })}
+          onCancel={() => setConfirmRemove(false)}
         />
       )}
     </section>
@@ -297,17 +351,17 @@ export function MovieDetailPage() {
   const { id } = useParams<{ id: string }>();
   const movieId = Number(id);
   const qc = useQueryClient();
-  const navigate = useNavigate();
+  const { guildId, base } = useGuildApi();
+  const canEdit = useCan("catalog_edit");
   const [editing, setEditing] = useState(false);
-  const startScan = useStartScan();
 
   const { data: movie, isLoading, isError } = useQuery({
-    queryKey: ["movies", movieId],
-    queryFn: () => api.get<Movie>(`/movies/${movieId}`),
+    queryKey: gk(guildId, "movies", movieId),
+    queryFn: () => api.get<Movie>(`${base}/movies/${movieId}`),
     enabled: !isNaN(movieId),
   });
 
-  if (isLoading) return <section><p>Loading…</p></section>;
+  if (isLoading) return <section><LoadingState label="Loading movie…" /></section>;
   if (isError || !movie) return <section><p>Movie not found.</p></section>;
 
   return (
@@ -315,55 +369,30 @@ export function MovieDetailPage() {
       <header className="page-head">
         <h1>
           {movie.name}{movie.name_en && <span style={{ opacity: 0.6, fontWeight: "normal" }}> ({movie.name_en})</span>}
-          {movie.watch_link && (
-            <> <a href={movie.watch_link} target="_blank" rel="noreferrer" style={{ textDecoration: "none", fontStyle: "italic", fontSize: "0.6em", opacity: 0.7, fontWeight: "normal", color: "inherit" }}>(link)</a></>
-          )}
         </h1>
-        <button
-          onClick={() =>
-            startScan.mutate(
-              { movie_ids: [movie.id] },
-              { onSuccess: (job) => navigate(`/movies/tmdb-scan?job=${job.id}`) },
-            )
-          }
-          disabled={startScan.isPending}
-        >
-          {startScan.isPending ? "Starting…" : "Scan TMDB for missing credits"}
-        </button>
-        <button onClick={() => setEditing(true)}>✎ Edit</button>
+        {canEdit && <button onClick={() => setEditing(true)}>✎ Edit</button>}
       </header>
-      {startScan.error && <p className="err">{(startScan.error as Error).message}</p>}
 
       <div className="artist-detail-dropdown" style={{ marginBottom: "1.5rem" }}>
         <div className="artist-detail-grid">
-          <div>
-            <span className="detail-label">Release year</span>
-            <span>{movie.release_year}</span>
-          </div>
-          <div>
-            <span className="detail-label">Runtime</span>
-            <span>{fmtRuntime(movie.runtime_minutes)}</span>
-          </div>
-          <div>
-            <span className="detail-label">Watches</span>
-            <span>{movie.watches}</span>
-          </div>
-          {movie.soundtrack_albums.length > 0 && (
-            <div>
-              <span className="detail-label">Soundtrack</span>
-              <span>
-                {movie.soundtrack_albums.map((a, i) => (
-                  <span key={a.id}>
-                    {i > 0 && ", "}
-                    <Link to={`/music/albums/${a.id}`}>
-                      {a.name}{a.name_en && <span style={{ opacity: 0.6 }}> ({a.name_en})</span>}
-                    </Link>
-                  </span>
-                ))}
-              </span>
-            </div>
-          )}
+          <div><span className="detail-label">Release year</span><span>{movie.release_year}</span></div>
+          <div><span className="detail-label">Runtime</span><span>{fmtRuntime(movie.runtime_minutes)}</span></div>
         </div>
+        {movie.soundtrack_albums.length > 0 && (
+          <div className="detail-tags" style={{ marginTop: "0.5rem" }}>
+            <span className="detail-label">Soundtrack</span>
+            <span>
+              {movie.soundtrack_albums.map((a, i) => (
+                <span key={a.id}>
+                  {i > 0 && ", "}
+                  <Link to={`/g/${guildId}/music/albums/${a.id}`}>
+                    {a.name}{a.name_en && <span style={{ opacity: 0.6 }}> ({a.name_en})</span>}
+                  </Link>
+                </span>
+              ))}
+            </span>
+          </div>
+        )}
         {movie.notes && (
           <div className="detail-tags" style={{ marginTop: "0.5rem" }}>
             <span className="detail-label">Notes</span>
@@ -372,8 +401,10 @@ export function MovieDetailPage() {
         )}
       </div>
 
-      <MoviePeopleSection movie={movie} />
-      <GenresSection movie={movie} />
+      <MoviePeopleSection movieId={movieId} movie={movie} />
+      <MovieGenresSection movieId={movieId} movie={movie} />
+      <LinksSection path="movies" section="movies" ownerId={movieId} />
+      <MyMovieListSection movieId={movieId} />
 
       {editing && (
         <div className="modal-backdrop" onClick={() => setEditing(false)}>
@@ -382,8 +413,7 @@ export function MovieDetailPage() {
               initial={movie}
               onClose={() => {
                 setEditing(false);
-                qc.invalidateQueries({ queryKey: ["movies", movieId] });
-                qc.invalidateQueries({ queryKey: ["movies", "ranked"] });
+                qc.invalidateQueries({ queryKey: gk(guildId, "movies", movieId) });
               }}
             />
           </div>

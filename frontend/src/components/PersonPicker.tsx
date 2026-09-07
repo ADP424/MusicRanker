@@ -1,4 +1,5 @@
 import type { Person } from "../api/types";
+import { InlineBusy, LoadingState } from "./Spinner";
 
 export type PersonSearchField = "all" | "person" | "artist" | "movie" | "game" | "television";
 
@@ -83,11 +84,15 @@ export function PersonPicker<R extends string>(props: {
   onToggle: (person: Person, role: R) => void;
   /** Some callers render inside a <form> and must avoid submit-on-click. */
   buttonType?: "button" | "submit";
+  /** People list still on its cold fetch. */
+  loading?: boolean;
+  /** A link/unlink request for this picker is in flight. */
+  busy?: boolean;
 }) {
   const {
     roles, roleLabels, activeRole, onRole,
     searchField, onSearchField, search, onSearch, onNewPerson,
-    people, isChecked, onToggle, buttonType = "button",
+    people, isChecked, onToggle, buttonType = "button", loading = false, busy = false,
   } = props;
 
   return (
@@ -129,23 +134,28 @@ export function PersonPicker<R extends string>(props: {
           onChange={(e) => onSearch(e.target.value)}
           style={{ margin: 0, flex: 1 }}
         />
+        {busy && <InlineBusy label="Saving…" />}
         <button type={buttonType} style={{ whiteSpace: "nowrap" }} onClick={onNewPerson}>
           + New Person
         </button>
       </div>
-
-      <div className="chips">
-        {people.map((p) => (
-          <label key={p.id} className="chip">
-            <input
-              type="checkbox"
-              checked={isChecked(p, activeRole)}
-              onChange={() => onToggle(p, activeRole)}
-            />
-            {p.name}{p.name_en && <span style={{ opacity: 0.6 }}> ({p.name_en})</span>}
-          </label>
-        ))}
-      </div>
+      {loading ? (
+        <LoadingState compact label="Loading people…" />
+      ) : (
+        <div className="chips">
+          {people.map((p) => (
+            <label key={p.id} className="chip">
+              <input
+                type="checkbox"
+                checked={isChecked(p, activeRole)}
+                onChange={() => onToggle(p, activeRole)}
+              />
+              {p.name}{p.name_en && <span style={{ opacity: 0.6 }}> ({p.name_en})</span>}
+            </label>
+          ))}
+          {people.length === 0 && <small>No people match.</small>}
+        </div>
+      )}
     </>
   );
 }

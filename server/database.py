@@ -1,15 +1,31 @@
 import os
 
 from dotenv import load_dotenv
-from sqlalchemy import URL, create_engine, text
+from sqlalchemy import URL, create_engine, event, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from .database_models import Base
+from .database_models.mixins import NormalizedNames
+from .normalize import norm, norm_or_none
 
 load_dotenv()
 
 _engine = None
 SessionLocal: sessionmaker[Session] | None = None
+
+_ENUMS = (
+    "nationality", "cast_role", "band_role", "game_role",
+    "guild_role", "invitation_status", "job_lane", "job_status",
+)
+
+
+def _sync_norms(session: Session, _flush_ctx, _instances):
+    """Single place where name_norm/name_en_norm are maintained. If this ever
+    drifts from `normalize.norm`, merge conflict detection drifts with it."""
+    for obj in (*session.new, *session.dirty):
+        if isinstance(obj, NormalizedNames):
+            obj.name_norm = norm(obj.name)
+            obj.name_en_norm = norm_or_none(getattr(obj, "name_en", None))
 
 
 def init_engine() -> None:
@@ -23,11 +39,8 @@ def init_engine() -> None:
         database=os.environ["DATABASE"],
     )
     _engine = create_engine(url, pool_size=10, pool_pre_ping=True)
-    SessionLocal = sessionmaker(
-        bind=_engine,
-        autoflush=False,
-        expire_on_commit=False,
-    )
+    SessionLocal = sessionmaker(bind=_engine, autoflush=False, expire_on_commit=False)
+    event.listen(SessionLocal, "before_flush", _sync_norms)
 
 
 def dispose_engine() -> None:
@@ -50,14 +63,7 @@ def create_all() -> None:
 
 
 def drop_all() -> None:
-    # Drop any tables that exist in the DB but are no longer in SQLAlchemy metadata
-    # (e.g. leftovers from old migrations) so they don't block FK-constrained drops.
-    with _engine.begin() as conn:
-        conn.execute(text("DROP TABLE IF EXISTS movie_directors CASCADE"))
-        conn.execute(text("DROP TABLE IF EXISTS directors CASCADE"))
-        conn.execute(text("DROP TABLE IF EXISTS movie_cast_members CASCADE"))
-        conn.execute(text("DROP TABLE IF EXISTS cast_members CASCADE"))
     Base.metadata.drop_all(_engine)
     with _engine.begin() as conn:
-        conn.execute(text("DROP TYPE IF EXISTS nationality CASCADE"))
-        conn.execute(text("DROP TYPE IF EXISTS cast_role CASCADE"))
+        for name in _ENUMS:
+            conn.execute(text(f"DROP TYPE IF EXISTS {name} CASCADE"))

@@ -3,251 +3,323 @@ import { useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
 import { api } from "../api/client";
-import { usePeople, useTelevisionGenres, useTelevisionShowsRanked } from "../api/hooks";
-import type { TelevisionPersonRef, TelevisionShow } from "../api/types";
+import { useEntryMutations, useGuildApi, usePeople, useRankedTelevisionShows, useTelevisionCatalog, useTelevisionGenres } from "../api/hooks";
+import { gk, rk } from "../api/keys";
+import type { CastRole, TelevisionShow } from "../api/types";
+import { CAST_ROLE_LABELS, TV_SHOW_ROLES } from "../api/types";
+import { CatalogList } from "../components/CatalogList";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { MemberPicker } from "../components/MemberPicker";
+import { SearchFilterBar } from "../components/SearchFilterBar";
 import { SortableList } from "../components/SortableList";
+import { BusyButton, Spinner } from "../components/Spinner";
 import { TelevisionShowForm } from "../components/TelevisionShowForm";
 import { TmdbTelevisionImportDialog } from "../components/TmdbTelevisionImportDialog";
-import { DupWarningBanner, useDupWarning } from "../hooks/useDupWarning";
-import { useExpandAll } from "../hooks/useExpandAll";
-import { useOptimisticDelete } from "../hooks/useOptimisticDelete";
+import { useCan } from "../guild/GuildProvider";
+import { matchesAny } from "../search/textMatch";
 
-type ShowSearchBy = "all" | "title" | "genre" | "person";
-
-const ROLE_LABEL: Record<string, string> = {
-  creator: "Creator",
-  composer: "Composer",
-  lead_actor: "Lead Actor",
-  actor: "Actor",
-  cameo_actor: "Cameo Actor",
-};
+type ShowSearchBy = "all" | "title" | "genre" | "person" | "episode";
+const SHOW_SEARCH_BY: ShowSearchBy[] = ["all", "title", "genre", "person", "episode"];
+type View = "mine" | "catalog";
 
 export function TelevisionShowsPage() {
   const qc = useQueryClient();
   const navigate = useNavigate();
+  const { guildId, userId: me, base } = useGuildApi();
+  const canCreate = useCan("catalog_create");
+  const canEdit = useCan("catalog_edit");
+  const canDelete = useCan("catalog_delete");
+  const [view, setView] = useState<View>("mine");
   const [editing, setEditing] = useState<{ show: TelevisionShow } | "new" | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<{ show: TelevisionShow; rankingsDestroyed: number } | null>(null);
+  const [confirmRemoveFromList, setConfirmRemoveFromList] = useState<TelevisionShow | null>(null);
   const [showTmdbImport, setShowTmdbImport] = useState(false);
-  const [confirmDelete, setConfirmDelete] = useState<TelevisionShow | null>(null);
   const [searchQ, setSearchQ] = useState("");
   const [searchBy, setSearchBy] = useState<ShowSearchBy>("all");
-  const { dupWarning, clear: clearDup, checkAfterSave } = useDupWarning("television show");
+  const [expandedIds, setExpandedIds] = useState<Set<number>>(new Set());
+  const [viewingUser, setViewingUser] = useState(me);
+  const [impactFor, setImpactFor] = useState<number | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
-  const { data: shows = [] } = useTelevisionShowsRanked();
+  const { data: ranked = [], isLoading: rankedLoading } = useRankedTelevisionShows(viewingUser);
+  const { data: catalog = [], isLoading: catalogLoading } = useTelevisionCatalog();
   const { data: genres = [] } = useTelevisionGenres();
   const { data: people = [] } = usePeople();
   const genreMap = Object.fromEntries(genres.map((g) => [g.id, g.name]));
-  const { expandedIds, toggle: toggleExpand, allExpanded, toggleAll } = useExpandAll(shows);
+  const entry = useEntryMutations("television/shows");
+  const isMine = viewingUser === me;
 
-  const visibleShows = useMemo(() => {
-    const needle = searchQ.trim().toLowerCase();
-    if (!needle) return shows;
+  const rankKey = rk(guildId, me, "television", "shows", "ranked");
 
-    const matchingIds = new Set<number>();
-
+  function showMatches(s: TelevisionShow, needle: string): boolean {
     if (searchBy === "title" || searchBy === "all") {
-      for (const s of shows) {
-        if (s.name.toLowerCase().includes(needle) || s.name_en?.toLowerCase().includes(needle)) matchingIds.add(s.id);
-      }
+      if (matchesAny(needle, s.name, s.name_en)) return true;
     }
-
     if (searchBy === "genre" || searchBy === "all") {
       const matchingGenreIds = new Set(
-        genres
-          .filter((g) =>
-            g.name.toLowerCase().includes(needle) ||
-            g.synonyms?.some((syn) => syn.toLowerCase().includes(needle))
-          )
-          .map((g) => g.id)
+        genres.filter((g) => matchesAny(needle, g.name) || g.synonyms?.some((sy) => sy.toLowerCase().includes(needle))).map((g) => g.id)
       );
-      for (const s of shows) {
-        if (s.genre_ids.some((gid) => matchingGenreIds.has(gid))) matchingIds.add(s.id);
-      }
+      if (s.genre_ids.some((gid) => matchingGenreIds.has(gid))) return true;
     }
-
     if (searchBy === "person" || searchBy === "all") {
       const matchingPersonIds = new Set(
-        people.filter((p) => p.name.toLowerCase().includes(needle) || p.name_en?.toLowerCase().includes(needle)).map((p) => p.id)
+        people.filter((p) => matchesAny(needle, p.name, p.name_en)).map((p) => p.id)
       );
-      for (const s of shows) {
-        if (s.persons.some((p) => matchingPersonIds.has(p.id))) matchingIds.add(s.id);
-      }
+      if (s.persons.some((p) => matchingPersonIds.has(p.id))) return true;
     }
+    if (searchBy === "episode" || searchBy === "all") {
+      if (s.episodes.some((e) => matchesAny(needle, e.name, e.name_en))) return true;
+    }
+    return false;
+  }
 
-    return shows.filter((s) => matchingIds.has(s.id));
-  }, [searchQ, searchBy, shows, genres, people]);
+  const visible = useMemo(() => {
+    const needle = searchQ.trim().toLowerCase();
+    if (!needle) return ranked;
+    return ranked.filter((r) => showMatches(r.show, needle));
+  }, [searchQ, searchBy, ranked, genres, people]);
 
   const move = useMutation({
-    mutationFn: (v: { id: number; position: number }) =>
-      api.put(`/television/shows/${v.id}/position`, { position: v.position }),
-    onSettled: () => qc.invalidateQueries({ queryKey: ["television", "ranked"] }),
+    mutationFn: (v: { id: number; position: number }) => api.put(`${base}/television/shows/${v.id}/position`, { position: v.position }),
+    onSettled: () => qc.invalidateQueries({ queryKey: rk(guildId, me, "television", "shows") }),
   });
 
-  const remove = useOptimisticDelete<TelevisionShow>({
-    queryKey: ["television", "ranked"],
-    endpoint: (id) => `/television/shows/${id}`,
-    invalidateKeys: [["television", "ranked"], ["television", "index"]],
+  const remove = useMutation({
+    mutationFn: (showId: number) => api.delete(`${base}/television/shows/${showId}`),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: gk(guildId, "television") });
+      qc.invalidateQueries({ queryKey: rk(guildId, me, "television", "shows") });
+    },
   });
 
-  function groupPersons(persons: TelevisionPersonRef[]) {
-    const byRole: Record<string, TelevisionPersonRef[]> = {};
-    for (const p of persons) {
-      if (!byRole[p.role]) byRole[p.role] = [];
-      byRole[p.role].push(p);
+  async function confirmRemoval(show: TelevisionShow) {
+    setImpactFor(show.id);
+    setActionError(null);
+    try {
+      const { rankings_destroyed } = await api.get<{ rankings_destroyed: number }>(`${base}/television/shows/${show.id}/impact`);
+      setConfirmDelete({ show, rankingsDestroyed: rankings_destroyed });
+    } catch (e) {
+      setActionError((e as Error).message);
+    } finally {
+      setImpactFor(null);
     }
+  }
+
+  function toggleExpand(id: number) {
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }
+
+  function groupPersons(persons: TelevisionShow["persons"]) {
+    const byRole: Partial<Record<CastRole, TelevisionShow["persons"]>> = {};
+    for (const p of persons) (byRole[p.role] ??= []).push(p);
     return byRole;
   }
+
+  function renderShowDetail(s: TelevisionShow) {
+    if (!expandedIds.has(s.id)) return null;
+    return (
+      <div className="album-detail-dropdown">
+        {s.persons.length > 0 && (() => {
+          const byRole = groupPersons(s.persons);
+          return TV_SHOW_ROLES.filter((r) => byRole[r]?.length).map((role) => (
+            <div key={role} className="album-detail-row">
+              <span className="detail-label">{CAST_ROLE_LABELS[role]}</span>
+              <span>
+                {byRole[role]!.map((p, i) => (
+                  <span key={p.id}>
+                    {i > 0 && ", "}
+                    <Link className="plain-link" to={`/g/${guildId}/people/${p.id}`}>
+                      {p.name}{p.name_en && <span style={{ opacity: 0.6 }}> ({p.name_en})</span>}
+                    </Link>
+                  </span>
+                ))}
+              </span>
+            </div>
+          ));
+        })()}
+        {s.genre_ids.length > 0 && (
+          <div className="album-detail-row">
+            <span className="detail-label">Genres</span>
+            <span>
+              {s.genre_ids
+                .filter((id) => genreMap[id])
+                .sort((a, b) => genreMap[a].localeCompare(genreMap[b]))
+                .map((id, i) => (
+                  <span key={id}>
+                    {i > 0 && ", "}
+                    <Link className="plain-link" to={`/g/${guildId}/television/genres/${id}`}>{genreMap[id]}</Link>
+                  </span>
+                ))}
+            </span>
+          </div>
+        )}
+        {s.soundtrack_albums.length > 0 && (
+          <div className="album-detail-row">
+            <span className="detail-label">Soundtrack</span>
+            <span>
+              {s.soundtrack_albums.map((a, i) => (
+                <span key={a.id}>
+                  {i > 0 && ", "}
+                  <Link to={`/g/${guildId}/music/albums/${a.id}`}>
+                    {a.name}{a.name_en && <span style={{ opacity: 0.6 }}> ({a.name_en})</span>}
+                  </Link>
+                </span>
+              ))}
+            </span>
+          </div>
+        )}
+        {s.notes && (
+          <div className="album-detail-row">
+            <span className="detail-label">Notes</span>
+            <span>{s.notes}</span>
+          </div>
+        )}
+        {s.persons.length === 0 && !s.notes && s.genre_ids.length === 0 && s.soundtrack_albums.length === 0 && (
+          <span style={{ opacity: 0.5 }}>No extra info.</span>
+        )}
+      </div>
+    );
+  }
+
+  const allExpanded = visible.length > 0 && expandedIds.size === visible.length;
+  const sortable = visible.map((r) => ({ ...r.show, position: r.position }));
+
+  const catalogNeedle = searchQ.trim().toLowerCase();
+  const visibleCatalog = useMemo(
+    () => catalog.filter((s) => !catalogNeedle || showMatches(s, catalogNeedle)),
+    [catalog, catalogNeedle, searchBy, genres, people],
+  );
 
   return (
     <section>
       <header className="page-head">
         <h1>Television</h1>
         <div style={{ display: "flex", gap: "0.5rem" }}>
-          <button onClick={toggleAll}>
+          <div className="view-toggle">
+            <button className={view === "mine" ? "view-toggle-active" : ""} onClick={() => setView("mine")}>Ranking</button>
+            <button className={view === "catalog" ? "view-toggle-active" : ""} onClick={() => setView("catalog")}>Catalog</button>
+          </div>
+          {view === "mine" && <MemberPicker value={viewingUser} onChange={setViewingUser} />}
+          <button onClick={() => setExpandedIds(allExpanded ? new Set() : new Set(visible.map((r) => r.show.id)))}>
             {allExpanded ? "Collapse all" : "Expand all"}
           </button>
-          <button onClick={() => setEditing("new")}>+ Add</button>
-          <button onClick={() => setShowTmdbImport(true)}>Import from TMDB</button>
+          {canCreate && <button onClick={() => setEditing("new")}>+ Add</button>}
+          {canCreate && <button onClick={() => setShowTmdbImport(true)}>Import from TMDB</button>}
         </div>
       </header>
-
-      {dupWarning && <DupWarningBanner message={dupWarning} onDismiss={clearDup} />}
-
-      <div className="search-bar">
-        <input
-          type="search"
-          placeholder="Search…"
-          value={searchQ}
-          onChange={(e) => setSearchQ(e.target.value)}
-        />
-        <div className="search-by-chips">
-          {(["all", "title", "genre", "person"] as ShowSearchBy[]).map((opt) => (
-            <button
-              key={opt}
-              className={`chip${searchBy === opt ? " chip-active" : ""}`}
-              onClick={() => setSearchBy(opt)}
-            >
-              {opt.charAt(0).toUpperCase() + opt.slice(1)}
-            </button>
-          ))}
-        </div>
-        {searchQ.trim().length > 0 && (
-          <span className="search-count">{visibleShows.length} result{visibleShows.length !== 1 ? "s" : ""}</span>
-        )}
-      </div>
-
-      <SortableList
-        items={visibleShows}
-        rowClassName="album-row"
-        onReorder={(next) => qc.setQueryData(["television", "ranked"], next)}
-        onMove={(id, position) => move.mutate({ id, position })}
-        disableDrag={searchQ.trim().length > 0}
-        renderDetail={(s) =>
-          expandedIds.has(s.id) ? (
-            <div className="album-detail-dropdown">
-              {s.persons.length > 0 && (() => {
-                const byRole = groupPersons(s.persons);
-                const roleOrder = ["creator", "composer", "lead_actor", "actor", "cameo_actor"];
-                return roleOrder
-                  .filter((r) => byRole[r]?.length)
-                  .map((role) => (
-                    <div key={role} className="album-detail-row">
-                      <span className="detail-label">{ROLE_LABEL[role] ?? role}</span>
-                      <span>
-                        {byRole[role].map((p, i) => (
-                          <span key={p.id}>
-                            {i > 0 && ", "}
-                            <Link className="plain-link" to={`/people/${p.id}`}>
-                              {p.name}{p.name_en && <span style={{ opacity: 0.6 }}> ({p.name_en})</span>}
-                            </Link>
-                          </span>
-                        ))}
-                      </span>
-                    </div>
-                  ));
-              })()}
-              {s.genre_ids.length > 0 && (
-                <div className="album-detail-row">
-                  <span className="detail-label">Genres</span>
-                  <span>
-                    {s.genre_ids
-                      .filter((id) => genreMap[id])
-                      .sort((a, b) => genreMap[a].localeCompare(genreMap[b]))
-                      .map((id, i) => (
-                        <span key={id}>
-                          {i > 0 && ", "}
-                          <Link className="plain-link" to={`/television/genres/${id}`}>{genreMap[id]}</Link>
-                        </span>
-                      ))}
-                  </span>
-                </div>
-              )}
-              {s.soundtrack_albums.length > 0 && (
-                <div className="album-detail-row">
-                  <span className="detail-label">Soundtrack</span>
-                  <span>
-                    {s.soundtrack_albums.map((a, i) => (
-                      <span key={a.id}>
-                        {i > 0 && ", "}
-                        <Link to={`/music/albums/${a.id}`}>
-                          {a.name}{a.name_en && <span style={{ opacity: 0.6 }}> ({a.name_en})</span>}
-                        </Link>
-                      </span>
-                    ))}
-                  </span>
-                </div>
-              )}
-              {s.watch_link && (
-                <div className="album-detail-row">
-                  <span className="detail-label">Watch</span>
-                  <a href={s.watch_link} target="_blank" rel="noreferrer">{s.watch_link}</a>
-                </div>
-              )}
-              {s.notes && (
-                <div className="album-detail-row">
-                  <span className="detail-label">Notes</span>
-                  <span>{s.notes}</span>
-                </div>
-              )}
-              {s.persons.length === 0 && !s.watch_link && !s.notes && s.genre_ids.length === 0 && s.soundtrack_albums.length === 0 && (
-                <span style={{ opacity: 0.5 }}>No extra info.</span>
-              )}
-            </div>
-          ) : null
+      {actionError && <p className="err">{actionError}</p>}
+      <SearchFilterBar
+        value={searchQ}
+        onChange={setSearchQ}
+        searchBy={searchBy}
+        onSearchByChange={setSearchBy}
+        options={SHOW_SEARCH_BY}
+        count={
+          view === "mine"
+            ? (rankedLoading ? <Spinner size="sm" /> : (searchQ.trim().length > 0 ? `${visible.length} result${visible.length !== 1 ? "s" : ""}` : ""))
+            : (catalogLoading ? <Spinner size="sm" /> : `${visibleCatalog.length} in catalog`)
         }
+      />
+
+      {view === "mine" && (
+      <SortableList
+        items={sortable}
+        loading={rankedLoading}
+        loadingLabel="Loading ranking…"
+        empty={
+          <p className="rank-empty">
+            {ranked.length > 0 ? "No shows match your search." : isMine ? "No shows ranked yet." : "This member hasn't ranked any shows yet."}
+          </p>
+        }
+        pendingId={move.isPending ? move.variables?.id ?? null : null}
+        rowClassName="album-row"
+        disableDrag={!isMine || searchQ.trim().length > 0}
+        onReorder={(next) => qc.setQueryData(rankKey, next.map((s, i) => ({ ...ranked[i], position: i + 1, show: s })))}
+        onMove={(id, position) => move.mutate({ id, position })}
+        renderDetail={renderShowDetail}
         render={(s) => (
           <>
             <span className="name">
-              <Link to={`/television/${s.id}`} className="plain-link">
+              <Link to={`/g/${guildId}/television/shows/${s.id}`} className="plain-link">
                 {s.name}{s.name_en && <span style={{ opacity: 0.6 }}> ({s.name_en})</span>}
               </Link>
-              {s.watch_link && (
-                <> <a href={s.watch_link} target="_blank" rel="noreferrer" style={{ textDecoration: "none", fontStyle: "italic", fontSize: "0.85em", opacity: 0.7, color: "inherit" }}>(link)</a></>
-              )}
             </span>
             <span className="meta">
               {s.release_year} · {s.episode_count} episode{s.episode_count !== 1 ? "s" : ""}
-              {s.persons.filter((p) => p.role === "creator").length > 0 && (
-                <> · {s.persons.filter((p) => p.role === "creator").map((p) => p.name).join(", ")}</>
-              )}
             </span>
+            <span />
             <button className="icon" title="Show details" onClick={() => toggleExpand(s.id)}>
               {expandedIds.has(s.id) ? "▲" : "▼"}
             </button>
-            <button className="icon" onClick={() => setEditing({ show: s })}>✎</button>
-            <button className="icon" onClick={() => setConfirmDelete(s)}>✕</button>
+            {isMine
+              ? <button className="icon" title="Remove from my ranking" onClick={() => setConfirmRemoveFromList(s)}>✕ list</button>
+              : <span />}
+            {canEdit ? <button className="icon" onClick={() => setEditing({ show: s })}>✎</button> : <span />}
+            {canDelete ? (
+              <BusyButton className="icon" title="Delete from catalog" busy={impactFor === s.id} busyLabel={null}
+                          onClick={() => void confirmRemoval(s)}>✕</BusyButton>
+            ) : <span />}
           </>
         )}
       />
+      )}
+
+      {view === "catalog" && (
+        <CatalogList
+          items={visibleCatalog}
+          loading={catalogLoading}
+          empty={<p><small>{catalog.length > 0 ? "No shows match your search." : "No shows in this guild's catalog yet."}</small></p>}
+          rowClassName="catalog-row"
+          renderDetail={renderShowDetail}
+          render={(s) => (
+            <>
+              <span className="name">
+                <Link to={`/g/${guildId}/television/shows/${s.id}`} className="plain-link">
+                  {s.name}{s.name_en && <span style={{ opacity: 0.6 }}> ({s.name_en})</span>}
+                </Link>
+              </span>
+              <span className="meta">
+                {s.release_year} · {s.episode_count} episode{s.episode_count !== 1 ? "s" : ""}
+              </span>
+              {s.in_my_list
+                ? <span className="meta">in your list</span>
+                : (
+                  <BusyButton busy={entry.add.isPending && entry.add.variables === s.id} busyLabel="Adding…"
+                              onClick={() => entry.add.mutate(s.id)}>+ Add to my list</BusyButton>
+                )}
+              <button className="icon" title="Show details" onClick={() => toggleExpand(s.id)}>
+                {expandedIds.has(s.id) ? "▲" : "▼"}
+              </button>
+              {canEdit ? <button className="icon" onClick={() => setEditing({ show: s })}>✎</button> : <span />}
+              {canDelete ? (
+                <BusyButton className="icon" title="Delete from catalog" busy={impactFor === s.id} busyLabel={null}
+                            onClick={() => void confirmRemoval(s)}>✕</BusyButton>
+              ) : <span />}
+            </>
+          )}
+        />
+      )}
 
       {confirmDelete && (
         <ConfirmDialog
-          message={`Delete "${confirmDelete.name}" and all of its episodes?`}
-          onConfirm={() => {
-            remove.mutate(confirmDelete.id);
-            setConfirmDelete(null);
-          }}
+          message={`Delete "${confirmDelete.show.name}" from the guild catalog? ${confirmDelete.rankingsDestroyed} member ranking(s) will be destroyed.`}
+          busy={remove.isPending}
+          onConfirm={() => remove.mutate(confirmDelete.show.id, { onSettled: () => setConfirmDelete(null) })}
           onCancel={() => setConfirmDelete(null)}
+        />
+      )}
+
+      {confirmRemoveFromList && (
+        <ConfirmDialog
+          message={`Remove "${confirmRemoveFromList.name}" from your list? Your personal notes for it will be lost. (Episode rankings are separate and won't be affected.)`}
+          confirmLabel="Remove"
+          busy={entry.remove.isPending}
+          onConfirm={() => entry.remove.mutate(confirmRemoveFromList.id, { onSettled: () => setConfirmRemoveFromList(null) })}
+          onCancel={() => setConfirmRemoveFromList(null)}
         />
       )}
 
@@ -256,10 +328,7 @@ export function TelevisionShowsPage() {
           <div onClick={(e) => e.stopPropagation()}>
             <TelevisionShowForm
               initial={editing === "new" ? undefined : editing.show}
-              onClose={(savedName, savedId) => {
-                setEditing(null);
-                checkAfterSave(shows, savedName, savedId);
-              }}
+              onClose={() => setEditing(null)}
             />
           </div>
         </div>
@@ -270,7 +339,7 @@ export function TelevisionShowsPage() {
           <div onClick={(e) => e.stopPropagation()}>
             <TmdbTelevisionImportDialog
               onClose={() => setShowTmdbImport(false)}
-              onSuccess={(showId) => navigate(`/television/${showId}`)}
+              onSuccess={(showId) => navigate(`/g/${guildId}/television/shows/${showId}`)}
             />
           </div>
         </div>

@@ -1,33 +1,21 @@
 from __future__ import annotations
 
-from decimal import Decimal
 from typing import TYPE_CHECKING
 
-from sqlalchemy import CheckConstraint, Column, ForeignKey, Index, Numeric, Table, Text
+from sqlalchemy import Index, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .album_movie_soundtrack import album_movie_soundtrack
 from .base import Base
-
-if TYPE_CHECKING:
-    from .album import Album
-    from .genre import Genre
-    from .movie_person import MoviePerson
-
-movie_genres_junction = Table(
-    "movie_genres_junction",
-    Base.metadata,
-    Column("movie_id", ForeignKey("movies.id", ondelete="CASCADE"), primary_key=True),
-    Column("genre_id", ForeignKey("genres.id", ondelete="CASCADE"), primary_key=True),
-    Index("idx_movie_genres_junction_genre", "genre_id"),
-)
+from .junctions import movie_genres_junction
+from .mixins import Audited, GuildScoped, NormalizedNames, guild_unique
 
 
-class Movie(Base):
+class Movie(GuildScoped, Audited, NormalizedNames, Base):
     __tablename__ = "movies"
     __table_args__ = (
-        CheckConstraint("watches >= 1", name="chk_movie_watches_min"),
-        CheckConstraint("global_rank > 0", name="chk_movie_global_rank_positive"),
+        guild_unique("movies"),
+        Index("idx_movies_guild_norm", "guild_id", "name_norm"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -35,22 +23,10 @@ class Movie(Base):
     name_en: Mapped[str | None] = mapped_column(Text)
     runtime_minutes: Mapped[int]
     release_year: Mapped[int]
-    watches: Mapped[int] = mapped_column(server_default="1")
-    watch_link: Mapped[str | None] = mapped_column(Text)
     notes: Mapped[str | None] = mapped_column(Text)
-    global_rank: Mapped[Decimal | None] = mapped_column(Numeric, unique=True)
 
-    person_links: Mapped[list[MoviePerson]] = relationship(
-        "MoviePerson",
-        back_populates="movie",
-        cascade="all, delete-orphan",
-    )
-    genres: Mapped[list[Genre]] = relationship(
-        "Genre",
-        secondary=movie_genres_junction,
-    )
-    soundtrack_albums: Mapped[list[Album]] = relationship(
-        "Album",
-        secondary=album_movie_soundtrack,
-        back_populates="soundtrack_movies",
-    )
+    person_links = relationship("MoviePerson", back_populates="movie", cascade="all, delete-orphan",
+                                foreign_keys="MoviePerson.movie_id")
+    genres = relationship("Genre", secondary=movie_genres_junction)
+    soundtrack_albums = relationship("Album", secondary=album_movie_soundtrack, back_populates="soundtrack_movies")
+    links = relationship("MovieLink", cascade="all, delete-orphan", order_by="MovieLink.position")

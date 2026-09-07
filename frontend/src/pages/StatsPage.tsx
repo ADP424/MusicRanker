@@ -7,6 +7,8 @@ import {
 } from "recharts";
 
 import { api } from "../api/client";
+import { useGuildApi } from "../api/hooks";
+import { MemberPicker } from "../components/MemberPicker";
 import type {
   DecadeRow, GenreRow, NatRow, ScatterPoint,
   StatsSummary, YearRow,
@@ -15,21 +17,27 @@ import {
   C1, C2, SCATTER_FILL, ChartWrap, Section, Stat, StatGrid, Table, fmt2,
   type ColDef,
 } from "../stats/shared";
+import { LoadingState } from "../components/Spinner";
 
 // ---------------------------------------------------------------------------
 // Data hooks
 // ---------------------------------------------------------------------------
 
-const useSummary  = () => useQuery({ queryKey: ["stats", "summary"],   queryFn: () => api.get<StatsSummary>("/stats/summary") });
-const useByYear   = () => useQuery({ queryKey: ["stats", "by-year"],   queryFn: () => api.get<YearRow[]>("/stats/by-year") });
-const useByDecade = () => useQuery({ queryKey: ["stats", "by-decade"], queryFn: () => api.get<DecadeRow[]>("/stats/by-decade") });
-const useByNat    = () => useQuery({ queryKey: ["stats", "by-nat"],    queryFn: () => api.get<{ core_nationality: NatRow[]; birth_nationality: NatRow[] }>("/stats/by-nationality") });
-const useByGenre  = () => useQuery({ queryKey: ["stats", "by-genre"],  queryFn: () => api.get<{ by_genre: GenreRow[]; by_root_genre: GenreRow[] }>("/stats/by-genre") });
-const useScatter  = () => useQuery({ queryKey: ["stats", "scatter"],   queryFn: () => api.get<{
-  artist_rank_vs_runtime: ScatterPoint[];
-  album_score_vs_runtime: ScatterPoint[];
-  album_rank_vs_runtime:  ScatterPoint[];
-}>("/stats/scatter") });
+function useStatsHooks(userId: number) {
+  const { guildId, base } = useGuildApi();
+  const qs = `?user_id=${userId}`;
+  const useSummary  = () => useQuery({ queryKey: ["g", guildId, "u", userId, "stats", "summary"],   queryFn: () => api.get<StatsSummary>(`${base}/stats/summary${qs}`) });
+  const useByYear   = () => useQuery({ queryKey: ["g", guildId, "u", userId, "stats", "by-year"],   queryFn: () => api.get<YearRow[]>(`${base}/stats/by-year${qs}`) });
+  const useByDecade = () => useQuery({ queryKey: ["g", guildId, "u", userId, "stats", "by-decade"], queryFn: () => api.get<DecadeRow[]>(`${base}/stats/by-decade${qs}`) });
+  const useByNat    = () => useQuery({ queryKey: ["g", guildId, "u", userId, "stats", "by-nat"],    queryFn: () => api.get<{ core_nationality: NatRow[]; birth_nationality: NatRow[] }>(`${base}/stats/by-nationality${qs}`) });
+  const useByGenre  = () => useQuery({ queryKey: ["g", guildId, "u", userId, "stats", "by-genre"],  queryFn: () => api.get<{ by_genre: GenreRow[]; by_root_genre: GenreRow[] }>(`${base}/stats/by-genre${qs}`) });
+  const useScatter  = () => useQuery({ queryKey: ["g", guildId, "u", userId, "stats", "scatter"],   queryFn: () => api.get<{
+    artist_rank_vs_runtime: ScatterPoint[];
+    album_score_vs_runtime: ScatterPoint[];
+    album_rank_vs_runtime:  ScatterPoint[];
+  }>(`${base}/stats/scatter${qs}`) });
+  return { useSummary, useByYear, useByDecade, useByNat, useByGenre, useScatter };
+}
 
 // ---------------------------------------------------------------------------
 // Tab layout
@@ -43,16 +51,46 @@ type Tab = typeof TABS[number];
 // ---------------------------------------------------------------------------
 
 export function StatsPage() {
+  const { userId: me } = useGuildApi();
   const [tab, setTab] = useState<Tab>("Stats");
+  const [viewingUser, setViewingUser] = useState(me);
+  const { useSummary, useByYear, useByDecade, useByNat, useByGenre, useScatter } = useStatsHooks(viewingUser);
 
-  const { data: summary, isLoading } = useSummary();
-  const { data: byYear   = [] } = useByYear();
-  const { data: byDecade = [] } = useByDecade();
-  const { data: byNat }         = useByNat();
-  const { data: byGenre }       = useByGenre();
-  const { data: scatter }       = useScatter();
+  const summaryQ = useSummary();
+  const yearQ    = useByYear();
+  const decadeQ  = useByDecade();
+  const natQ     = useByNat();
+  const genreQ   = useByGenre();
+  const scatterQ = useScatter();
+  const summary  = summaryQ.data;
+  const byYear   = yearQ.data ?? [];
+  const byDecade = decadeQ.data ?? [];
+  const byNat    = natQ.data;
+  const byGenre  = genreQ.data;
+  const scatter  = scatterQ.data;
+  const loading  = [summaryQ, yearQ, decadeQ, natQ, genreQ, scatterQ].some((q) => q.isLoading);
 
-  if (isLoading || !summary) return <p>Loading…</p>;
+  const header = (
+    <div className="stats-tabs" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+      <div style={{ display: "flex" }}>
+        {TABS.map((t) => (
+          <button
+            key={t}
+            className={`stats-tab${tab === t ? " stats-tab-active" : ""}`}
+            onClick={() => setTab(t)}
+          >{t}</button>
+        ))}
+      </div>
+      <MemberPicker value={viewingUser} onChange={setViewingUser} />
+    </div>
+  );
+
+  if (summaryQ.isError) {
+    return <div className="stats-page">{header}<p className="err">{(summaryQ.error as Error).message}</p></div>;
+  }
+  if (loading || !summary) {
+    return <div className="stats-page">{header}<LoadingState label="Crunching stats…" /></div>;
+  }
 
   const coreNat    = byNat?.core_nationality  ?? [];
   const birthNat   = byNat?.birth_nationality ?? [];
@@ -78,15 +116,7 @@ export function StatsPage() {
 
   return (
     <div className="stats-page">
-      <div className="stats-tabs">
-        {TABS.map((t) => (
-          <button
-            key={t}
-            className={`stats-tab${tab === t ? " stats-tab-active" : ""}`}
-            onClick={() => setTab(t)}
-          >{t}</button>
-        ))}
-      </div>
+      {header}
 
       {/* ══════════════════════════ STATS TAB ══════════════════════════ */}
       {tab === "Stats" && (

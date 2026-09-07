@@ -15,16 +15,20 @@ from ..api_models.movie_person_scan import (
     SuppressionOut,
     UnresolvedMovieOut,
 )
+from ..authz import Capability
 from ..database import get_database
 from ..database_models import Movie, MoviePerson, Person
+from ..deps import GuildContext, guild_ctx
 from ..tmdb_client import get_sidecar
 from ..tmdb_scan import REGISTRY, run_scan
 
-router = APIRouter(prefix="/movie-person-scan", tags=["movie-person-scan"])
+router = APIRouter(prefix="/guilds/{guild_id}/movie-person-scan", tags=["movie-person-scan"])
+VIEW = guild_ctx(Capability.VIEW)
+EDIT = guild_ctx(Capability.CATALOG_EDIT)
 
 
-def _job_or_404(job_id: str):
-    job = REGISTRY.get(job_id)
+def _job_or_404(job_id: str, guild_id: int):
+    job = REGISTRY.get(job_id, guild_id)
     if job is None:
         raise HTTPException(404, f"No scan job {job_id!r} (it may have expired).")
     return job
@@ -34,40 +38,43 @@ def _job_or_404(job_id: str):
 def start_scan(
     body: ScanStartIn,
     background: BackgroundTasks,
+    ctx: GuildContext = Depends(EDIT),
     db: Session = Depends(get_database),
 ):
     REGISTRY.evict()
 
-    running = REGISTRY.running()
+    running = REGISTRY.running(ctx.guild_id)
     if running is not None:
         raise HTTPException(409, f"A scan is already running (job {running.id}).")
 
     if body.movie_ids:
-        found = {r[0] for r in db.query(Movie.id).filter(Movie.id.in_(body.movie_ids))}
+        found = {
+            r[0] for r in db.query(Movie.id).filter(Movie.id.in_(body.movie_ids), Movie.guild_id == ctx.guild_id)
+        }
         missing = sorted(set(body.movie_ids) - found)
         if missing:
             raise HTTPException(404, f"Unknown movie ids: {missing}")
 
-    job = REGISTRY.create()
+    job = REGISTRY.create(ctx.guild_id)
     # The request session is closed before this runs; run_scan opens its own.
-    background.add_task(run_scan, job.id, body.movie_ids, body.force_refresh)
+    background.add_task(run_scan, job.id, ctx.guild_id, body.movie_ids, body.force_refresh)
     return job
 
 
 @router.get("/jobs", response_model=list[ScanJobOut])
-def list_jobs():
+def list_jobs(ctx: GuildContext = Depends(VIEW)):
     REGISTRY.evict()
-    return REGISTRY.list()
+    return REGISTRY.list(ctx.guild_id)
 
 
 @router.get("/jobs/{job_id}", response_model=ScanJobOut)
-def get_job(job_id: str):
-    return _job_or_404(job_id)
+def get_job(job_id: str, ctx: GuildContext = Depends(VIEW)):
+    return _job_or_404(job_id, ctx.guild_id)
 
 
 @router.get("/jobs/{job_id}/results", response_model=ScanResultsOut)
-def get_results(job_id: str):
-    job = _job_or_404(job_id)
+def get_results(job_id: str, ctx: GuildContext = Depends(VIEW)):
+    job = _job_or_404(job_id, ctx.guild_id)
     if job.status != "done":
         raise HTTPException(409, f"Job {job_id} is {job.status}, not done.")
     return ScanResultsOut(
@@ -78,8 +85,8 @@ def get_results(job_id: str):
 
 
 @router.post("/jobs/{job_id}/cancel", status_code=204)
-def cancel_job(job_id: str):
-    job = _job_or_404(job_id)
+def cancel_job(job_id: str, ctx: GuildContext = Depends(EDIT)):
+    job = _job_or_404(job_id, ctx.guild_id)
     job.cancel.set()
     # Settle now. The worker sees the flag and unwinds; until it does, its
     # in-flight requests would otherwise keep REGISTRY.running() truthy and
@@ -89,14 +96,14 @@ def cancel_job(job_id: str):
 
 
 @router.delete("/jobs/{job_id}", status_code=204)
-def delete_job(job_id: str):
-    job = _job_or_404(job_id)
+def delete_job(job_id: str, ctx: GuildContext = Depends(EDIT)):
+    job = _job_or_404(job_id, ctx.guild_id)
     job.cancel.set()  # stop the worker before we drop our handle on it
     REGISTRY.delete(job_id)
 
 
 @router.post("/apply", response_model=ScanApplyOut)
-def apply_scan(body: ScanApplyIn, db: Session = Depends(get_database)):
+def apply_scan(body: ScanApplyIn, ctx: GuildContext = Depends(EDIT), db: Session = Depends(get_database)):
     created = 0
     invalid = []
     rows: list[dict] = []
@@ -104,8 +111,12 @@ def apply_scan(body: ScanApplyIn, db: Session = Depends(get_database)):
     if body.links:
         movie_ids = {link.movie_id for link in body.links}
         person_ids = {link.person_id for link in body.links}
-        valid_m = {r[0] for r in db.query(Movie.id).filter(Movie.id.in_(movie_ids))}
-        valid_p = {r[0] for r in db.query(Person.id).filter(Person.id.in_(person_ids))}
+        valid_m = {
+            r[0] for r in db.query(Movie.id).filter(Movie.id.in_(movie_ids), Movie.guild_id == ctx.guild_id)
+        }
+        valid_p = {
+            r[0] for r in db.query(Person.id).filter(Person.id.in_(person_ids), Person.guild_id == ctx.guild_id)
+        }
 
         # Dedupe: ON CONFLICT DO NOTHING does not protect against duplicate
         # rows *within* a single VALUES list.
@@ -118,7 +129,8 @@ def apply_scan(body: ScanApplyIn, db: Session = Depends(get_database)):
             if k in seen:
                 continue
             seen.add(k)
-            rows.append({"movie_id": link.movie_id, "person_id": link.person_id, "role": link.role})
+            rows.append({"movie_id": link.movie_id, "person_id": link.person_id, "role": link.role,
+                         "guild_id": ctx.guild_id})
 
         if rows:
             stmt = (
@@ -143,8 +155,22 @@ def apply_scan(body: ScanApplyIn, db: Session = Depends(get_database)):
 
 
 @router.get("/suppressions", response_model=SuppressionListOut)
-def list_suppressions(db: Session = Depends(get_database)):
+def list_suppressions(ctx: GuildContext = Depends(VIEW), db: Session = Depends(get_database)):
     raw = get_sidecar().rejections_detailed()
+    if not raw:
+        return SuppressionListOut(count=0, items=[])
+
+    # rejections are global (person_id/movie_id are unique across guilds), so
+    # scope the *display* by resolving names only for rows this guild can see.
+    movie_ids = {r[1] for r in raw}
+    person_ids = {r[0] for r in raw}
+    valid_m = {
+        r[0] for r in db.query(Movie.id).filter(Movie.id.in_(movie_ids), Movie.guild_id == ctx.guild_id)
+    }
+    valid_p = {
+        r[0] for r in db.query(Person.id).filter(Person.id.in_(person_ids), Person.guild_id == ctx.guild_id)
+    }
+    raw = [r for r in raw if r[0] in valid_p and r[1] in valid_m]
     if not raw:
         return SuppressionListOut(count=0, items=[])
 
@@ -165,5 +191,5 @@ def list_suppressions(db: Session = Depends(get_database)):
 
 
 @router.delete("/suppressions", status_code=204)
-def clear_suppressions():
+def clear_suppressions(ctx: GuildContext = Depends(EDIT)):
     get_sidecar().clear_rejections()

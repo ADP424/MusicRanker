@@ -1,9 +1,11 @@
 """
-Stats router — all aggregate / analytical endpoints.
+Stats router — aggregate / analytical endpoints, computed from one guild
+member's personal ranking (defaults to the caller; anyone may view another
+member's stats the same way the ranking pages let you view their list).
 
 Album score formula
 -------------------
-For each (album, artist) link:
+For each (album, artist) link, using the viewing member's own ranks:
     contribution = 1 / (artist_position × album_position_within_artist)
 
 For albums with multiple artists the contributions are averaged:
@@ -11,6 +13,9 @@ For albums with multiple artists the contributions are averaged:
 
 This means a collaborative album scores the same order of magnitude as a solo
 album by either artist — it doesn't get a free boost just for having more links.
+
+Only artists/albums the viewing member has actually ranked are included: an
+unranked catalog item has no position, so it contributes nothing.
 """
 
 from __future__ import annotations
@@ -20,16 +25,27 @@ from dataclasses import dataclass
 from statistics import mean
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session as DbSession
 
+from ..authz import Capability
 from ..database import get_database
-from ..database_models import Album, AlbumArtist, Artist, Genre
+from ..database_models import Album, AlbumArtist, Artist, Genre, GuildMember, UserAlbumRank, UserArtistRank
 from ..database_models.album_genre import album_genres
 from ..database_models.genre_parent import genre_parents
+from ..deps import GuildContext, guild_ctx
 
-router = APIRouter(prefix="/stats", tags=["stats"])
+router = APIRouter(prefix="/guilds/{guild_id}/stats", tags=["stats"])
+VIEW = guild_ctx(Capability.VIEW)
+
+
+def _target_user(db: DbSession, ctx: GuildContext, user_id: int | None) -> int:
+    if user_id is None or user_id == ctx.user_id:
+        return ctx.user_id
+    if db.get(GuildMember, (ctx.guild_id, user_id)) is None:
+        raise HTTPException(404, "Not a member of this guild")
+    return user_id
 
 
 # ---------------------------------------------------------------------------
@@ -41,7 +57,7 @@ router = APIRouter(prefix="/stats", tags=["stats"])
 class ScoredAlbum:
     album: Album
     score: float
-    # The artist(s) this album belongs to, with their positions
+    listens: int
     artist_links: list[tuple[Artist, int]]  # (artist, artist_position)
 
 
@@ -57,42 +73,51 @@ class ArtistDetail:
 # ---------------------------------------------------------------------------
 
 
-def _load(db: Session) -> tuple[list[ArtistDetail], list[ScoredAlbum]]:
-    """
-    Returns (artist_details, scored_albums).
+def _load(db: DbSession, ctx: GuildContext, uid: int) -> tuple[list[ArtistDetail], list[ScoredAlbum]]:
+    """Returns (artist_details, scored_albums) for `uid`'s personal ranking
+    within this guild. All positions are 1-based; only ranked items appear."""
+    artist_rank_rows = list(db.scalars(
+        select(UserArtistRank)
+        .where(UserArtistRank.user_id == uid, UserArtistRank.guild_id == ctx.guild_id)
+        .order_by(UserArtistRank.rank, UserArtistRank.artist_id)
+    ).all())
+    artist_pos: dict[int, int] = {r.artist_id: i for i, r in enumerate(artist_rank_rows, 1)}
+    artists_by_id: dict[int, Artist] = {a.id: a for a in db.scalars(
+        select(Artist).where(Artist.id.in_(artist_pos.keys()))
+    ).all()} if artist_pos else {}
 
-    All positions are 1-based integers. Album scores use the averaged formula.
-    """
-    # Artists ordered by global_rank
-    artists: list[Artist] = list(db.scalars(select(Artist).order_by(Artist.global_rank)).all())
-    artist_pos: dict[int, int] = {a.id: i for i, a in enumerate(artists, 1)}
-
-    # All album-artist links ordered by artist then album_rank
-    links: list[AlbumArtist] = list(
-        db.scalars(select(AlbumArtist).order_by(AlbumArtist.artist_id, AlbumArtist.album_rank)).all()
-    )
-
-    # Album positions within each artist (1-based)
-    album_pos_for_artist: dict[tuple[int, int], int] = {}  # (album_id, artist_id) → pos
+    album_rank_rows = list(db.scalars(
+        select(UserAlbumRank)
+        .where(UserAlbumRank.user_id == uid, UserAlbumRank.guild_id == ctx.guild_id)
+        .order_by(UserAlbumRank.artist_id, UserAlbumRank.rank, UserAlbumRank.album_id)
+    ).all())
+    album_pos_for_artist: dict[tuple[int, int], int] = {}
     _counter: dict[int, int] = defaultdict(int)
-    for link in links:
-        _counter[link.artist_id] += 1
-        album_pos_for_artist[(link.album_id, link.artist_id)] = _counter[link.artist_id]
+    for r in album_rank_rows:
+        _counter[r.artist_id] += 1
+        album_pos_for_artist[(r.album_id, r.artist_id)] = _counter[r.artist_id]
 
-    # All albums
-    albums: dict[int, Album] = {a.id: a for a in db.scalars(select(Album)).all()}
+    album_ids = {r.album_id for r in album_rank_rows}
+    albums: dict[int, Album] = {a.id: a for a in db.scalars(
+        select(Album).where(Album.id.in_(album_ids))
+    ).all()} if album_ids else {}
+    listens_by_album: dict[int, int] = {}
+    for r in album_rank_rows:
+        listens_by_album[r.album_id] = max(listens_by_album.get(r.album_id, 0), r.listens)
 
-    # Group links by album_id → list of (artist, artist_pos, album_pos)
+    links: list[AlbumArtist] = list(db.scalars(
+        select(AlbumArtist).where(AlbumArtist.album_id.in_(album_ids))
+    ).all()) if album_ids else []
+
     album_links: dict[int, list[tuple[Artist, int, int]]] = defaultdict(list)
-    artist_by_id: dict[int, Artist] = {a.id: a for a in artists}
     for link in links:
         a_pos = artist_pos.get(link.artist_id)
         al_pos = album_pos_for_artist.get((link.album_id, link.artist_id))
         if a_pos is not None and al_pos is not None:
-            artist = artist_by_id[link.artist_id]
-            album_links[link.album_id].append((artist, a_pos, al_pos))
+            artist = artists_by_id.get(link.artist_id)
+            if artist is not None:
+                album_links[link.album_id].append((artist, a_pos, al_pos))
 
-    # Build ScoredAlbum list
     scored_albums: list[ScoredAlbum] = []
     for album_id, album in albums.items():
         links_for_album = album_links.get(album_id, [])
@@ -100,33 +125,24 @@ def _load(db: Session) -> tuple[list[ArtistDetail], list[ScoredAlbum]]:
             continue
         contributions = [1.0 / (a_pos * al_pos) for (_, a_pos, al_pos) in links_for_album]
         score = mean(contributions)
-        scored_albums.append(
-            ScoredAlbum(
-                album=album,
-                score=score,
-                artist_links=[(artist, a_pos) for (artist, a_pos, _) in links_for_album],
-            )
-        )
+        scored_albums.append(ScoredAlbum(
+            album=album, score=score, listens=listens_by_album.get(album_id, 1),
+            artist_links=[(artist, a_pos) for (artist, a_pos, _) in links_for_album],
+        ))
 
-    # Build ArtistDetail list
-    # albums per artist sorted by album_rank (position)
     artist_albums: dict[int, list[tuple[Album, int, float]]] = defaultdict(list)
     for sa in scored_albums:
         for artist, a_pos in sa.artist_links:
             al_pos = album_pos_for_artist.get((sa.album.id, artist.id), 0)
             artist_albums[artist.id].append((sa.album, al_pos, sa.score))
-
     for aid in artist_albums:
         artist_albums[aid].sort(key=lambda t: t[1])
 
     artist_details: list[ArtistDetail] = [
-        ArtistDetail(
-            artist=a,
-            position=artist_pos[a.id],
-            albums=artist_albums.get(a.id, []),
-        )
-        for a in artists
+        ArtistDetail(artist=artists_by_id[aid], position=pos, albums=artist_albums.get(aid, []))
+        for aid, pos in artist_pos.items()
     ]
+    artist_details.sort(key=lambda ad: ad.position)
 
     return artist_details, scored_albums
 
@@ -140,22 +156,7 @@ def _runtime_hours(albums: list[Album]) -> float:
     return sum(a.runtime.total_seconds() for a in albums) / 3600
 
 
-def _listened_hours(albums_with_score_or_plain) -> float:
-    """Accept either Album objects or (Album, pos, score) tuples."""
-    total = 0.0
-    for item in albums_with_score_or_plain:
-        album = item[0] if isinstance(item, tuple) else item
-        total += album.runtime.total_seconds() * album.listens
-    return total / 3600
-
-
-def _best_worst(
-    items: list[Any],
-    key_fn,
-    val_fn,
-    higher_is_better: bool = True,
-) -> tuple[Any, Any]:
-    """Group items by key_fn, aggregate with val_fn, return (best_key, worst_key)."""
+def _best_worst(items: list[Any], key_fn, val_fn, higher_is_better: bool = True) -> tuple[Any, Any]:
     groups: dict[Any, list] = defaultdict(list)
     for item in items:
         groups[key_fn(item)].append(item)
@@ -166,16 +167,7 @@ def _best_worst(
     return ordered[0][0], ordered[-1][0]
 
 
-def _group_stats(
-    items: list[Any],
-    key_fn,
-    score_fn=None,
-    rank_fn=None,
-) -> list[dict]:
-    """
-    Group items by key_fn. Each group gets:
-      count, avg_score (if score_fn), avg_rank (if rank_fn)
-    """
+def _group_stats(items: list[Any], key_fn, score_fn=None, rank_fn=None) -> list[dict]:
     groups: dict[Any, list] = defaultdict(list)
     for item in items:
         k = key_fn(item)
@@ -194,60 +186,43 @@ def _group_stats(
     return result
 
 
-# ---------------------------------------------------------------------------
-# Nationality helpers — resolve "root" nationality (first word, normalises
-# compound names like "South African" → "South African" stays whole since
-# we just use the value directly; "root nationality" means we bucket by
-# the core_nationality field itself; there's no hierarchy like genres).
-# For this app "root nationality" == nationality itself (flat list).
-# ---------------------------------------------------------------------------
-
-# ---------------------------------------------------------------------------
-# Genre descendant helper (for per-genre stats — attribute album to every
-# ancestor genre as well)
-# ---------------------------------------------------------------------------
-
-
-def _genre_ancestors(db: Session) -> dict[int, set[int]]:
-    """Returns {genre_id: {ancestor_id, ...}} for all genres."""
+def _genre_ancestors(db: DbSession) -> dict[int, set[int]]:
     rows = db.execute(select(genre_parents.c.genre_id, genre_parents.c.parent_genre_id)).all()
-    children_of: dict[int, set[int]] = defaultdict(set)
-    for child_id, parent_id in rows:
-        children_of[parent_id].add(child_id)
-
-    all_genre_ids = {gid for gid, _ in rows} | {pid for _, pid in rows}
-    ancestors: dict[int, set[int]] = {gid: set() for gid in all_genre_ids}
-
-    # BFS upward: build parent-of map
     parent_of: dict[int, set[int]] = defaultdict(set)
     for child_id, parent_id in rows:
         parent_of[child_id].add(parent_id)
+    all_genre_ids = {gid for gid, _ in rows} | {pid for _, pid in rows}
+
+    ancestors: dict[int, set[int]] = {}
 
     def get_ancestors(gid: int) -> set[int]:
-        if gid not in ancestors or not ancestors[gid] and gid in parent_of:
-            result: set[int] = set()
-            queue = list(parent_of.get(gid, []))
-            visited: set[int] = set()
-            while queue:
-                pid = queue.pop()
-                if pid in visited:
-                    continue
-                visited.add(pid)
-                result.add(pid)
-                queue.extend(parent_of.get(pid, []))
-            ancestors[gid] = result
-        return ancestors.get(gid, set())
+        if gid in ancestors:
+            return ancestors[gid]
+        result: set[int] = set()
+        queue = list(parent_of.get(gid, []))
+        visited: set[int] = set()
+        while queue:
+            pid = queue.pop()
+            if pid in visited:
+                continue
+            visited.add(pid)
+            result.add(pid)
+            queue.extend(parent_of.get(pid, []))
+        ancestors[gid] = result
+        return result
 
     for gid in list(all_genre_ids):
         get_ancestors(gid)
-
     return ancestors
 
 
-def _root_genre_ids(db: Session) -> set[int]:
-    """IDs of music genres with no parents."""
+def _root_genre_ids(db: DbSession, ctx: GuildContext) -> set[int]:
     has_parent = select(genre_parents.c.genre_id)
-    return {g.id for g in db.scalars(select(Genre).where(Genre.id.not_in(has_parent), Genre.is_music.is_(True))).all()}
+    return {
+        g.id for g in db.scalars(
+            select(Genre).where(Genre.guild_id == ctx.guild_id, Genre.id.not_in(has_parent), Genre.is_music.is_(True))
+        ).all()
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -256,8 +231,9 @@ def _root_genre_ids(db: Session) -> set[int]:
 
 
 @router.get("/summary")
-def summary(db: Session = Depends(get_database)):
-    artist_details, scored_albums = _load(db)
+def summary(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+    uid = _target_user(db, ctx, user_id)
+    artist_details, scored_albums = _load(db, ctx, uid)
 
     total_artists = len(artist_details)
     total_albums = len(scored_albums)
@@ -267,22 +243,14 @@ def summary(db: Session = Depends(get_database)):
     unique_runtime_h = _runtime_hours(unique_albums)
     avg_runtime_h = unique_runtime_h / total_albums if total_albums else 0
 
-    # Listened time = runtime × listens for each album
-    total_listened_h = sum(sa.album.runtime.total_seconds() * sa.album.listens for sa in scored_albums) / 3600
-
+    total_listened_h = sum(sa.album.runtime.total_seconds() * sa.listens for sa in scored_albums) / 3600
     avg_listened_h = total_listened_h / total_albums if total_albums else 0
 
     def _year(sa: ScoredAlbum):
         return sa.album.release_year
 
-    def _artist_year(ad: ArtistDetail):
-        # Use the year of the artist's first (best-ranked) album
-        return ad.albums[0][0].release_year if ad.albums else None
-
     best_album_year, worst_album_year = _best_worst(
-        scored_albums,
-        _year,
-        lambda group: mean(sa.score for sa in group),
+        scored_albums, _year, lambda group: mean(sa.score for sa in group),
     )
     artist_details_with_year = [ad for ad in artist_details if ad.albums]
     best_artist_year, worst_artist_year = _best_worst(
@@ -295,9 +263,7 @@ def summary(db: Session = Depends(get_database)):
         return (year // 10) * 10
 
     best_album_decade, worst_album_decade = _best_worst(
-        scored_albums,
-        lambda sa: _decade(sa.album.release_year),
-        lambda group: mean(sa.score for sa in group),
+        scored_albums, lambda sa: _decade(sa.album.release_year), lambda group: mean(sa.score for sa in group),
     )
     best_artist_decade, worst_artist_decade = _best_worst(
         artist_details_with_year,
@@ -311,9 +277,7 @@ def summary(db: Session = Depends(get_database)):
         lambda group: mean(sa.score for sa in group),
     )
     best_core_nat_artists, worst_core_nat_artists = _best_worst(
-        artist_details,
-        lambda ad: ad.artist.core_nationality,
-        lambda group: mean(1.0 / ad.position for ad in group),
+        artist_details, lambda ad: ad.artist.core_nationality, lambda group: mean(1.0 / ad.position for ad in group),
     )
     best_birth_nat_albums, worst_birth_nat_albums = _best_worst(
         scored_albums,
@@ -321,9 +285,7 @@ def summary(db: Session = Depends(get_database)):
         lambda group: mean(sa.score for sa in group),
     )
     best_birth_nat_artists, worst_birth_nat_artists = _best_worst(
-        artist_details,
-        lambda ad: ad.artist.birth_nationality,
-        lambda group: mean(1.0 / ad.position for ad in group),
+        artist_details, lambda ad: ad.artist.birth_nationality, lambda group: mean(1.0 / ad.position for ad in group),
     )
 
     return {
@@ -356,19 +318,14 @@ def summary(db: Session = Depends(get_database)):
 
 
 @router.get("/by-year")
-def by_year(db: Session = Depends(get_database)):
-    artist_details, scored_albums = _load(db)
+def by_year(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+    uid = _target_user(db, ctx, user_id)
+    artist_details, scored_albums = _load(db, ctx, uid)
 
-    album_rows = _group_stats(
-        scored_albums,
-        key_fn=lambda sa: sa.album.release_year,
-        score_fn=lambda sa: sa.score,
-    )
-    # Artists bucketed by year of their highest-ranked album
+    album_rows = _group_stats(scored_albums, key_fn=lambda sa: sa.album.release_year, score_fn=lambda sa: sa.score)
     artist_rows = _group_stats(
         [ad for ad in artist_details if ad.albums],
-        key_fn=lambda ad: ad.albums[0][0].release_year,
-        rank_fn=lambda ad: ad.position,
+        key_fn=lambda ad: ad.albums[0][0].release_year, rank_fn=lambda ad: ad.position,
     )
     artist_by_year = {r["key"]: r for r in artist_rows}
     for row in album_rows:
@@ -381,21 +338,19 @@ def by_year(db: Session = Depends(get_database)):
 
 
 @router.get("/by-decade")
-def by_decade(db: Session = Depends(get_database)):
-    artist_details, scored_albums = _load(db)
+def by_decade(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+    uid = _target_user(db, ctx, user_id)
+    artist_details, scored_albums = _load(db, ctx, uid)
 
     def _decade(year):
         return (year // 10) * 10
 
     album_rows = _group_stats(
-        scored_albums,
-        key_fn=lambda sa: _decade(sa.album.release_year),
-        score_fn=lambda sa: sa.score,
+        scored_albums, key_fn=lambda sa: _decade(sa.album.release_year), score_fn=lambda sa: sa.score,
     )
     artist_rows = _group_stats(
         [ad for ad in artist_details if ad.albums],
-        key_fn=lambda ad: _decade(ad.albums[0][0].release_year),
-        rank_fn=lambda ad: ad.position,
+        key_fn=lambda ad: _decade(ad.albums[0][0].release_year), rank_fn=lambda ad: ad.position,
     )
     artist_by_decade = {r["key"]: r for r in artist_rows}
     for row in album_rows:
@@ -408,65 +363,60 @@ def by_decade(db: Session = Depends(get_database)):
 
 
 @router.get("/by-nationality")
-def by_nationality(db: Session = Depends(get_database)):
-    artist_details, scored_albums = _load(db)
+def by_nationality(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW),
+                   db: DbSession = Depends(get_database)):
+    uid = _target_user(db, ctx, user_id)
+    artist_details, scored_albums = _load(db, ctx, uid)
 
     def _nat_album_score_key(nat_type: str):
         def fn(sa: ScoredAlbum):
-            # For multi-artist albums use the primary artist's nationality
             if not sa.artist_links:
                 return None
             return getattr(sa.artist_links[0][0], nat_type)
-
         return fn
 
     result = {}
     for nat_type in ("core_nationality", "birth_nationality"):
-        album_rows = _group_stats(
-            scored_albums,
-            key_fn=_nat_album_score_key(nat_type),
-            score_fn=lambda sa: sa.score,
-        )
+        album_rows = _group_stats(scored_albums, key_fn=_nat_album_score_key(nat_type), score_fn=lambda sa: sa.score)
         artist_rows = _group_stats(
-            artist_details,
-            key_fn=lambda ad, nt=nat_type: getattr(ad.artist, nt),
-            rank_fn=lambda ad: ad.position,
+            artist_details, key_fn=lambda ad, nt=nat_type: getattr(ad.artist, nt), rank_fn=lambda ad: ad.position,
         )
         artist_by_nat = {r["key"]: r for r in artist_rows}
         merged = []
         for row in album_rows:
             ar = artist_by_nat.get(row["key"], {})
-            merged.append(
-                {
-                    "nationality": row["key"],
-                    "album_count": row["count"],
-                    "avg_album_score": row.get("avg_score"),
-                    "artist_count": ar.get("count", 0),
-                    "avg_artist_rank": ar.get("avg_rank"),
-                }
-            )
+            merged.append({
+                "nationality": row["key"],
+                "album_count": row["count"],
+                "avg_album_score": row.get("avg_score"),
+                "artist_count": ar.get("count", 0),
+                "avg_artist_rank": ar.get("avg_rank"),
+            })
         result[nat_type] = sorted(merged, key=lambda r: r["nationality"] or "")
     return result
 
 
 @router.get("/by-genre")
-def by_genre(db: Session = Depends(get_database)):
-    artist_details, scored_albums = _load(db)
+def by_genre(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+    uid = _target_user(db, ctx, user_id)
+    artist_details, scored_albums = _load(db, ctx, uid)
 
-    # Map album_id → genre ids from album_genres association table
-    rows = db.execute(select(album_genres.c.album_id, album_genres.c.genre_id)).all()
+    album_ids = [sa.album.id for sa in scored_albums]
+    rows = db.execute(
+        select(album_genres.c.album_id, album_genres.c.genre_id).where(album_genres.c.album_id.in_(album_ids))
+    ).all() if album_ids else []
     album_genre_ids: dict[int, list[int]] = defaultdict(list)
     for album_id, genre_id in rows:
         album_genre_ids[album_id].append(genre_id)
 
-    genre_by_id: dict[int, Genre] = {g.id: g for g in db.scalars(select(Genre).where(Genre.is_music.is_(True))).all()}
-    roots = _root_genre_ids(db)
+    genre_by_id: dict[int, Genre] = {
+        g.id: g for g in db.scalars(select(Genre).where(Genre.guild_id == ctx.guild_id, Genre.is_music.is_(True))).all()
+    }
+    roots = _root_genre_ids(db, ctx)
     ancestors = _genre_ancestors(db)
 
-    # For each scored album, expand to all ancestor genres too
     genre_albums: dict[int, list[ScoredAlbum]] = defaultdict(list)
     root_genre_albums: dict[int, list[ScoredAlbum]] = defaultdict(list)
-    # Direct-only counts (no ancestor expansion)
     genre_albums_direct: dict[int, list[ScoredAlbum]] = defaultdict(list)
 
     for sa in scored_albums:
@@ -482,10 +432,8 @@ def by_genre(db: Session = Depends(get_database)):
         for gid in gids:
             genre_albums_direct[gid].append(sa)
 
-    # Artist primary genre
     artist_genre: dict[int, list[ArtistDetail]] = defaultdict(list)
     root_artist_genre: dict[int, list[ArtistDetail]] = defaultdict(list)
-    # Direct-only counts (no ancestor expansion)
     artist_genre_direct: dict[int, list[ArtistDetail]] = defaultdict(list)
     for ad in artist_details:
         gid = ad.artist.primary_genre
@@ -507,18 +455,16 @@ def by_genre(db: Session = Depends(get_database)):
                 continue
             alb = genre_alb.get(gid, [])
             art = genre_art.get(gid, [])
-            result.append(
-                {
-                    "genre_id": gid,
-                    "genre_name": g.name,
-                    "album_count": len(alb),
-                    "album_count_direct": len(genre_alb_direct.get(gid, [])),
-                    "avg_album_score": (round(mean(sa.score for sa in alb), 6) if alb else None),
-                    "artist_count": len(art),
-                    "artist_count_direct": len(genre_art_direct.get(gid, [])),
-                    "avg_artist_rank": (round(mean(ad.position for ad in art), 2) if art else None),
-                }
-            )
+            result.append({
+                "genre_id": gid,
+                "genre_name": g.name,
+                "album_count": len(alb),
+                "album_count_direct": len(genre_alb_direct.get(gid, [])),
+                "avg_album_score": (round(mean(sa.score for sa in alb), 6) if alb else None),
+                "artist_count": len(art),
+                "artist_count_direct": len(genre_art_direct.get(gid, [])),
+                "avg_artist_rank": (round(mean(ad.position for ad in art), 2) if art else None),
+            })
         return sorted(result, key=lambda r: r["genre_name"])
 
     all_gids = set(genre_by_id.keys())
@@ -529,41 +475,34 @@ def by_genre(db: Session = Depends(get_database)):
 
 
 @router.get("/scatter")
-def scatter(db: Session = Depends(get_database)):
+def scatter(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
     """
     Data for three scatter plots:
       1. Artist rank vs average artist album runtime (minutes)
       2. Album score vs album runtime (minutes)
       3. Album rank (within artist) vs album runtime (minutes)
     """
-    artist_details, scored_albums = _load(db)
+    uid = _target_user(db, ctx, user_id)
+    artist_details, scored_albums = _load(db, ctx, uid)
 
     artist_scatter = []
     for ad in artist_details:
         if not ad.albums:
             continue
         avg_rt = mean(alb.runtime.total_seconds() / 60 for (alb, _, _) in ad.albums)
-        artist_scatter.append(
-            {
-                "artist_id": ad.artist.id,
-                "name": ad.artist.name,
-                "rank": ad.position,
-                "avg_runtime_minutes": round(avg_rt, 2),
-            }
-        )
+        artist_scatter.append({
+            "artist_id": ad.artist.id, "name": ad.artist.name,
+            "rank": ad.position, "avg_runtime_minutes": round(avg_rt, 2),
+        })
 
-    album_score_scatter = []
-    for sa in scored_albums:
-        album_score_scatter.append(
-            {
-                "album_id": sa.album.id,
-                "name": sa.album.name,
-                "score": round(sa.score, 6),
-                "runtime_minutes": round(sa.album.runtime.total_seconds() / 60, 2),
-            }
-        )
+    album_score_scatter = [
+        {
+            "album_id": sa.album.id, "name": sa.album.name,
+            "score": round(sa.score, 6), "runtime_minutes": round(sa.album.runtime.total_seconds() / 60, 2),
+        }
+        for sa in scored_albums
+    ]
 
-    # Album rank within each artist vs runtime
     ad_by_id = {ad.artist.id: ad for ad in artist_details}
     album_rank_scatter = []
     for sa in scored_albums:
@@ -574,107 +513,13 @@ def scatter(db: Session = Depends(get_database)):
             al_pos_rows = [t for t in ad.albums if t[0].id == sa.album.id]
             if al_pos_rows:
                 al_pos = al_pos_rows[0][1]
-                album_rank_scatter.append(
-                    {
-                        "album_id": sa.album.id,
-                        "name": sa.album.name,
-                        "artist_name": artist.name,
-                        "album_rank": al_pos,
-                        "runtime_minutes": round(sa.album.runtime.total_seconds() / 60, 2),
-                    }
-                )
+                album_rank_scatter.append({
+                    "album_id": sa.album.id, "name": sa.album.name, "artist_name": artist.name,
+                    "album_rank": al_pos, "runtime_minutes": round(sa.album.runtime.total_seconds() / 60, 2),
+                })
 
     return {
         "artist_rank_vs_runtime": artist_scatter,
         "album_score_vs_runtime": album_score_scatter,
         "album_rank_vs_runtime": album_rank_scatter,
-    }
-
-
-# ---------------------------------------------------------------------------
-# Artist detail endpoint (for expandable rows on Artists page)
-# ---------------------------------------------------------------------------
-
-
-@router.get("/artist-detail/{aid}")
-def artist_detail(aid: int, db: Session = Depends(get_database)):
-    artist_details, scored_albums = _load(db)
-
-    ad = next((x for x in artist_details if x.artist.id == aid), None)
-    if ad is None:
-        from fastapi import HTTPException
-
-        raise HTTPException(404, "Artist not found")
-
-    albums = ad.albums  # list of (album, position, score)
-    total_runtime_s = sum(alb.runtime.total_seconds() for alb, _, _ in albums)
-    total_listened_s = sum(alb.runtime.total_seconds() * alb.listens for alb, _, _ in albums)
-    avg_runtime_s = total_runtime_s / len(albums) if albums else 0
-
-    # Genres: collect all genre ids from this artist's albums
-    album_ids = [alb.id for alb, _, _ in albums]
-    genre_rows = (
-        db.execute(select(album_genres.c.genre_id).where(album_genres.c.album_id.in_(album_ids))).scalars().all()
-    )
-    unique_genre_ids = set(genre_rows)
-    if ad.artist.primary_genre:
-        unique_genre_ids.add(ad.artist.primary_genre)
-    genres = sorted(
-        [{"id": g.id, "name": g.name} for g in db.scalars(select(Genre).where(Genre.id.in_(unique_genre_ids))).all()],
-        key=lambda g: g["name"],
-    )
-
-    # Collaborators: other artists who share albums with this artist
-    collaborator_ids: set[int] = set()
-    for sa in scored_albums:
-        artist_ids_on_album = {a.id for a, _ in sa.artist_links}
-        if aid in artist_ids_on_album:
-            collaborator_ids |= artist_ids_on_album - {aid}
-    collaborators = (
-        sorted(
-            [
-                {"id": a.id, "name": a.name}
-                for a in db.scalars(select(Artist).where(Artist.id.in_(collaborator_ids))).all()
-            ],
-            key=lambda a: a["name"],
-        )
-        if collaborator_ids
-        else []
-    )
-
-    # Members: people linked to this artist
-    from ..database_models import ArtistPerson
-    from ..database_models import Person as PersonModel
-
-    member_ids = [ap.person_id for ap in db.scalars(select(ArtistPerson).where(ArtistPerson.artist_id == aid)).all()]
-    members = (
-        sorted(
-            [
-                {"id": p.id, "name": p.name}
-                for p in db.scalars(select(PersonModel).where(PersonModel.id.in_(member_ids))).all()
-            ],
-            key=lambda p: p["name"],
-        )
-        if member_ids
-        else []
-    )
-
-    def _fmt(seconds: float) -> str:
-        h = int(seconds // 3600)
-        m = int((seconds % 3600) // 60)
-        s = int(seconds % 60)
-        return f"{h}:{m:02d}:{s:02d}"
-
-    return {
-        "album_count": len(albums),
-        "total_runtime": _fmt(total_runtime_s),
-        "total_runtime_seconds": int(total_runtime_s),
-        "total_listened_runtime": _fmt(total_listened_s),
-        "total_listened_seconds": int(total_listened_s),
-        "avg_runtime": _fmt(avg_runtime_s),
-        "avg_runtime_seconds": int(avg_runtime_s),
-        "genres": genres,
-        "members": members,
-        "collaborators": collaborators,
-        "avg_album_score": (round(mean(score for _, _, score in albums), 6) if albums else None),
     }

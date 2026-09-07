@@ -6,6 +6,8 @@ import {
 } from "recharts";
 
 import { api } from "../api/client";
+import { useGuildApi } from "../api/hooks";
+import { MemberPicker } from "../components/MemberPicker";
 import type {
   TelevisionDecadeRow, TelevisionGenreRow, TelevisionNatRow,
   TelevisionShowRow, TelevisionStatsSummary, TelevisionYearRow,
@@ -14,34 +16,67 @@ import {
   C1, C2, SCATTER_FILL, ChartWrap, Section, Stat, StatGrid, Table, fmt2,
   type ColDef,
 } from "../stats/shared";
+import { LoadingState } from "../components/Spinner";
 
-const useSummary  = () => useQuery({ queryKey: ["television-stats", "summary"],   queryFn: () => api.get<TelevisionStatsSummary>("/television-stats/summary") });
-const useByYear   = () => useQuery({ queryKey: ["television-stats", "by-year"],   queryFn: () => api.get<TelevisionYearRow[]>("/television-stats/by-year") });
-const useByDecade = () => useQuery({ queryKey: ["television-stats", "by-decade"], queryFn: () => api.get<TelevisionDecadeRow[]>("/television-stats/by-decade") });
-const useByNat    = () => useQuery({ queryKey: ["television-stats", "by-nat"],    queryFn: () => api.get<{ core_nationality: TelevisionNatRow[]; birth_nationality: TelevisionNatRow[] }>("/television-stats/by-nationality") });
-const useByGenre  = () => useQuery({ queryKey: ["television-stats", "by-genre"],  queryFn: () => api.get<{ by_genre: TelevisionGenreRow[]; by_root_genre: TelevisionGenreRow[] }>("/television-stats/by-genre") });
-const useByShow   = () => useQuery({ queryKey: ["television-stats", "by-show"],   queryFn: () => api.get<TelevisionShowRow[]>("/television-stats/by-show") });
-const useScatter  = () => useQuery({ queryKey: ["television-stats", "scatter"],   queryFn: () => api.get<{
-  show_score_vs_runtime: { show_id: number; name: string; score: number; episode_count: number; runtime_minutes: number }[];
-  episode_score_vs_runtime: { episode_id: number; name: string; show_name: string; score: number; local_score: number; runtime_minutes: number }[];
-  cast_member_score_vs_runtime: { cast_member_id: number; name: string; avg_score: number; episode_count: number; avg_runtime_minutes: number }[];
-}>("/television-stats/scatter") });
+function useStatsHooks(userId: number) {
+  const { guildId, base } = useGuildApi();
+  const qs = `?user_id=${userId}`;
+  const useSummary  = () => useQuery({ queryKey: ["g", guildId, "u", userId, "television-stats", "summary"],   queryFn: () => api.get<TelevisionStatsSummary>(`${base}/television-stats/summary${qs}`) });
+  const useByYear   = () => useQuery({ queryKey: ["g", guildId, "u", userId, "television-stats", "by-year"],   queryFn: () => api.get<TelevisionYearRow[]>(`${base}/television-stats/by-year${qs}`) });
+  const useByDecade = () => useQuery({ queryKey: ["g", guildId, "u", userId, "television-stats", "by-decade"], queryFn: () => api.get<TelevisionDecadeRow[]>(`${base}/television-stats/by-decade${qs}`) });
+  const useByNat    = () => useQuery({ queryKey: ["g", guildId, "u", userId, "television-stats", "by-nat"],    queryFn: () => api.get<{ core_nationality: TelevisionNatRow[]; birth_nationality: TelevisionNatRow[] }>(`${base}/television-stats/by-nationality${qs}`) });
+  const useByGenre  = () => useQuery({ queryKey: ["g", guildId, "u", userId, "television-stats", "by-genre"],  queryFn: () => api.get<{ by_genre: TelevisionGenreRow[]; by_root_genre: TelevisionGenreRow[] }>(`${base}/television-stats/by-genre${qs}`) });
+  const useByShow   = () => useQuery({ queryKey: ["g", guildId, "u", userId, "television-stats", "by-show"],   queryFn: () => api.get<TelevisionShowRow[]>(`${base}/television-stats/by-show${qs}`) });
+  const useScatter  = () => useQuery({ queryKey: ["g", guildId, "u", userId, "television-stats", "scatter"],   queryFn: () => api.get<{
+    show_score_vs_runtime: { show_id: number; name: string; score: number; episode_count: number; runtime_minutes: number }[];
+    episode_score_vs_runtime: { episode_id: number; name: string; show_name: string; score: number; local_score: number; runtime_minutes: number }[];
+    cast_member_score_vs_runtime: { cast_member_id: number; name: string; avg_score: number; episode_count: number; avg_runtime_minutes: number }[];
+  }>(`${base}/television-stats/scatter${qs}`) });
+  return { useSummary, useByYear, useByDecade, useByNat, useByGenre, useByShow, useScatter };
+}
 
 const TABS = ["Stats", "Shows", "Graphs"] as const;
 type Tab = typeof TABS[number];
 
 export function TelevisionStatsPage() {
+  const { userId: me } = useGuildApi();
   const [tab, setTab] = useState<Tab>("Stats");
+  const [viewingUser, setViewingUser] = useState(me);
+  const { useSummary, useByYear, useByDecade, useByNat, useByGenre, useByShow, useScatter } = useStatsHooks(viewingUser);
 
-  const { data: summary, isLoading } = useSummary();
-  const { data: byYear   = [] } = useByYear();
-  const { data: byDecade = [] } = useByDecade();
-  const { data: byNat }         = useByNat();
-  const { data: byGenre }       = useByGenre();
-  const { data: byShow   = [] } = useByShow();
-  const { data: scatter }       = useScatter();
+  const summaryQ = useSummary();
+  const yearQ    = useByYear();
+  const decadeQ  = useByDecade();
+  const natQ     = useByNat();
+  const genreQ   = useByGenre();
+  const showQ    = useByShow();
+  const scatterQ = useScatter();
+  const summary  = summaryQ.data;
+  const byYear   = yearQ.data ?? [];
+  const byDecade = decadeQ.data ?? [];
+  const byNat    = natQ.data;
+  const byGenre  = genreQ.data;
+  const byShow   = showQ.data ?? [];
+  const scatter  = scatterQ.data;
+  const loading  = [summaryQ, yearQ, decadeQ, natQ, genreQ, showQ, scatterQ].some((q) => q.isLoading);
 
-  if (isLoading || !summary) return <p>Loading…</p>;
+  const header = (
+    <div className="stats-tabs" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+      <div style={{ display: "flex" }}>
+        {TABS.map((t) => (
+          <button key={t} className={`stats-tab${tab === t ? " stats-tab-active" : ""}`} onClick={() => setTab(t)}>{t}</button>
+        ))}
+      </div>
+      <MemberPicker value={viewingUser} onChange={setViewingUser} />
+    </div>
+  );
+
+  if (summaryQ.isError) {
+    return <div className="stats-page">{header}<p className="err">{(summaryQ.error as Error).message}</p></div>;
+  }
+  if (loading || !summary) {
+    return <div className="stats-page">{header}<LoadingState label="Crunching stats…" /></div>;
+  }
 
   const coreNat    = byNat?.core_nationality  ?? [];
   const birthNat   = byNat?.birth_nationality ?? [];
@@ -78,11 +113,7 @@ export function TelevisionStatsPage() {
 
   return (
     <div className="stats-page">
-      <div className="stats-tabs">
-        {TABS.map((t) => (
-          <button key={t} className={`stats-tab${tab === t ? " stats-tab-active" : ""}`} onClick={() => setTab(t)}>{t}</button>
-        ))}
-      </div>
+      {header}
 
       {tab === "Stats" && (
         <>

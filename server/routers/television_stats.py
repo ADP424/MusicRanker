@@ -1,16 +1,19 @@
 """
-Television stats router — mirrors movie_stats, adapted to the show/episode split.
+Television stats router — mirrors movie_stats, adapted to the show/episode
+split, computed from one guild member's personal ranking (defaults to the
+caller).
 
 Television score formulas
 -------------------------
-Each show has its own global_rank:      show_score    = 1 / show position
-Each episode is ranked within its show: episode_score = 1 / position in show
-Combining the two gives a cross-show episode score:
+Each show scores 1 / show position (in the viewing member's show ranking).
+Each episode scores 1 / position within its show (in the viewing member's
+per-show episode ranking). Combining the two gives a cross-show episode score:
                                         episode_global_score = show_score * episode_score
 
 Person score = mean over every item they are credited on, where an item scores
 ``show_score`` for a show-level credit and ``episode_global_score`` for an
-episode-level credit.
+episode-level credit. Only shows/episodes the viewing member has ranked
+contribute — an unranked item has no position.
 """
 
 from __future__ import annotations
@@ -19,85 +22,130 @@ from collections import defaultdict
 from statistics import mean
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session as DbSession
 
+from ..authz import Capability
 from ..database import get_database
 from ..database_models import (
-    Genre,
-    Person,
-    TelevisionEpisode,
-    TelevisionEpisodePerson,
-    TelevisionShow,
-    TelevisionShowPerson,
+    Genre, GuildMember, Person, TelevisionEpisode, TelevisionEpisodePerson,
+    TelevisionShow, TelevisionShowPerson, UserTelevisionEpisodeRank, UserTelevisionShowRank,
 )
 from ..database_models.genre_parent import genre_parents
+from ..database_models.junctions import television_episode_genres_junction, television_show_genres_junction
 from ..database_models.movie_cast_member import CastRole
-from ..database_models.television import television_show_genres_junction
-from ..database_models.television_episode import television_episode_genres_junction
+from ..deps import GuildContext, guild_ctx
 
-router = APIRouter(prefix="/television-stats", tags=["television-stats"])
+router = APIRouter(prefix="/guilds/{guild_id}/television-stats", tags=["television-stats"])
+VIEW = guild_ctx(Capability.VIEW)
+
+
+def _target_user(db: DbSession, ctx: GuildContext, user_id: int | None) -> int:
+    if user_id is None or user_id == ctx.user_id:
+        return ctx.user_id
+    if db.get(GuildMember, (ctx.guild_id, user_id)) is None:
+        raise HTTPException(404, "Not a member of this guild")
+    return user_id
 
 
 # ---------------------------------------------------------------------------
 # Shared data loader
 # ---------------------------------------------------------------------------
 class TvData:
-    def __init__(self, db: Session):
-        self.shows: list[TelevisionShow] = list(
-            db.scalars(select(TelevisionShow).order_by(TelevisionShow.global_rank)).all()
-        )
+    def __init__(self, db: DbSession, ctx: GuildContext, uid: int):
+        show_rank_rows = list(db.scalars(
+            select(UserTelevisionShowRank)
+            .where(UserTelevisionShowRank.user_id == uid, UserTelevisionShowRank.guild_id == ctx.guild_id)
+            .order_by(UserTelevisionShowRank.rank, UserTelevisionShowRank.show_id)
+        ).all())
+        show_ids = [r.show_id for r in show_rank_rows]
+        show_by_id_all: dict[int, TelevisionShow] = {s.id: s for s in db.scalars(
+            select(TelevisionShow).where(TelevisionShow.id.in_(show_ids))
+        ).all()} if show_ids else {}
+        self.shows: list[TelevisionShow] = [show_by_id_all[sid] for sid in show_ids if sid in show_by_id_all]
         self.show_score: dict[int, float] = {s.id: 1.0 / pos for pos, s in enumerate(self.shows, start=1)}
+        self.show_by_id = {s.id: s for s in self.shows}
+
+        ep_rank_rows = list(db.scalars(
+            select(UserTelevisionEpisodeRank)
+            .where(UserTelevisionEpisodeRank.user_id == uid, UserTelevisionEpisodeRank.guild_id == ctx.guild_id)
+            .order_by(UserTelevisionEpisodeRank.show_id, UserTelevisionEpisodeRank.rank, UserTelevisionEpisodeRank.episode_id)
+        ).all())
+        watches_by_episode: dict[int, int] = {r.episode_id: r.watches for r in ep_rank_rows}
+        episode_ids = [r.episode_id for r in ep_rank_rows]
+        ep_by_id_all: dict[int, TelevisionEpisode] = {e.id: e for e in db.scalars(
+            select(TelevisionEpisode).where(TelevisionEpisode.id.in_(episode_ids))
+        ).all()} if episode_ids else {}
+        self.watches_by_episode = watches_by_episode
 
         self.episodes: list[TelevisionEpisode] = []
-        self.episode_score: dict[int, float] = {}  # local (within show)
-        self.episode_global_score: dict[int, float] = {}  # show_score * local
-        self.show_episodes: dict[int, list[TelevisionEpisode]] = {}
-        for show in self.shows:
-            eps = sorted(show.episodes, key=lambda e: (e.episode_rank is None, e.episode_rank, e.id))
-            self.show_episodes[show.id] = eps
-            for pos, ep in enumerate(eps, start=1):
-                self.episodes.append(ep)
-                self.episode_score[ep.id] = 1.0 / pos
-                self.episode_global_score[ep.id] = self.show_score[show.id] * (1.0 / pos)
+        self.episode_score: dict[int, float] = {}
+        self.episode_global_score: dict[int, float] = {}
+        self.show_episodes: dict[int, list[TelevisionEpisode]] = defaultdict(list)
+        per_show_pos: dict[int, int] = defaultdict(int)
+        for r in ep_rank_rows:
+            ep = ep_by_id_all.get(r.episode_id)
+            if ep is None or ep.show_id not in self.show_score:
+                continue
+            per_show_pos[ep.show_id] += 1
+            pos = per_show_pos[ep.show_id]
+            self.episodes.append(ep)
+            self.episode_score[ep.id] = 1.0 / pos
+            self.episode_global_score[ep.id] = self.show_score[ep.show_id] * (1.0 / pos)
+            self.show_episodes[ep.show_id].append(ep)
 
-        show_by_id = {s.id: s for s in self.shows}
         ep_by_id = {e.id: e for e in self.episodes}
-        self.show_by_id = show_by_id
         self.episode_by_id = ep_by_id
 
         self.person_shows: dict[int, list[tuple[TelevisionShow, float]]] = defaultdict(list)
-        for link in db.scalars(select(TelevisionShowPerson)).all():
-            s = show_by_id.get(link.show_id)
-            if s is not None:
-                self.person_shows[link.person_id].append((s, self.show_score[s.id]))
+        if show_ids:
+            for link in db.scalars(select(TelevisionShowPerson).where(TelevisionShowPerson.show_id.in_(show_ids))).all():
+                s = self.show_by_id.get(link.show_id)
+                if s is not None:
+                    self.person_shows[link.person_id].append((s, self.show_score[s.id]))
 
         self.person_episodes: dict[int, list[tuple[TelevisionEpisode, float]]] = defaultdict(list)
-        for link in db.scalars(select(TelevisionEpisodePerson)).all():
-            e = ep_by_id.get(link.episode_id)
-            if e is not None:
-                self.person_episodes[link.person_id].append((e, self.episode_global_score[e.id]))
+        ranked_episode_ids = list(ep_by_id.keys())
+        if ranked_episode_ids:
+            for link in db.scalars(
+                select(TelevisionEpisodePerson).where(TelevisionEpisodePerson.episode_id.in_(ranked_episode_ids))
+            ).all():
+                e = ep_by_id.get(link.episode_id)
+                if e is not None:
+                    self.person_episodes[link.person_id].append((e, self.episode_global_score[e.id]))
 
-        self.person_by_id: dict[int, Person] = {p.id: p for p in db.scalars(select(Person)).all()}
+        person_ids = set(self.person_shows) | set(self.person_episodes)
+        self.person_by_id: dict[int, Person] = {p.id: p for p in db.scalars(
+            select(Person).where(Person.id.in_(person_ids))
+        ).all()} if person_ids else {}
 
         # A show's "primary" person for nationality stats: its first show-level
-        # creator, falling back to the first director credited on any episode.
+        # creator, falling back to the first director credited on any ranked episode.
         self.show_director: dict[int, Person] = {}
-        for link in db.scalars(
-            select(TelevisionShowPerson).where(TelevisionShowPerson.role == CastRole.creator)
-        ).all():
-            if link.show_id not in self.show_director:
-                if p := self.person_by_id.get(link.person_id):
-                    self.show_director[link.show_id] = p
-        for link in db.scalars(
-            select(TelevisionEpisodePerson).where(TelevisionEpisodePerson.role == CastRole.director)
-        ).all():
-            ep = ep_by_id.get(link.episode_id)
-            if ep is None or ep.show_id in self.show_director:
-                continue
-            if p := self.person_by_id.get(link.person_id):
-                self.show_director[ep.show_id] = p
+        if show_ids:
+            for link in db.scalars(
+                select(TelevisionShowPerson).where(
+                    TelevisionShowPerson.show_id.in_(show_ids), TelevisionShowPerson.role == CastRole.creator
+                )
+            ).all():
+                if link.show_id not in self.show_director:
+                    p = self.person_by_id.get(link.person_id) or db.get(Person, link.person_id)
+                    if p:
+                        self.show_director[link.show_id] = p
+        if ranked_episode_ids:
+            for link in db.scalars(
+                select(TelevisionEpisodePerson).where(
+                    TelevisionEpisodePerson.episode_id.in_(ranked_episode_ids),
+                    TelevisionEpisodePerson.role == CastRole.director,
+                )
+            ).all():
+                ep = ep_by_id.get(link.episode_id)
+                if ep is None or ep.show_id in self.show_director:
+                    continue
+                p = self.person_by_id.get(link.person_id) or db.get(Person, link.person_id)
+                if p:
+                    self.show_director[ep.show_id] = p
 
     def credited_person_ids(self) -> set[int]:
         return set(self.person_shows) | set(self.person_episodes)
@@ -111,8 +159,8 @@ class TvData:
         return self.show_director.get(ep.show_id)
 
 
-def _load(db: Session) -> TvData:
-    return TvData(db)
+def _load(db: DbSession, ctx: GuildContext, uid: int) -> TvData:
+    return TvData(db, ctx, uid)
 
 
 # ---------------------------------------------------------------------------
@@ -131,7 +179,7 @@ def _best_worst(items: list[Any], key_fn, val_fn, higher_is_better: bool = True)
     return ordered[0][0], ordered[-1][0]
 
 
-def _genre_ancestors(db: Session) -> dict[int, set[int]]:
+def _genre_ancestors(db: DbSession) -> dict[int, set[int]]:
     rows = db.execute(select(genre_parents.c.genre_id, genre_parents.c.parent_genre_id)).all()
     parent_of: dict[int, set[int]] = defaultdict(set)
     for child_id, parent_id in rows:
@@ -153,11 +201,12 @@ def _genre_ancestors(db: Session) -> dict[int, set[int]]:
     return ancestors
 
 
-def _root_genre_ids(db: Session) -> set[int]:
-    """IDs of television genres with no parents."""
+def _root_genre_ids(db: DbSession, ctx: GuildContext) -> set[int]:
     has_parent = select(genre_parents.c.genre_id)
     return {
-        g.id for g in db.scalars(select(Genre).where(Genre.id.not_in(has_parent), Genre.is_television.is_(True))).all()
+        g.id for g in db.scalars(
+            select(Genre).where(Genre.guild_id == ctx.guild_id, Genre.id.not_in(has_parent), Genre.is_television.is_(True))
+        ).all()
     }
 
 
@@ -175,14 +224,15 @@ def _decade(y: int) -> int:
 # Endpoints
 # ---------------------------------------------------------------------------
 @router.get("/summary")
-def summary(db: Session = Depends(get_database)):
-    d = _load(db)
+def summary(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+    uid = _target_user(db, ctx, user_id)
+    d = _load(db, ctx, uid)
     total_shows = len(d.shows)
     total_episodes = len(d.episodes)
     credited = d.credited_person_ids()
 
     unique_runtime_h = sum(e.runtime_minutes for e in d.episodes) / 60
-    total_watched_h = sum(e.runtime_minutes * e.watches for e in d.episodes) / 60
+    total_watched_h = sum(e.runtime_minutes * d.watches_by_episode.get(e.id, 1) for e in d.episodes) / 60
 
     avg_episodes_per_show = total_episodes / total_shows if total_shows else 0
     avg_shows_per_person = mean(len(v) for v in d.person_shows.values()) if d.person_shows else 0
@@ -203,30 +253,23 @@ def summary(db: Session = Depends(get_database)):
 
     shows_with_director = [s for s in d.shows if s.id in d.show_director]
     best_core_nat_shows, worst_core_nat_shows = _best_worst(
-        shows_with_director,
-        lambda s: d.show_director[s.id].core_nationality,
+        shows_with_director, lambda s: d.show_director[s.id].core_nationality,
         lambda g: mean(d.show_score[s.id] for s in g),
     )
     best_birth_nat_shows, worst_birth_nat_shows = _best_worst(
-        shows_with_director,
-        lambda s: d.show_director[s.id].birth_nationality,
+        shows_with_director, lambda s: d.show_director[s.id].birth_nationality,
         lambda g: mean(d.show_score[s.id] for s in g),
     )
 
     persons_with_items = [
-        (p, d.person_items(pid))
-        for pid in credited
+        (p, d.person_items(pid)) for pid in credited
         if (p := d.person_by_id.get(pid)) is not None and d.person_items(pid)
     ]
     best_core_nat_cast, worst_core_nat_cast = _best_worst(
-        persons_with_items,
-        lambda t: t[0].core_nationality,
-        lambda g: mean(mean(t[1]) for t in g),
+        persons_with_items, lambda t: t[0].core_nationality, lambda g: mean(mean(t[1]) for t in g),
     )
     best_birth_nat_cast, worst_birth_nat_cast = _best_worst(
-        persons_with_items,
-        lambda t: t[0].birth_nationality,
-        lambda g: mean(mean(t[1]) for t in g),
+        persons_with_items, lambda t: t[0].birth_nationality, lambda g: mean(mean(t[1]) for t in g),
     )
 
     most_eps_show = max(d.shows, key=lambda s: len(d.show_episodes[s.id]), default=None)
@@ -275,37 +318,39 @@ def _bucket_rows(d: TvData, bucket_fn) -> list[dict]:
         buckets[bucket_fn(e.release_year)]["episodes"].append(d.episode_global_score[e.id])
     rows = []
     for key, vals in buckets.items():
-        rows.append(
-            {
-                "key": key,
-                "show_count": len(vals["shows"]),
-                "avg_show_score": round(mean(vals["shows"]), 6) if vals["shows"] else None,
-                "episode_count": len(vals["episodes"]),
-                "avg_episode_score": round(mean(vals["episodes"]), 6) if vals["episodes"] else None,
-            }
-        )
+        rows.append({
+            "key": key,
+            "show_count": len(vals["shows"]),
+            "avg_show_score": round(mean(vals["shows"]), 6) if vals["shows"] else None,
+            "episode_count": len(vals["episodes"]),
+            "avg_episode_score": round(mean(vals["episodes"]), 6) if vals["episodes"] else None,
+        })
     return sorted(rows, key=lambda r: r["key"])
 
 
 @router.get("/by-year")
-def by_year(db: Session = Depends(get_database)):
-    rows = _bucket_rows(_load(db), lambda y: y)
+def by_year(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+    uid = _target_user(db, ctx, user_id)
+    rows = _bucket_rows(_load(db, ctx, uid), lambda y: y)
     for r in rows:
         r["year"] = r.pop("key")
     return rows
 
 
 @router.get("/by-decade")
-def by_decade(db: Session = Depends(get_database)):
-    rows = _bucket_rows(_load(db), _decade)
+def by_decade(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+    uid = _target_user(db, ctx, user_id)
+    rows = _bucket_rows(_load(db, ctx, uid), _decade)
     for r in rows:
         r["decade"] = r.pop("key")
     return rows
 
 
 @router.get("/by-nationality")
-def by_nationality(db: Session = Depends(get_database)):
-    d = _load(db)
+def by_nationality(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW),
+                   db: DbSession = Depends(get_database)):
+    uid = _target_user(db, ctx, user_id)
+    d = _load(db, ctx, uid)
     result: dict[str, list[dict]] = {}
     for nat_type in ("core_nationality", "birth_nationality"):
         groups: dict[str, dict[str, list[float]]] = defaultdict(lambda: {"shows": [], "episodes": []})
@@ -336,24 +381,34 @@ def by_nationality(db: Session = Depends(get_database)):
 
 
 @router.get("/by-genre")
-def by_genre(db: Session = Depends(get_database)):
-    d = _load(db)
+def by_genre(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+    uid = _target_user(db, ctx, user_id)
+    d = _load(db, ctx, uid)
     genre_by_id: dict[int, Genre] = {
-        g.id: g for g in db.scalars(select(Genre).where(Genre.is_television.is_(True))).all()
+        g.id: g for g in db.scalars(
+            select(Genre).where(Genre.guild_id == ctx.guild_id, Genre.is_television.is_(True))
+        ).all()
     }
-    roots = _root_genre_ids(db)
+    roots = _root_genre_ids(db, ctx)
     ancestors = _genre_ancestors(db)
 
+    show_ids = list(d.show_by_id.keys())
+    ep_ids = list(d.episode_by_id.keys())
+
     show_gids: dict[int, list[int]] = defaultdict(list)
-    for show_id, genre_id in db.execute(
-        select(television_show_genres_junction.c.show_id, television_show_genres_junction.c.genre_id)
-    ).all():
-        show_gids[show_id].append(genre_id)
+    if show_ids:
+        for show_id, genre_id in db.execute(
+            select(television_show_genres_junction.c.show_id, television_show_genres_junction.c.genre_id)
+            .where(television_show_genres_junction.c.show_id.in_(show_ids))
+        ).all():
+            show_gids[show_id].append(genre_id)
     ep_gids: dict[int, list[int]] = defaultdict(list)
-    for ep_id, genre_id in db.execute(
-        select(television_episode_genres_junction.c.episode_id, television_episode_genres_junction.c.genre_id)
-    ).all():
-        ep_gids[ep_id].append(genre_id)
+    if ep_ids:
+        for ep_id, genre_id in db.execute(
+            select(television_episode_genres_junction.c.episode_id, television_episode_genres_junction.c.genre_id)
+            .where(television_episode_genres_junction.c.episode_id.in_(ep_ids))
+        ).all():
+            ep_gids[ep_id].append(genre_id)
 
     genre_shows: dict[int, list[float]] = defaultdict(list)
     genre_shows_direct: dict[int, int] = defaultdict(int)
@@ -390,60 +445,53 @@ def by_genre(db: Session = Depends(get_database)):
             if g is None:
                 continue
             s, e = genre_shows.get(gid, []), genre_eps.get(gid, [])
-            result.append(
-                {
-                    "genre_id": gid,
-                    "genre_name": g.name,
-                    "show_count": len(s),
-                    "show_count_direct": genre_shows_direct.get(gid, 0),
-                    "avg_show_score": round(mean(s), 6) if s else None,
-                    "episode_count": len(e),
-                    "episode_count_direct": genre_eps_direct.get(gid, 0),
-                    "avg_episode_score": round(mean(e), 6) if e else None,
-                }
-            )
+            result.append({
+                "genre_id": gid,
+                "genre_name": g.name,
+                "show_count": len(s),
+                "show_count_direct": genre_shows_direct.get(gid, 0),
+                "avg_show_score": round(mean(s), 6) if s else None,
+                "episode_count": len(e),
+                "episode_count_direct": genre_eps_direct.get(gid, 0),
+                "avg_episode_score": round(mean(e), 6) if e else None,
+            })
         return sorted(result, key=lambda r: r["genre_name"])
 
-    return {
-        "by_genre": _build(set(genre_by_id.keys())),
-        "by_root_genre": _build(roots),
-    }
+    return {"by_genre": _build(set(genre_by_id.keys())), "by_root_genre": _build(roots)}
 
 
 @router.get("/by-show")
-def by_show(db: Session = Depends(get_database)):
-    """TV-specific: one row per show, rolling up its episodes."""
-    d = _load(db)
+def by_show(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+    """TV-specific: one row per show, rolling up its ranked episodes."""
+    uid = _target_user(db, ctx, user_id)
+    d = _load(db, ctx, uid)
     rows = []
     for pos, show in enumerate(d.shows, start=1):
         eps = d.show_episodes[show.id]
         runtime = sum(e.runtime_minutes for e in eps)
-        watched = sum(e.runtime_minutes * e.watches for e in eps)
-        rows.append(
-            {
-                "show_id": show.id,
-                "show_name": show.name,
-                "position": pos,
-                "show_score": round(d.show_score[show.id], 6),
-                "release_year": show.release_year,
-                "episode_count": len(eps),
-                "total_watches": sum(e.watches for e in eps),
-                "total_runtime_minutes": runtime,
-                "total_watched_minutes": watched,
-                "avg_episode_runtime_minutes": round(runtime / len(eps), 2) if eps else None,
-            }
-        )
+        watched = sum(e.runtime_minutes * d.watches_by_episode.get(e.id, 1) for e in eps)
+        rows.append({
+            "show_id": show.id,
+            "show_name": show.name,
+            "position": pos,
+            "show_score": round(d.show_score[show.id], 6),
+            "release_year": show.release_year,
+            "episode_count": len(eps),
+            "total_watches": sum(d.watches_by_episode.get(e.id, 1) for e in eps),
+            "total_runtime_minutes": runtime,
+            "total_watched_minutes": watched,
+            "avg_episode_runtime_minutes": round(runtime / len(eps), 2) if eps else None,
+        })
     return rows
 
 
 @router.get("/scatter")
-def scatter(db: Session = Depends(get_database)):
-    d = _load(db)
+def scatter(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+    uid = _target_user(db, ctx, user_id)
+    d = _load(db, ctx, uid)
     show_scatter = [
         {
-            "show_id": s.id,
-            "name": s.name,
-            "score": round(d.show_score[s.id], 6),
+            "show_id": s.id, "name": s.name, "score": round(d.show_score[s.id], 6),
             "episode_count": len(d.show_episodes[s.id]),
             "runtime_minutes": sum(e.runtime_minutes for e in d.show_episodes[s.id]),
         }
@@ -451,11 +499,8 @@ def scatter(db: Session = Depends(get_database)):
     ]
     episode_scatter = [
         {
-            "episode_id": e.id,
-            "name": e.name,
-            "show_name": d.show_by_id[e.show_id].name,
-            "score": round(d.episode_global_score[e.id], 6),
-            "local_score": round(d.episode_score[e.id], 6),
+            "episode_id": e.id, "name": e.name, "show_name": d.show_by_id[e.show_id].name,
+            "score": round(d.episode_global_score[e.id], 6), "local_score": round(d.episode_score[e.id], 6),
             "runtime_minutes": e.runtime_minutes,
         }
         for e in d.episodes
@@ -467,15 +512,11 @@ def scatter(db: Session = Depends(get_database)):
         eps = d.person_episodes.get(pid, [])
         if not p or not scores:
             continue
-        cast_scatter.append(
-            {
-                "cast_member_id": pid,
-                "name": p.name,
-                "avg_score": round(mean(scores), 6),
-                "episode_count": len(eps),
-                "avg_runtime_minutes": round(mean(e.runtime_minutes for e, _ in eps), 2) if eps else 0,
-            }
-        )
+        cast_scatter.append({
+            "cast_member_id": pid, "name": p.name, "avg_score": round(mean(scores), 6),
+            "episode_count": len(eps),
+            "avg_runtime_minutes": round(mean(e.runtime_minutes for e, _ in eps), 2) if eps else 0,
+        })
     return {
         "show_score_vs_runtime": show_scatter,
         "episode_score_vs_runtime": episode_scatter,
@@ -484,16 +525,18 @@ def scatter(db: Session = Depends(get_database)):
 
 
 @router.get("/cast-member-detail/{pid}")
-def cast_member_detail(pid: int, db: Session = Depends(get_database)):
-    d = _load(db)
-    p = d.person_by_id.get(pid)
-    if p is None:
+def cast_member_detail(pid: int, user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW),
+                       db: DbSession = Depends(get_database)):
+    uid = _target_user(db, ctx, user_id)
+    d = _load(db, ctx, uid)
+    p = d.person_by_id.get(pid) or db.get(Person, pid)
+    if p is None or p.guild_id != ctx.guild_id:
         raise HTTPException(404, "Person not found")
 
     show_pairs = d.person_shows.get(pid, [])
     ep_pairs = d.person_episodes.get(pid, [])
     total_runtime_m = sum(e.runtime_minutes for e, _ in ep_pairs)
-    total_watched_m = sum(e.runtime_minutes * e.watches for e, _ in ep_pairs)
+    total_watched_m = sum(e.runtime_minutes * d.watches_by_episode.get(e.id, 1) for e, _ in ep_pairs)
     avg_runtime_m = total_runtime_m / len(ep_pairs) if ep_pairs else 0
 
     show_ids = {s.id for s, _ in show_pairs} | {e.show_id for e, _ in ep_pairs}
@@ -501,48 +544,33 @@ def cast_member_detail(pid: int, db: Session = Depends(get_database)):
 
     gids: set[int] = set()
     if show_ids:
-        gids.update(
-            db.execute(
-                select(television_show_genres_junction.c.genre_id).where(
-                    television_show_genres_junction.c.show_id.in_(show_ids)
-                )
-            )
-            .scalars()
-            .all()
-        )
+        gids.update(db.execute(
+            select(television_show_genres_junction.c.genre_id)
+            .where(television_show_genres_junction.c.show_id.in_(show_ids))
+        ).scalars().all())
     if ep_ids:
-        gids.update(
-            db.execute(
-                select(television_episode_genres_junction.c.genre_id).where(
-                    television_episode_genres_junction.c.episode_id.in_(ep_ids)
-                )
-            )
-            .scalars()
-            .all()
-        )
+        gids.update(db.execute(
+            select(television_episode_genres_junction.c.genre_id)
+            .where(television_episode_genres_junction.c.episode_id.in_(ep_ids))
+        ).scalars().all())
     genre_names = sorted(g.name for g in db.scalars(select(Genre).where(Genre.id.in_(gids))).all()) if gids else []
 
     collaborator_ids: set[int] = set()
     if show_ids:
-        collaborator_ids.update(
-            db.scalars(
-                select(TelevisionShowPerson.person_id).where(
-                    TelevisionShowPerson.show_id.in_(show_ids), TelevisionShowPerson.person_id != pid
-                )
-            ).all()
-        )
+        collaborator_ids.update(db.scalars(
+            select(TelevisionShowPerson.person_id).where(
+                TelevisionShowPerson.show_id.in_(show_ids), TelevisionShowPerson.person_id != pid
+            )
+        ).all())
     if ep_ids:
-        collaborator_ids.update(
-            db.scalars(
-                select(TelevisionEpisodePerson.person_id).where(
-                    TelevisionEpisodePerson.episode_id.in_(ep_ids), TelevisionEpisodePerson.person_id != pid
-                )
-            ).all()
-        )
+        collaborator_ids.update(db.scalars(
+            select(TelevisionEpisodePerson.person_id).where(
+                TelevisionEpisodePerson.episode_id.in_(ep_ids), TelevisionEpisodePerson.person_id != pid
+            )
+        ).all())
     collaborator_names = (
         sorted(p2.name for p2 in db.scalars(select(Person).where(Person.id.in_(collaborator_ids))).all())
-        if collaborator_ids
-        else []
+        if collaborator_ids else []
     )
 
     return {

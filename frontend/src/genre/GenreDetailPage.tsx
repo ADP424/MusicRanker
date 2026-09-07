@@ -3,6 +3,7 @@ import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
 import { api } from "../api/client";
+import { LoadingState } from "../components/Spinner";
 import { GenreForm } from "./GenreForm";
 import type { GenreDomain, GenreLike } from "./config";
 
@@ -11,30 +12,32 @@ export function GenreDetailPage({ domain }: { domain: GenreDomain }) {
   const gid = Number(id);
   const qc = useQueryClient();
   const [editing, setEditing] = useState(false);
+  const apiBase = domain.useApiBase();
 
   const { data: genre, isLoading, isError } = useQuery({
-    queryKey: [domain.key, gid],
-    queryFn: () => api.get<GenreLike>(`${domain.apiBase}/${gid}`),
+    queryKey: [domain.key, apiBase, gid],
+    queryFn: () => api.get<GenreLike>(`${apiBase}/${gid}`),
     enabled: !isNaN(gid),
   });
 
-  const { data: parents = [] } = useQuery({
-    queryKey: [domain.key, gid, "parents"],
-    queryFn: () => api.get<GenreLike[]>(`${domain.apiBase}/${gid}/parents`),
+  const { data: parents = [], isLoading: parentsLoading } = useQuery({
+    queryKey: [domain.key, apiBase, gid, "parents"],
+    queryFn: () => api.get<GenreLike[]>(`${apiBase}/${gid}/parents`),
     enabled: !isNaN(gid),
   });
 
-  const { data: children = [] } = useQuery({
-    queryKey: [domain.key, gid, "children"],
-    queryFn: () => api.get<GenreLike[]>(`${domain.apiBase}/${gid}/children`),
+  const { data: children = [], isLoading: childrenLoading } = useQuery({
+    queryKey: [domain.key, apiBase, gid, "children"],
+    queryFn: () => api.get<GenreLike[]>(`${apiBase}/${gid}/children`),
     enabled: !isNaN(gid),
   });
 
-  if (isLoading) return <section><p>Loading…</p></section>;
+  if (isLoading) return <section><LoadingState /></section>;
   if (isError || !genre) return <section><p>{domain.heading} not found.</p></section>;
 
   return (
     <section>
+      <Link to={domain.routeBase} className="back-link">← All {domain.noun}</Link>
       <header className="page-head">
         <h1>{genre.name}</h1>
         <button onClick={() => setEditing(true)}>✎ Edit</button>
@@ -88,7 +91,8 @@ export function GenreDetailPage({ domain }: { domain: GenreDomain }) {
         </>
       )}
 
-      {parents.length === 0 && children.length === 0 && (
+      {(parentsLoading || childrenLoading) && <LoadingState compact label="Loading relationships…" />}
+      {!parentsLoading && !childrenLoading && parents.length === 0 && children.length === 0 && (
         <p style={{ opacity: 0.5 }}>No parent or child {domain.noun}.</p>
       )}
 
@@ -100,9 +104,9 @@ export function GenreDetailPage({ domain }: { domain: GenreDomain }) {
               initial={genre}
               onClose={() => {
                 setEditing(false);
-                qc.invalidateQueries({ queryKey: [domain.key, gid] });
-                qc.invalidateQueries({ queryKey: [domain.key, gid, "parents"] });
-                qc.invalidateQueries({ queryKey: [domain.key, gid, "children"] });
+                qc.invalidateQueries({ queryKey: [domain.key, apiBase, gid] });
+                qc.invalidateQueries({ queryKey: [domain.key, apiBase, gid, "parents"] });
+                qc.invalidateQueries({ queryKey: [domain.key, apiBase, gid, "children"] });
               }}
             />
           </div>

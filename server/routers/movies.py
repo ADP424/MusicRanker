@@ -1,279 +1,261 @@
-from decimal import Decimal
+from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session as DbSession
 
-from ..api_models import (
-    MovieGenreOut,
-    MovieIn,
-    MovieIndex,
-    MovieOut,
-    MoviePatch,
-    MoviePersonRef,
-    PositionBody,
-)
-from ..api_models.base import ReorderBody
+from ..api_models.base import PositionBody, ReorderBody
 from ..api_models.comparison import ComparisonIn, ComparisonOut
-from ..api_models.movie import MovieSoundtrackAlbumRef
-from ..comparisons import (
-    clear_comparisons,
-    delete_comparison,
-    list_comparisons,
-    upsert_comparison,
-)
+from ..api_models.movie import MovieEntryIn, MovieEntryOut, MovieIn, MovieOut, MoviePatch, MoviePersonRef, RankedMovieOut
+from ..api_models.music import NamedRef
+from ..authz import Capability
+from ..comparisons import clear_comparisons, delete_comparison, list_comparisons, upsert_comparison
 from ..database import get_database
-from ..database_models import (
-    MOVIE_ROLES,
-    Album,
-    Genre,
-    Movie,
-    MovieComparison,
-    MoviePerson,
-    Person,
-)
+from ..database_models import MOVIE_ROLES, Genre, GuildMember, Movie, MovieComparison, MovieLink, MoviePerson, Person
 from ..database_models.movie_cast_member import CastRole
-from ..ranking import apply_sequential_ranks, check_reorder_ids, rank_at
+from ..database_models.ranking import UserMovieRank
+from ..deps import GuildContext, guild_ctx
+from ..guild_junction_helpers import link_guild_scoped
+from ..ranking import apply_order, check_reorder_ids, rank_at
+from .links import make_links_router
 
-router = APIRouter(prefix="/movies", tags=["movies"])
+links_router = make_links_router(
+    owner_model=Movie, link_model=MovieLink, owner_fk="movie_id", prefix="/movies", tag="movies"
+)
 
-ROLE_ORDER = [CastRole.director, CastRole.composer, CastRole.lead_actor, CastRole.actor, CastRole.cameo_actor]
+router = APIRouter(prefix="/guilds/{guild_id}/movies", tags=["movies"])
+
+VIEW = guild_ctx(Capability.VIEW)
+CREATE = guild_ctx(Capability.CATALOG_CREATE)
+EDIT = guild_ctx(Capability.CATALOG_EDIT)
+DELETE = guild_ctx(Capability.CATALOG_DELETE)
+RANK = guild_ctx(Capability.RANK)
 
 
-def _get(db: Session, mid: int) -> Movie:
-    if m := db.get(Movie, mid):
-        return m
-    raise HTTPException(404, "Movie not found")
+def _movie(db: DbSession, ctx: GuildContext, mid: int) -> Movie:
+    m = db.get(Movie, mid)
+    if m is None or m.guild_id != ctx.guild_id:  # belt and braces; the composite FKs already prevent leakage
+        raise HTTPException(404, "Movie not found")
+    return m
 
 
-def _attach_persons(movie: Movie) -> list[MoviePersonRef]:
-    refs = [
-        MoviePersonRef(
-            id=link.person.id,
-            name=link.person.name,
-            name_en=link.person.name_en,
-            role=link.role,
+def _target_user(db: DbSession, ctx: GuildContext, user_id: int | None) -> int:
+    """E1/E3: anyone may *view* any member's ranking; only the owner of a
+    ranking may write to it. There is no path by which `user_id` reaches a
+    mutating endpoint."""
+    if user_id is None or user_id == ctx.user_id:
+        return ctx.user_id
+    if db.get(GuildMember, (ctx.guild_id, user_id)) is None:
+        raise HTTPException(404, "Not a member of this guild")
+    return user_id
+
+
+def _my_movie_ids(db: DbSession, ctx: GuildContext) -> set[int]:
+    return set(db.scalars(
+        select(UserMovieRank.movie_id).where(
+            UserMovieRank.user_id == ctx.user_id, UserMovieRank.guild_id == ctx.guild_id
         )
-        for link in movie.person_links
+    ))
+
+
+def _out(m: Movie, mine: set[int]) -> MovieOut:
+    out = MovieOut.model_validate(m)
+    out.persons = [
+        MoviePersonRef(id=l.person.id, name=l.person.name, name_en=l.person.name_en, role=l.role)
+        for l in m.person_links
     ]
-    refs.sort(key=lambda r: (ROLE_ORDER.index(r.role) if r.role in ROLE_ORDER else 99, r.name))
-    return refs
+    out.genre_ids = [g.id for g in m.genres]
+    out.soundtrack_albums = [NamedRef(id=a.id, name=a.name, name_en=a.name_en) for a in m.soundtrack_albums]
+    out.in_my_list = m.id in mine
+    return out
 
 
-def _attach_soundtracks(movie: Movie) -> list[MovieSoundtrackAlbumRef]:
+# ── Catalog ──────────────────────────────────────────────────────────────────
+@router.get("", response_model=list[MovieOut])
+def list_catalog(ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+    mine = _my_movie_ids(db, ctx)
+    rows = db.scalars(select(Movie).where(Movie.guild_id == ctx.guild_id).order_by(Movie.name)).all()
+    return [_out(m, mine) for m in rows]
+
+
+@router.post("", response_model=MovieOut, status_code=201)
+def create_movie(body: MovieIn, ctx: GuildContext = Depends(CREATE), db: DbSession = Depends(get_database)):
+    movie = Movie(guild_id=ctx.guild_id, created_by_user_id=ctx.user_id, **body.model_dump())
+    db.add(movie)
+    db.flush()
+    return _out(movie, set())
+
+
+# ── The personal layer ───────────────────────────────────────────────────────
+# Literal paths (/ranked, /reorder, /comparisons...) must be registered before
+# /{mid} — Starlette matches routes in registration order, so a param route
+# declared first would swallow these as mid="ranked" etc.
+@router.get("/ranked", response_model=list[RankedMovieOut])
+def ranked(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW),
+           db: DbSession = Depends(get_database)):
+    uid = _target_user(db, ctx, user_id)
+    mine = _my_movie_ids(db, ctx)
+    rows = db.scalars(
+        select(UserMovieRank)
+        .where(UserMovieRank.user_id == uid, UserMovieRank.guild_id == ctx.guild_id)
+        .order_by(UserMovieRank.rank, UserMovieRank.movie_id)
+    ).all()
     return [
-        MovieSoundtrackAlbumRef(
-            id=album.id,
-            name=album.name,
-            name_en=album.name_en,
-            artist_ids=[link.artist_id for link in album.artist_links],
-        )
-        for album in movie.soundtrack_albums
+        RankedMovieOut(position=i, rank=r.rank, watches=r.watches,
+                       notes=r.notes if uid == ctx.user_id else None,
+                       movie=_out(db.get(Movie, r.movie_id), mine))
+        for i, r in enumerate(rows, 1)
     ]
-
-
-def _attach_position(db: Session, movie: Movie) -> Movie:
-    movie.position = 1 + db.scalar(select(func.count()).select_from(Movie).where(Movie.global_rank < movie.global_rank))
-    movie.persons = _attach_persons(movie)
-    movie.genre_ids = [g.id for g in movie.genres]
-    movie.soundtrack_album_refs = _attach_soundtracks(movie)
-    return movie
-
-
-@router.get("", response_model=list[MovieIndex])
-def list_movies(db: Session = Depends(get_database)):
-    movies = db.scalars(select(Movie)).all()
-    result = []
-    for movie in movies:
-        result.append(
-            MovieIndex(
-                id=movie.id,
-                name=movie.name,
-                name_en=movie.name_en,
-                person_ids=[link.person_id for link in movie.person_links],
-                genre_ids=[g.id for g in movie.genres],
-            )
-        )
-    return result
-
-
-@router.get("/ranked", response_model=list[MovieOut], response_model_by_alias=True)
-def list_movies_ranked(db: Session = Depends(get_database)):
-    rows = db.scalars(select(Movie).order_by(Movie.global_rank)).all()
-    result = []
-    for i, movie in enumerate(rows, start=1):
-        movie.position = i
-        movie.persons = _attach_persons(movie)
-        movie.genre_ids = [g.id for g in movie.genres]
-        movie.soundtrack_album_refs = _attach_soundtracks(movie)
-        result.append(movie)
-    return result
 
 
 @router.put("/reorder", status_code=204)
-def reorder_movies(body: ReorderBody, db: Session = Depends(get_database)):
-    rows = db.scalars(select(Movie)).all()
-    check_reorder_ids(body.ids, [m.id for m in rows])
-    apply_sequential_ranks(db, {m.id: m for m in rows}, body.ids, "global_rank")
+def reorder(body: ReorderBody, ctx: GuildContext = Depends(RANK), db: DbSession = Depends(get_database)):
+    rows = db.scalars(
+        select(UserMovieRank).where(UserMovieRank.user_id == ctx.user_id, UserMovieRank.guild_id == ctx.guild_id)
+    ).all()
+    check_reorder_ids(body.ids, [r.movie_id for r in rows])
+    apply_order(db, {r.movie_id: r for r in rows}, body.ids)
 
 
-# ── Pairwise comparisons (Rank tab) ────────────────────────────────────────────
+# ── Comparisons (always the caller's own) ────────────────────────────────────
+def _scope(ctx: GuildContext, user_id: int):
+    return (MovieComparison.user_id == user_id) & (MovieComparison.guild_id == ctx.guild_id)
+
+
 @router.get("/comparisons", response_model=list[ComparisonOut])
-def list_movie_comparisons(db: Session = Depends(get_database)):
-    return list_comparisons(db, MovieComparison)
+def list_cmp(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW),
+             db: DbSession = Depends(get_database)):
+    return list_comparisons(db, MovieComparison, scope=_scope(ctx, _target_user(db, ctx, user_id)))
 
 
 @router.put("/comparisons", response_model=ComparisonOut)
-def upsert_movie_comparison(body: ComparisonIn, db: Session = Depends(get_database)):
-    _get(db, body.winner_id)
-    _get(db, body.loser_id)
-    return upsert_comparison(db, MovieComparison, body.winner_id, body.loser_id)
+def upsert_cmp(body: ComparisonIn, ctx: GuildContext = Depends(RANK), db: DbSession = Depends(get_database)):
+    _movie(db, ctx, body.winner_id)
+    _movie(db, ctx, body.loser_id)
+    return upsert_comparison(db, MovieComparison, body.winner_id, body.loser_id,
+                             scope=_scope(ctx, ctx.user_id),
+                             extra={"user_id": ctx.user_id, "guild_id": ctx.guild_id})
 
 
 @router.delete("/comparisons", status_code=204)
-def clear_movie_comparisons(db: Session = Depends(get_database)):
-    clear_comparisons(db, MovieComparison)
+def clear_cmp(ctx: GuildContext = Depends(RANK), db: DbSession = Depends(get_database)):
+    clear_comparisons(db, MovieComparison, scope=_scope(ctx, ctx.user_id))
 
 
 @router.delete("/comparisons/{a}/{b}", status_code=204)
-def delete_movie_comparison(a: int, b: int, db: Session = Depends(get_database)):
-    delete_comparison(db, MovieComparison, a, b)
+def delete_cmp(a: int, b: int, ctx: GuildContext = Depends(RANK), db: DbSession = Depends(get_database)):
+    delete_comparison(db, MovieComparison, a, b, scope=_scope(ctx, ctx.user_id))
 
 
-@router.get("/{mid}", response_model=MovieOut, response_model_by_alias=True)
-def get_movie(mid: int, db: Session = Depends(get_database)):
-    movie = _get(db, mid)
-    movie.persons = _attach_persons(movie)
-    movie.genre_ids = [g.id for g in movie.genres]
-    movie.soundtrack_album_refs = _attach_soundtracks(movie)
-    if movie.global_rank is not None:
-        movie.position = 1 + db.scalar(
-            select(func.count()).select_from(Movie).where(Movie.global_rank < movie.global_rank)
-        )
-    return movie
+@router.get("/{mid}", response_model=MovieOut)
+def get_movie(mid: int, ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+    return _out(_movie(db, ctx, mid), _my_movie_ids(db, ctx))
 
 
-@router.post("", response_model=MovieOut, status_code=201, response_model_by_alias=True)
-def create_movie(body: MovieIn, db: Session = Depends(get_database)):
-    rank = _rank_at(db, body.position, exclude=None)
-    movie = Movie(**body.model_dump(exclude={"position"}), global_rank=rank)
-    db.add(movie)
-    db.flush()
-    movie.persons = []
-    movie.genre_ids = []
-    movie.soundtrack_album_refs = []
-    if movie.global_rank is not None:
-        movie.position = 1 + db.scalar(
-            select(func.count()).select_from(Movie).where(Movie.global_rank < movie.global_rank)
-        )
-    return movie
-
-
-@router.patch("/{mid}", response_model=MovieOut, response_model_by_alias=True)
-def update_movie(mid: int, body: MoviePatch, db: Session = Depends(get_database)):
-    movie = _get(db, mid)
-    for k, v in body.model_dump(exclude_unset=True).items():
+@router.patch("/{mid}", response_model=MovieOut)
+def update_movie(mid: int, body: MoviePatch, ctx: GuildContext = Depends(EDIT), db: DbSession = Depends(get_database)):
+    movie = _movie(db, ctx, mid)
+    data = body.model_dump(exclude_unset=True)
+    for k, v in data.items():
         setattr(movie, k, v)
-    movie.persons = _attach_persons(movie)
-    movie.genre_ids = [g.id for g in movie.genres]
-    movie.soundtrack_album_refs = _attach_soundtracks(movie)
-    return movie
+    movie.updated_by_user_id = ctx.user_id
+    return _out(movie, _my_movie_ids(db, ctx))
 
 
 @router.delete("/{mid}", status_code=204)
-def delete_movie(mid: int, db: Session = Depends(get_database)):
-    db.delete(_get(db, mid))
+def delete_movie(mid: int, ctx: GuildContext = Depends(DELETE), db: DbSession = Depends(get_database)):
+    """F1: hard delete, and it takes every member's ranking of this movie with it.
+    The client calls /impact first and shows the count in the confirm dialog."""
+    db.delete(_movie(db, ctx, mid))
 
 
-@router.put("/{mid}/position", response_model=MovieOut, response_model_by_alias=True)
-def move_movie(mid: int, body: PositionBody, db: Session = Depends(get_database)):
-    movie = _get(db, mid)
-    movie.global_rank = _rank_at(db, body.position, exclude=mid)
-    db.flush()
-    return _attach_position(db, movie)
+@router.get("/{mid}/impact")
+def delete_impact(mid: int, ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+    n = db.scalar(select(func.count()).select_from(UserMovieRank).where(UserMovieRank.movie_id == mid))
+    return {"rankings_destroyed": n}
 
 
-# ── Person links ───────────────────────────────────────────────────────────────
-
-
+# ── Person & genre links (CATALOG_EDIT) ──────────────────────────────────────
 @router.put("/{mid}/persons/{person_id}/{role}", status_code=204)
-def link_person(
-    mid: int,
-    person_id: int,
-    role: CastRole,
-    db: Session = Depends(get_database),
-):
+def link_person(mid: int, person_id: int, role: CastRole,
+                ctx: GuildContext = Depends(EDIT), db: DbSession = Depends(get_database)):
     if role not in MOVIE_ROLES:
         raise HTTPException(422, "The creator role only applies to television shows")
-    _get(db, mid)
-    if not db.get(Person, person_id):
+    _movie(db, ctx, mid)
+    person = db.get(Person, person_id)
+    if person is None or person.guild_id != ctx.guild_id:
         raise HTTPException(404, "Person not found")
-    existing = db.get(MoviePerson, (mid, person_id, role))
-    if not existing:
-        db.add(MoviePerson(movie_id=mid, person_id=person_id, role=role))
+    if not db.get(MoviePerson, (mid, person_id, role)):
+        db.add(MoviePerson(movie_id=mid, person_id=person_id, role=role, guild_id=ctx.guild_id))
 
 
 @router.delete("/{mid}/persons/{person_id}/{role}", status_code=204)
-def unlink_person(
-    mid: int,
-    person_id: int,
-    role: CastRole,
-    db: Session = Depends(get_database),
-):
-    if link := db.get(MoviePerson, (mid, person_id, role)):
+def unlink_person(mid: int, person_id: int, role: CastRole,
+                  ctx: GuildContext = Depends(EDIT), db: DbSession = Depends(get_database)):
+    link = db.get(MoviePerson, (mid, person_id, role))
+    if link:
         db.delete(link)
 
 
-# ── Genre links ────────────────────────────────────────────────────────────────
-
-
-@router.get("/{mid}/genres", response_model=list[MovieGenreOut])
-def movie_genre_list(mid: int, db: Session = Depends(get_database)):
-    return sorted(_get(db, mid).genres, key=lambda g: g.name)
+@router.get("/{mid}/genres")
+def movie_genres(mid: int, ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+    return [{"id": g.id, "name": g.name} for g in sorted(_movie(db, ctx, mid).genres, key=lambda g: g.name)]
 
 
 @router.put("/{mid}/genres/{gid}", status_code=204)
-def add_genre(mid: int, gid: int, db: Session = Depends(get_database)):
-    movie = _get(db, mid)
+def add_genre(mid: int, gid: int, ctx: GuildContext = Depends(EDIT), db: DbSession = Depends(get_database)):
+    movie = _movie(db, ctx, mid)
     genre = db.get(Genre, gid)
-    if not genre:
-        raise HTTPException(404, "Movie genre not found")
+    if genre is None or genre.guild_id != ctx.guild_id:
+        raise HTTPException(404, "Genre not found")
     if not genre.is_movie:
         raise HTTPException(422, "Genre is not applicable to movies")
     if genre not in movie.genres:
-        movie.genres.append(genre)
+        link_guild_scoped(db, movie, Movie.genres, genre, guild_id=ctx.guild_id)
 
 
 @router.delete("/{mid}/genres/{gid}", status_code=204)
-def remove_genre(mid: int, gid: int, db: Session = Depends(get_database)):
-    movie = _get(db, mid)
-    if (genre := db.get(Genre, gid)) and genre in movie.genres:
+def remove_genre(mid: int, gid: int, ctx: GuildContext = Depends(EDIT), db: DbSession = Depends(get_database)):
+    movie = _movie(db, ctx, mid)
+    genre = db.get(Genre, gid)
+    if genre is not None and genre in movie.genres:
         movie.genres.remove(genre)
 
 
-# ── Soundtrack links ───────────────────────────────────────────────────────────
+# ── The personal layer ───────────────────────────────────────────────────────
+@router.get("/{mid}/entry", response_model=MovieEntryOut | None)
+def get_entry(mid: int, ctx: GuildContext = Depends(RANK), db: DbSession = Depends(get_database)):
+    row = db.get(UserMovieRank, {"user_id": ctx.user_id, "movie_id": mid})
+    return MovieEntryOut(watches=row.watches, notes=row.notes) if row else None
 
 
-@router.put("/{mid}/soundtrack/{aid}", status_code=204)
-def link_soundtrack(mid: int, aid: int, db: Session = Depends(get_database)):
-    movie = _get(db, mid)
-    album = db.get(Album, aid)
-    if not album:
-        raise HTTPException(404, "Album not found")
-    if album not in movie.soundtrack_albums:
-        movie.soundtrack_albums.append(album)
+@router.put("/{mid}/entry", status_code=204)
+def upsert_entry(mid: int, body: MovieEntryIn, ctx: GuildContext = Depends(RANK),
+                 db: DbSession = Depends(get_database)):
+    _movie(db, ctx, mid)
+    row = db.get(UserMovieRank, {"user_id": ctx.user_id, "movie_id": mid})
+    if row is None:
+        row = UserMovieRank(
+            user_id=ctx.user_id, guild_id=ctx.guild_id, movie_id=mid, watches=1,
+            rank=rank_at(db, UserMovieRank, user_id=ctx.user_id, guild_id=ctx.guild_id, position=body.position),
+        )
+        db.add(row)
+    data = body.model_dump(exclude_unset=True, exclude={"position"})
+    for k, v in data.items():
+        setattr(row, k, v)
 
 
-@router.delete("/{mid}/soundtrack/{aid}", status_code=204)
-def unlink_soundtrack(mid: int, aid: int, db: Session = Depends(get_database)):
-    movie = _get(db, mid)
-    album = db.get(Album, aid)
-    if album and album in movie.soundtrack_albums:
-        movie.soundtrack_albums.remove(album)
+@router.delete("/{mid}/entry", status_code=204)
+def remove_entry(mid: int, ctx: GuildContext = Depends(RANK), db: DbSession = Depends(get_database)):
+    row = db.get(UserMovieRank, {"user_id": ctx.user_id, "movie_id": mid})
+    if row:
+        db.delete(row)
 
 
-# ── Ranking helper ─────────────────────────────────────────────────────────────
-
-
-def _rank_at(db: Session, position: int | None, exclude: int | None) -> Decimal:
-    return rank_at(db, Movie.global_rank, position, exclude_col=Movie.id, exclude=exclude)
+@router.put("/{mid}/position", status_code=204)
+def move(mid: int, body: PositionBody, ctx: GuildContext = Depends(RANK), db: DbSession = Depends(get_database)):
+    row = db.get(UserMovieRank, {"user_id": ctx.user_id, "movie_id": mid})
+    if row is None:
+        raise HTTPException(404, "Not in your list")
+    row.rank = rank_at(db, UserMovieRank, user_id=ctx.user_id, guild_id=ctx.guild_id,
+                       position=body.position, exclude_col=UserMovieRank.movie_id, exclude=mid)

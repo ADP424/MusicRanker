@@ -1,13 +1,18 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 
 import { api } from "../api/client";
-import { useAlbumIndex, usePeople } from "../api/hooks";
-import type { AlbumIndex, CastRole, Person, TelevisionShow, TelevisionShowBody } from "../api/types";
+import { useGuildApi, usePeople } from "../api/hooks";
+import { gk, rk } from "../api/keys";
+import type { CastRole, Person, TelevisionShow } from "../api/types";
 import { CAST_ROLE_LABELS, TV_SHOW_ROLES } from "../api/types";
-import { TelevisionGenreChooser } from "./TelevisionGenreChooser";
+import { GenreChooser } from "../genre/GenreChooser";
+import { TELEVISION_GENRES } from "../genre/config";
+import { useCan } from "../guild/GuildProvider";
+import { commitLinks, LinksField, useLinksField } from "./LinksField";
 import { PersonForm } from "./PersonForm";
-import { matchesPersonSearch, PERSON_SEARCH_FIELDS, type PersonSearchField } from "./PersonPicker";
+import { matchesPersonSearch, PersonPicker, type PersonSearchField } from "./PersonPicker";
+import { BusyButton } from "./Spinner";
 
 const orNull = (s: string) => (s.trim() === "" ? null : s);
 
@@ -22,51 +27,30 @@ export function TelevisionShowForm(props: {
   const { initial, onClose } = props;
   const editing = initial !== undefined;
   const qc = useQueryClient();
+  const { guildId, userId, base } = useGuildApi();
+  const canRank = useCan("rank");
   const [castOpen, setCastOpen] = useState(false);
   const [genreOpen, setGenreOpen] = useState(false);
-  const [soundtrackOpen, setSoundtrackOpen] = useState(false);
   const [creatingPerson, setCreatingPerson] = useState(false);
   const [personDupWarning, setPersonDupWarning] = useState<string | null>(null);
+  const [addToList, setAddToList] = useState(true);
 
   const [f, setF] = useState({
     name:         initial?.name         ?? "",
     name_en:      initial?.name_en      ?? "",
     release_year: initial?.release_year ?? new Date().getFullYear(),
-    watch_link:   initial?.watch_link   ?? "",
     notes:        initial?.notes        ?? "",
   });
 
-  const initialGenreIds = initial?.genre_ids ?? [];
-  const [genreIds, setGenreIds] = useState<Set<number>>(() => new Set(initialGenreIds));
+  const [genreIds, setGenreIds] = useState<Set<number>>(() => new Set(initial?.genre_ids ?? []));
+  const [links, setLinks] = useLinksField(initial?.links);
 
-  const { data: currentGenres = initialGenreIds.map((id) => ({ id })) } = useQuery({
-    queryKey: ["television", "shows", initial?.id, "genres"],
-    queryFn: () => api.get<{ id: number; name: string }[]>(`/television/shows/${initial!.id}/genres`),
-    enabled: editing,
-  });
-
-  const { data: allPeople = [] } = usePeople();
+  const { data: allPeople = [], isLoading: peopleLoading } = usePeople();
   const [castLinks, setCastLinks] = useState<Set<string>>(new Set());
   const [pendingLinks, setPendingLinks] = useState<PendingLink[]>([]);
   const [castSearch, setCastSearch] = useState("");
   const [searchField, setSearchField] = useState<PersonSearchField>("all");
   const [addRole, setAddRole] = useState<CastRole>("creator");
-
-  const { data: allAlbums = [] } = useAlbumIndex();
-  const [soundtrackIds, setSoundtrackIds] = useState<Set<number>>(
-    () => new Set((initial?.soundtrack_albums ?? []).map((a) => a.id))
-  );
-  const [albumSearch, setAlbumSearch] = useState("");
-
-  const [albumSortSnap, setAlbumSortSnap] = useState(() => soundtrackIds);
-  useEffect(() => { setAlbumSortSnap(soundtrackIds); }, [albumSearch]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const filteredAlbums = useMemo(() => {
-    const q = albumSearch.trim().toLowerCase();
-    return (q ? allAlbums.filter((a: AlbumIndex) => a.name.toLowerCase().includes(q) || !!a.name_en?.toLowerCase().includes(q)) : allAlbums)
-      .sort((a: AlbumIndex, b: AlbumIndex) => (albumSortSnap.has(a.id) ? 0 : 1) - (albumSortSnap.has(b.id) ? 0 : 1))
-      .slice(0, 50);
-  }, [albumSearch, allAlbums, albumSortSnap]);
 
   useEffect(() => {
     if (editing && initial.persons) {
@@ -107,19 +91,18 @@ export function TelevisionShowForm(props: {
 
   const save = useMutation({
     mutationFn: async () => {
-      const body: TelevisionShowBody = {
+      const body = {
         name: f.name,
         name_en: orNull(f.name_en),
         release_year: f.release_year,
-        watch_link: orNull(f.watch_link),
         notes: orNull(f.notes),
       };
 
       let show: TelevisionShow;
       if (editing) {
-        show = await api.patch<TelevisionShow>(`/television/shows/${initial.id}`, body);
+        show = await api.patch<TelevisionShow>(`${base}/television/shows/${initial.id}`, body);
       } else {
-        show = await api.post<TelevisionShow>("/television/shows", body);
+        show = await api.post<TelevisionShow>(`${base}/television/shows`, body);
       }
 
       const beforeLinks = new Set(
@@ -128,43 +111,38 @@ export function TelevisionShowForm(props: {
       for (const link of pendingLinks) {
         const key = linkKey(link);
         if (!beforeLinks.has(key)) {
-          await api.put(`/television/shows/${show.id}/persons/${link.personId}/${link.role}`);
+          await api.put(`${base}/television/shows/${show.id}/persons/${link.personId}/${link.role}`);
         }
       }
       for (const key of beforeLinks) {
         if (!castLinks.has(key)) {
           const [personId, role] = key.split(":");
-          await api.delete(`/television/shows/${show.id}/persons/${personId}/${role}`);
+          await api.delete(`${base}/television/shows/${show.id}/persons/${personId}/${role}`);
         }
       }
 
-      const before = new Set(currentGenres.map((g) => g.id));
+      const before = new Set(initial?.genre_ids ?? []);
       for (const id of genreIds)
-        if (!before.has(id)) await api.put(`/television/shows/${show.id}/genres/${id}`);
+        if (!before.has(id)) await api.put(`${base}/television/shows/${show.id}/genres/${id}`);
       for (const id of before)
-        if (!genreIds.has(id)) await api.delete(`/television/shows/${show.id}/genres/${id}`);
+        if (!genreIds.has(id)) await api.delete(`${base}/television/shows/${show.id}/genres/${id}`);
 
-      const beforeSoundtrack = new Set((initial?.soundtrack_albums ?? []).map((a) => a.id));
-      for (const id of soundtrackIds)
-        if (!beforeSoundtrack.has(id)) await api.put(`/television/shows/${show.id}/soundtrack/${id}`);
-      for (const id of beforeSoundtrack)
-        if (!soundtrackIds.has(id)) await api.delete(`/television/shows/${show.id}/soundtrack/${id}`);
+      await commitLinks(base, "television/shows", show.id, links, editing ? initial.links : []);
+
+      if (!editing && addToList && canRank) await api.put(`${base}/television/shows/${show.id}/entry`, {});
 
       return show;
     },
     onSuccess: (saved) => {
-      qc.invalidateQueries({ queryKey: ["television", "ranked"] });
-      qc.invalidateQueries({ queryKey: ["television", "index"] });
-      if (editing) {
-        qc.invalidateQueries({ queryKey: ["television", "shows", initial.id, "genres"] });
-      }
+      qc.invalidateQueries({ queryKey: gk(guildId, "television") });
+      if (!editing && addToList) qc.invalidateQueries({ queryKey: rk(guildId, userId, "television") });
       onClose(saved.name, saved.id);
     },
   });
 
   const num = (k: "release_year") =>
     (e: React.ChangeEvent<HTMLInputElement>) => setF({ ...f, [k]: Number(e.target.value) });
-  const txt = (k: "name" | "name_en" | "watch_link" | "notes") =>
+  const txt = (k: "name" | "name_en" | "notes") =>
     (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => setF({ ...f, [k]: e.target.value });
 
   const selectedByRole = useMemo(() => {
@@ -183,7 +161,7 @@ export function TelevisionShowForm(props: {
           onClose={(savedName, savedId) => {
             setCreatingPerson(false);
             if (savedId != null) {
-              qc.invalidateQueries({ queryKey: ["people"] });
+              qc.invalidateQueries({ queryKey: gk(guildId, "people") });
               const key = linkKey({ personId: savedId, role: addRole });
               setCastLinks((prev) => new Set([...prev, key]));
               setPendingLinks((prev) => [...prev, { personId: savedId, role: addRole }]);
@@ -207,14 +185,9 @@ export function TelevisionShowForm(props: {
           <input value={f.name_en} onChange={txt("name_en")} />
         </label>
 
-        <div className="grid-2">
-          <label>Release year
-            <input required type="number" value={f.release_year} onChange={num("release_year")} />
-          </label>
-          <label>Watch link
-            <input type="url" value={f.watch_link} onChange={txt("watch_link")} />
-          </label>
-        </div>
+        <label>Release year
+          <input required type="number" value={f.release_year} onChange={num("release_year")} />
+        </label>
 
         <label><span className="label-text">Notes <span className="info-icon" title="optional">ⓘ</span></span>
           <textarea rows={3} value={f.notes} onChange={txt("notes")} />
@@ -266,55 +239,21 @@ export function TelevisionShowForm(props: {
                 </div>
               )}
 
-              <div style={{ display: "flex", gap: "0.5rem", marginBottom: "0.5rem", flexWrap: "wrap" }}>
-                {TV_SHOW_ROLES.map((role) => (
-                  <label key={role} className={`chip${addRole === role ? " chip-active" : ""}`}
-                    onClick={() => setAddRole(role)} style={{ cursor: "pointer" }}>
-                    {CAST_ROLE_LABELS[role]}
-                  </label>
-                ))}
-              </div>
-
-              <div style={{ display: "flex", gap: "0.5rem", marginBottom: "0.4rem", flexWrap: "wrap" }}>
-                {PERSON_SEARCH_FIELDS.map((sf) => (
-                  <label
-                    key={sf}
-                    className={`chip${searchField === sf ? " chip-active" : ""}`}
-                    onClick={() => setSearchField(sf)}
-                    style={{ cursor: "pointer" }}
-                  >
-                    {sf === "all" ? "All" : sf === "person" ? "Person" : sf === "artist" ? "Artist" : sf === "movie" ? "Movie" : sf === "game" ? "Game" : "TV"}
-                  </label>
-                ))}
-              </div>
-              <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", marginBottom: "0.4rem" }}>
-                <input
-                  className="genre-search"
-                  type="search"
-                  placeholder="Search people, artists, movies, games, TV shows…"
-                  value={castSearch}
-                  onChange={(e) => setCastSearch(e.target.value)}
-                  style={{ margin: 0, flex: 1 }}
-                />
-                <button type="button" style={{ whiteSpace: "nowrap" }} onClick={() => setCreatingPerson(true)}>
-                  + New Person
-                </button>
-              </div>
-              <div className="chips">
-                {filteredPeople.map((p) => {
-                  const key = linkKey({ personId: p.id, role: addRole });
-                  return (
-                    <label key={p.id} className="chip">
-                      <input
-                        type="checkbox"
-                        checked={castLinks.has(key)}
-                        onChange={() => toggleLink(p, addRole)}
-                      />
-                      {p.name}
-                    </label>
-                  );
-                })}
-              </div>
+              <PersonPicker
+                roles={TV_SHOW_ROLES}
+                roleLabels={CAST_ROLE_LABELS}
+                activeRole={addRole}
+                onRole={setAddRole}
+                searchField={searchField}
+                onSearchField={setSearchField}
+                search={castSearch}
+                onSearch={setCastSearch}
+                onNewPerson={() => setCreatingPerson(true)}
+                people={filteredPeople}
+                isChecked={(p, role) => castLinks.has(linkKey({ personId: p.id, role }))}
+                onToggle={toggleLink}
+                loading={peopleLoading}
+              />
             </>
           )}
         </fieldset>
@@ -326,7 +265,7 @@ export function TelevisionShowForm(props: {
             <span className="collapse-arrow">{genreOpen ? "▲" : "▼"}</span>
           </legend>
           {genreOpen && (
-            <TelevisionGenreChooser selected={genreIds} onChange={setGenreIds} />
+            <GenreChooser domain={TELEVISION_GENRES} selected={genreIds} onChange={setGenreIds} />
           )}
           {!genreOpen && (
             <span className="collapsed-summary" onClick={() => setGenreOpen(true)}>
@@ -335,66 +274,20 @@ export function TelevisionShowForm(props: {
           )}
         </fieldset>
 
-        {/* ── Soundtrack ── */}
-        <fieldset>
-          <legend className="collapsible-legend" onClick={() => setSoundtrackOpen((o) => !o)}>
-            Soundtrack
-            <span className="collapse-arrow">{soundtrackOpen ? "▲" : "▼"}</span>
-          </legend>
-          {!soundtrackOpen && (
-            <span className="collapsed-summary" onClick={() => setSoundtrackOpen(true)}>
-              {soundtrackIds.size > 0
-                ? allAlbums.filter((a: AlbumIndex) => soundtrackIds.has(a.id)).map((a: AlbumIndex) => a.name).join(", ")
-                : "None selected"}
-            </span>
-          )}
-          {soundtrackOpen && (
-            <>
-              {soundtrackIds.size > 0 && (
-                <div style={{ marginBottom: "0.5rem", fontSize: "0.85rem" }}>
-                  {allAlbums
-                    .filter((a: AlbumIndex) => soundtrackIds.has(a.id))
-                    .map((a: AlbumIndex) => (
-                      <span key={a.id} style={{ marginRight: "0.5rem" }}>
-                        <span
-                          style={{ cursor: "pointer", textDecoration: "underline dotted", opacity: 0.8 }}
-                          onClick={() => setSoundtrackIds((prev) => { const next = new Set(prev); next.delete(a.id); return next; })}
-                          title="Click to remove"
-                        >{a.name}</span>
-                      </span>
-                    ))}
-                </div>
-              )}
-              <input
-                className="genre-search"
-                type="search"
-                placeholder="Search albums…"
-                value={albumSearch}
-                onChange={(e) => setAlbumSearch(e.target.value)}
-              />
-              <div className="chips">
-                {filteredAlbums.map((a: AlbumIndex) => (
-                  <label key={a.id} className="chip">
-                    <input
-                      type="checkbox"
-                      checked={soundtrackIds.has(a.id)}
-                      onChange={(e) => {
-                        const next = new Set(soundtrackIds);
-                        e.target.checked ? next.add(a.id) : next.delete(a.id);
-                        setSoundtrackIds(next);
-                      }}
-                    />
-                    {a.name}
-                  </label>
-                ))}
-              </div>
-            </>
-          )}
-        </fieldset>
+        <LinksField links={links} onChange={setLinks} />
+
+        {!editing && canRank && (
+          <label className="checkbox-label">
+            <input type="checkbox" checked={addToList} onChange={(e) => setAddToList(e.target.checked)} />
+            Add to my list
+          </label>
+        )}
 
         <footer>
-          <button type="button" onClick={() => onClose()}>Cancel</button>
-          <button type="submit" disabled={save.isPending}>{editing ? "Save" : "Create"}</button>
+          <button type="button" onClick={() => onClose()} disabled={save.isPending}>Cancel</button>
+          <BusyButton type="submit" busy={save.isPending} busyLabel={editing ? "Saving…" : "Creating…"}>
+            {editing ? "Save" : "Create"}
+          </BusyButton>
         </footer>
         {save.isError && <p className="err">{(save.error as Error).message}</p>}
       </form>

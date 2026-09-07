@@ -1,8 +1,13 @@
+import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useMemo, useState } from "react";
-import { useTmdbTvImport, useTmdbTvLookup } from "../api/hooks";
+import { api } from "../api/client";
+import { useGuildApi, useTmdbTvImport, useTmdbTvLookup } from "../api/hooks";
+import { rk } from "../api/keys";
 import type {
   CastRole, TmdbTvEpisode, TmdbTvImportEpisodeIn, TmdbTvImportPersonIn, TmdbTvLookup, TmdbTvPerson,
 } from "../api/types";
+import { useCan } from "../guild/GuildProvider";
+import { BusyButton } from "./Spinner";
 import { TelevisionGenreChooser } from "./TelevisionGenreChooser";
 import { TmdbPersonRow, tmdbCreditDescription, type TmdbRowPerson } from "./TmdbPersonRow";
 
@@ -23,6 +28,7 @@ function toRow(p: TmdbTvPerson): TmdbRowPerson {
       person_id: m.person_id,
       person_name: m.person_name,
       has_entries: m.has_screen_entries,
+      filmography_overlap: m.filmography_overlap,
       artist_summary: m.artist_summary,
       game_summary: m.game_summary,
     })),
@@ -32,7 +38,7 @@ function toRow(p: TmdbTvPerson): TmdbRowPerson {
 function seedResolutions(people: TmdbTvPerson[], into: Record<number, number | null>) {
   for (const p of people) {
     if (p.tmdb_id in into) continue;
-    const v = p.db_matches.find((m) => m.has_screen_entries);
+    const v = p.db_matches.find((m) => m.filmography_overlap);
     if (v) into[p.tmdb_id] = v.person_id;
   }
 }
@@ -78,7 +84,11 @@ export function TmdbTelevisionImportDialog({
   const [resolutions, setResolutions] = useState<Record<number, number | null>>({});
   const [selectedGenres, setSelectedGenres] = useState<Set<number>>(new Set());
   const [includedEpisodes, setIncludedEpisodes] = useState<Set<string>>(new Set());
+  const [addToList, setAddToList] = useState(true);
 
+  const qc = useQueryClient();
+  const { guildId, userId, base } = useGuildApi();
+  const canRank = useCan("rank");
   const lookupMut = useTmdbTvLookup();
   const importMut = useTmdbTvImport();
 
@@ -196,8 +206,6 @@ export function TmdbTelevisionImportDialog({
           name_en: null,
           runtime_minutes: e.runtime,
           release_year: e.release_year,
-          watches: 1,
-          watch_link: null,
           notes: null,
           people: autoPeopleIn(e),
           inherit_show_people: false, // cast is chosen per episode
@@ -225,26 +233,34 @@ export function TmdbTelevisionImportDialog({
         name: lookup.name,
         name_en: null,
         release_year: lookup.release_year,
-        watch_link: null,
         notes: null,
         people: peopleIn(lookup.people),
         genre_ids: [...selectedGenres],
         episodes,
       },
       {
-        onSuccess(result) {
+        async onSuccess(result) {
+          if (addToList && canRank) {
+            await api.put(`${base}/television/shows/${result.show_id}/entry`, {});
+            qc.invalidateQueries({ queryKey: rk(guildId, userId, "television") });
+          }
           onSuccess?.(result.show_id);
           onClose();
         },
         onError: (e) => setError(e.message),
       },
     );
-  }, [lookup, includedEpisodes, people, resolutions, selectedGenres, importMut, onClose, onSuccess]);
+  }, [
+    lookup, includedEpisodes, people, resolutions, selectedGenres, importMut, onClose, onSuccess,
+    addToList, canRank, base, qc, guildId, userId,
+  ]);
 
   const unmappedGenres = useMemo(
     () => (lookup?.genres ?? []).filter((g) => !g.db_genre_id).map((g) => g.tmdb_name),
     [lookup],
   );
+
+  const importing = importMut.isPending || importMut.isSuccess;
 
   return (
     <div className="modal tmdb-import-panel">
@@ -278,9 +294,7 @@ export function TmdbTelevisionImportDialog({
             <input type="checkbox" checked={includeSpecials} onChange={(e) => setIncludeSpecials(e.target.checked)} />
             Include specials (season 0)
           </label>
-          <button type="submit" disabled={!title.trim() || lookupMut.isPending}>
-            {lookupMut.isPending ? "Searching…" : "Search TMDB"}
-          </button>
+          <BusyButton type="submit" busy={lookupMut.isPending} busyLabel="Searching TMDB…" disabled={!title.trim()}>Search TMDB</BusyButton>
           <button type="button" onClick={onClose}>Cancel</button>
         </form>
       )}
@@ -390,12 +404,16 @@ export function TmdbTelevisionImportDialog({
           )}
 
           <footer className="tip-footer">
-            <button type="button" onClick={onClose}>Cancel</button>
-            <button type="button" className="tip-primary" disabled={importMut.isPending} onClick={handleImport}>
-              {importMut.isPending
-                ? "Importing…"
-                : `Import show + ${episodeCount} episode${episodeCount !== 1 ? "s" : ""} + ${showPeopleCount} show credits`}
-            </button>
+            {canRank && (
+              <label className="checkbox-label tip-add-to-list">
+                <input type="checkbox" checked={addToList} onChange={(e) => setAddToList(e.target.checked)} />
+                Add to my list
+              </label>
+            )}
+            <button type="button" onClick={onClose} disabled={importing}>Cancel</button>
+            <BusyButton type="button" className="tip-primary" busy={importing} busyLabel="Importing…" onClick={handleImport}>
+              Import show + {episodeCount} episode{episodeCount !== 1 ? "s" : ""} + {showPeopleCount} show credits
+            </BusyButton>
           </footer>
         </>
       )}

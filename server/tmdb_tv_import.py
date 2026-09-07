@@ -293,6 +293,7 @@ def _fetch_episode_credits(c: TmdbClient, tmdb_id: int, n: int, e: int) -> Optio
 
 def tv_lookup(
     db: Session,
+    guild_id: int,
     title: str,
     year: int | None = None,
     *,
@@ -353,7 +354,7 @@ def tv_lookup(
 
     # ── One batched DB query + all person calls in parallel ───────────
     every: list[_Credit] = list(show_raw) + [cr for _, _, raw in episode_rows for cr in raw]
-    persons_by_name = common.batch_load_persons(db, {cr.name for cr in every})
+    persons_by_name = common.batch_load_persons(db, guild_id, {cr.name for cr in every})
     person_data = common.fetch_person_data_bulk(c, [cr.tmdb_id for cr in every])
 
     enrichment_cache: dict[tuple[int, str], common.PersonEnrichment] = {}
@@ -382,6 +383,7 @@ def tv_lookup(
                     person_id=m.person_id,
                     person_name=m.person_name,
                     has_screen_entries=m.has_screen_entries,
+                    filmography_overlap=m.filmography_overlap,
                     artist_summary=m.artist_summary,
                     game_summary=m.game_summary,
                 )
@@ -419,7 +421,7 @@ def tv_lookup(
         for s in sorted(seasons_meta, key=lambda s: s["season_number"])
     ]
 
-    db_genres = common.db_genres_for(db, MEDIA_FLAG)
+    db_genres = common.db_genres_for(db, guild_id, MEDIA_FLAG)
     return TmdbTvLookupOut(
         tmdb_id=tmdb_id,
         name=details.get("name") or title,
@@ -468,7 +470,7 @@ def _locate_episode(
     return None
 
 
-def tv_episode_lookup(db: Session, body: TmdbTvEpisodeLookupIn) -> Optional[TmdbTvEpisodeLookupOut]:
+def tv_episode_lookup(db: Session, guild_id: int, body: TmdbTvEpisodeLookupIn) -> Optional[TmdbTvEpisodeLookupOut]:
     """One episode's full cast, guest stars and crew."""
     c = common.client()
 
@@ -509,7 +511,7 @@ def tv_episode_lookup(db: Session, body: TmdbTvEpisodeLookupIn) -> Optional[Tmdb
         return None
     raw = _episode_credits(c.get(f"{base}/credits") or {})
 
-    persons_by_name = common.batch_load_persons(db, {cr.name for cr in raw})
+    persons_by_name = common.batch_load_persons(db, guild_id, {cr.name for cr in raw})
     person_data = common.fetch_person_data_bulk(c, [cr.tmdb_id for cr in raw])
 
     people: list[TmdbTvPersonOut] = []
@@ -535,6 +537,7 @@ def tv_episode_lookup(db: Session, body: TmdbTvEpisodeLookupIn) -> Optional[Tmdb
                         person_id=m.person_id,
                         person_name=m.person_name,
                         has_screen_entries=m.has_screen_entries,
+                        filmography_overlap=m.filmography_overlap,
                         artist_summary=m.artist_summary,
                         game_summary=m.game_summary,
                     )
@@ -564,6 +567,7 @@ def tv_episode_lookup(db: Session, body: TmdbTvEpisodeLookupIn) -> Optional[Tmdb
 # ── Import ───────────────────────────────────────────────────────────
 def _link_episode_people(
     db: Session,
+    guild_id: int,
     show: TelevisionShow,
     episode: TelevisionEpisode,
     body: TmdbTvImportEpisodeIn,
@@ -585,7 +589,7 @@ def _link_episode_people(
         if role in ACTING_ROLES:
             acting[person_id] = role
         existing.add((person_id, role))
-        db.add(TelevisionEpisodePerson(episode_id=episode.id, person_id=person_id, role=role))
+        db.add(TelevisionEpisodePerson(episode_id=episode.id, person_id=person_id, role=role, guild_id=guild_id))
         added += 1
 
     if body.inherit_show_people:
@@ -608,44 +612,43 @@ def _link_episode_people(
     return added
 
 
-def _episode_genres(db: Session, show: TelevisionShow, genre_ids: list[int] | None) -> list:
+def _episode_genres(db: Session, guild_id: int, show: TelevisionShow, genre_ids: list[int] | None) -> list:
     if genre_ids is None:
         return list(show.genres)
     wanted = set(genre_ids)
-    return [g for g in common.db_genres_for(db, MEDIA_FLAG) if g.id in wanted]
+    return [g for g in common.db_genres_for(db, guild_id, MEDIA_FLAG) if g.id in wanted]
 
 
 def _create_episode(
     db: Session,
+    guild_id: int,
+    user_id: int,
     show: TelevisionShow,
     body: TmdbTvImportEpisodeIn,
     resolver: common.PeopleResolver,
 ) -> tuple[TelevisionEpisode, int]:
+    ranks = [e.episode_rank for e in show.episodes if e.episode_rank is not None]
+    next_rank = (max(ranks) + 1) if ranks else 1
     episode = TelevisionEpisode(
+        guild_id=guild_id, created_by_user_id=user_id,
         show_id=show.id,
         name=body.name or show.name,
         name_en=body.name_en,
         runtime_minutes=body.runtime_minutes,
         release_year=body.release_year,
-        watches=body.watches,
-        watch_link=body.watch_link,
         notes=body.notes,
-        episode_rank=common.append_rank(
-            db,
-            TelevisionEpisode.episode_rank,
-            id_col=TelevisionEpisode.id,
-            scope=TelevisionEpisode.show_id == show.id,
-        ),
+        episode_rank=next_rank,
     )
-    episode.genres = _episode_genres(db, show, body.genre_ids)
+    episode.genres = _episode_genres(db, guild_id, show, body.genre_ids)
     db.add(episode)
     db.flush()
-    return episode, _link_episode_people(db, show, episode, body, resolver)
+    return episode, _link_episode_people(db, guild_id, show, episode, body, resolver)
 
 
-def tmdb_import_show(db: Session, body: TmdbTvImportIn) -> TmdbTvImportOut:
+def tmdb_import_show(db: Session, guild_id: int, user_id: int, body: TmdbTvImportIn) -> TmdbTvImportOut:
     existing = db.scalar(
         select(TelevisionShow).where(
+            TelevisionShow.guild_id == guild_id,
             (TelevisionShow.name == body.name) | (TelevisionShow.name_en == body.name),
             TelevisionShow.release_year == body.release_year,
         )
@@ -656,18 +659,17 @@ def tmdb_import_show(db: Session, body: TmdbTvImportIn) -> TmdbTvImportOut:
         )
 
     show = TelevisionShow(
+        guild_id=guild_id, created_by_user_id=user_id,
         name=body.name,
         name_en=body.name_en,
         release_year=body.release_year,
-        watch_link=body.watch_link,
         notes=body.notes,
-        global_rank=common.append_rank(db, TelevisionShow.global_rank, id_col=TelevisionShow.id),
     )
-    show.genres = [g for g in common.db_genres_for(db, MEDIA_FLAG) if g.id in set(body.genre_ids)]
+    show.genres = [g for g in common.db_genres_for(db, guild_id, MEDIA_FLAG) if g.id in set(body.genre_ids)]
     db.add(show)
     db.flush()
 
-    resolver = common.PeopleResolver(db)
+    resolver = common.PeopleResolver(db, guild_id, user_id)
     linked: set[tuple[int, CastRole]] = set()
     for p in body.people:
         if p.role not in TELEVISION_SHOW_ROLES:
@@ -681,10 +683,10 @@ def tmdb_import_show(db: Session, body: TmdbTvImportIn) -> TmdbTvImportOut:
         key = (person.id, p.role)
         if key not in linked:
             linked.add(key)
-            db.add(TelevisionShowPerson(show_id=show.id, person_id=person.id, role=p.role))
+            db.add(TelevisionShowPerson(show_id=show.id, person_id=person.id, role=p.role, guild_id=guild_id))
     db.flush()
 
-    episode_ids = [_create_episode(db, show, ep, resolver)[0].id for ep in body.episodes]
+    episode_ids = [_create_episode(db, guild_id, user_id, show, ep, resolver)[0].id for ep in body.episodes]
 
     return TmdbTvImportOut(
         show_id=show.id,
@@ -694,19 +696,19 @@ def tmdb_import_show(db: Session, body: TmdbTvImportIn) -> TmdbTvImportOut:
     )
 
 
-def tmdb_import_episode(db: Session, body: TmdbTvEpisodeImportIn) -> TmdbTvEpisodeImportOut:
+def tmdb_import_episode(db: Session, guild_id: int, user_id: int, body: TmdbTvEpisodeImportIn) -> TmdbTvEpisodeImportOut:
     show = db.get(TelevisionShow, body.show_id)
-    if show is None:
+    if show is None or show.guild_id != guild_id:
         raise ValueError(f"Television show {body.show_id} not found")
 
-    resolver = common.PeopleResolver(db)
+    resolver = common.PeopleResolver(db, guild_id, user_id)
 
     if body.episode_id is None:
-        episode, added = _create_episode(db, show, body.episode, resolver)
+        episode, added = _create_episode(db, guild_id, user_id, show, body.episode, resolver)
         created = True
     else:
         episode = db.get(TelevisionEpisode, body.episode_id)
-        if episode is None:
+        if episode is None or episode.guild_id != guild_id:
             raise ValueError(f"Television episode {body.episode_id} not found")
         if episode.show_id != show.id:
             raise ValueError("That episode belongs to a different show")
@@ -716,9 +718,9 @@ def tmdb_import_episode(db: Session, body: TmdbTvEpisodeImportIn) -> TmdbTvEpiso
             episode.runtime_minutes = body.episode.runtime_minutes
             episode.release_year = body.episode.release_year
             if body.episode.genre_ids is not None:
-                episode.genres = _episode_genres(db, show, body.episode.genre_ids)
+                episode.genres = _episode_genres(db, guild_id, show, body.episode.genre_ids)
             db.flush()
-        added = _link_episode_people(db, show, episode, body.episode, resolver)
+        added = _link_episode_people(db, guild_id, show, episode, body.episode, resolver)
         created = False
 
     return TmdbTvEpisodeImportOut(

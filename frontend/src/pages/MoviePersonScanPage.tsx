@@ -4,13 +4,15 @@ import {
 import { Link, useSearchParams } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import {
-  useApplyScan, useCancelScan, useClearSuppressions, useDeleteScanJob,
+  useApplyScan, useCancelScan, useClearSuppressions, useDeleteScanJob, useGuildApi,
   useScanJob, useScanJobs, useScanResults, useStartScan, useSuppressions,
 } from "../api/hooks";
+import { gk } from "../api/keys";
 import { CAST_ROLE_LABELS } from "../api/types";
 import type {
-  CastRole, ScanApply, ScanApplyResult, ScanCandidate, ScanResults,
+  CastRole, ScanApplyIn, ScanApplyResult, ScanCandidate, ScanResults,
 } from "../api/types";
+import { BusyButton, LoadingState, Spinner } from "../components/Spinner";
 
 const KEY_TO_ROLE: Record<string, CastRole> = {
   "1": "lead_actor", "2": "actor", "3": "cameo_actor", "4": "director", "5": "composer",
@@ -41,6 +43,7 @@ interface RowProps {
   c: ScanCandidate;
   decision: Decision | undefined;
   focused: boolean;
+  guildId: number;
   onAssign: (key: string, role: CastRole) => void;
   onReject: (key: string) => void;
   onClear: (key: string) => void;
@@ -48,7 +51,7 @@ interface RowProps {
 }
 
 const ScanRow = memo(function ScanRow(
-  { c, decision, focused, onAssign, onReject, onClear, onFocus }: RowProps,
+  { c, decision, focused, guildId, onAssign, onReject, onClear, onFocus }: RowProps,
 ) {
   const state =
     decision?.kind === "accept" ? "accept"
@@ -68,10 +71,10 @@ const ScanRow = memo(function ScanRow(
         {state === "accept" ? "✓" : state === "reject" ? "✗" : "·"}
       </span>
       <span role="gridcell" className="scan-ellipsis">
-        <Link to={`/people/${c.person_id}`}>{c.person_name}</Link>
+        <Link to={`/g/${guildId}/people/${c.person_id}`}>{c.person_name}</Link>
       </span>
       <span role="gridcell" className="scan-ellipsis">
-        <Link to={`/movies/${c.movie_id}`}>
+        <Link to={`/g/${guildId}/movies/${c.movie_id}`}>
           {c.movie_name}{c.movie_year ? ` (${c.movie_year})` : ""}
         </Link>
       </span>
@@ -116,18 +119,20 @@ const ScanRow = memo(function ScanRow(
 // ── Page ──────────────────────────────────────────────────────
 export function MoviePersonScanPage() {
   const qc = useQueryClient();
+  const { guildId } = useGuildApi();
   const [params, setParams] = useSearchParams();
   const jobId = params.get("job");
 
-  const { data: jobs } = useScanJobs();
+  const { data: jobs, isLoading: jobsLoading } = useScanJobs();
   const jobQuery = useScanJob(jobId);
   const job = jobQuery.data;
   const jobExpired = !!jobId && jobQuery.isError;
 
   const busy = job?.status === "running" || job?.status === "pending";
   const done = job?.status === "done";
+  const bootstrapping = (jobId !== null && jobQuery.isLoading) || (jobId === null && jobsLoading);
 
-  const { data: results } = useScanResults(jobId, !!done);
+  const { data: results } = useScanResults(done ? jobId : null);
 
   const start = useStartScan();
   const cancel = useCancelScan();
@@ -310,9 +315,9 @@ export function MoviePersonScanPage() {
 
   const onSave = () => {
     if (!results) return;
-    const links: ScanApply["links"] = [];
-    const suppress: ScanApply["suppress"] = [];
-    const unsuppress: ScanApply["unsuppress"] = [];
+    const links: ScanApplyIn["links"] = [];
+    const suppress: ScanApplyIn["suppress"] = [];
+    const unsuppress: ScanApplyIn["unsuppress"] = [];
     const handled = new Set<string>();
     const lifted = new Set<string>();
 
@@ -335,7 +340,7 @@ export function MoviePersonScanPage() {
     apply.mutate({ links, suppress, unsuppress }, {
       onSuccess: (res) => {
         setSummary(res);
-        qc.setQueryData<ScanResults>(["scan", "results", jobId], (old) =>
+        qc.setQueryData<ScanResults>(gk(guildId, "movie-person-scan", "jobs", jobId, "results"), (old) =>
           old ? {
             ...old,
             candidates: old.candidates
@@ -369,13 +374,13 @@ export function MoviePersonScanPage() {
             Ignore cache
           </label>
           {busy ? (
-            <button onClick={() => jobId && cancel.mutate(jobId)} disabled={cancel.isPending}>
+            <BusyButton busy={cancel.isPending} busyLabel="Cancelling…" onClick={() => jobId && cancel.mutate(jobId)}>
               Cancel scan
-            </button>
+            </BusyButton>
           ) : (
-            <button onClick={beginScan} disabled={start.isPending}>
-              {start.isPending ? "Starting…" : job ? "Re-scan" : "Start scan"}
-            </button>
+            <BusyButton busy={start.isPending} busyLabel="Starting…" disabled={bootstrapping} onClick={beginScan}>
+              {job ? "Re-scan" : "Start scan"}
+            </BusyButton>
           )}
           {job && !busy && (
             <button className="icon" title="Discard these results" onClick={discard}>✕</button>
@@ -385,7 +390,8 @@ export function MoviePersonScanPage() {
 
       {start.error && <p className="err">{(start.error as Error).message}</p>}
 
-      {!busy && !done && (
+      {bootstrapping && <LoadingState label={jobId ? "Loading scan…" : "Checking for a running scan…"} />}
+      {!bootstrapping && !busy && !done && (
         <section className="scan-intro">
           <p>
             Fetches credits for every movie in the database and diffs them against the
@@ -404,7 +410,7 @@ export function MoviePersonScanPage() {
 
       {busy && job && (
         <section className="scan-progress">
-          <span className="meta">
+          <span className="meta inline"><Spinner size="sm" />
             {job.phase === "loading" && "Loading database…"}
             {job.phase === "fetching" && `Fetching credits… ${job.processed}/${job.total}`}
             {job.phase === "matching" && "Matching people…"}
@@ -427,7 +433,7 @@ export function MoviePersonScanPage() {
         </p>
       )}
 
-      {done && !results && <p className="meta">Loading results…</p>}
+      {done && !results && <LoadingState label="Loading results…" />}
 
       {done && results && (
         <>
@@ -445,10 +451,9 @@ export function MoviePersonScanPage() {
             <button onClick={() => bulkVisible("accept")}>Accept</button>
             <button onClick={() => bulkVisible("reject")}>Reject</button>
             <button onClick={() => bulkVisible("clear")}>Clear</button>
-            <button className="scan-save" onClick={onSave}
-                    disabled={apply.isPending || !dirty}>
-              {apply.isPending ? "Saving…" : `Save (${counts.acc})`}
-            </button>
+            <BusyButton className="scan-save" busy={apply.isPending} busyLabel="Saving…" disabled={!dirty} onClick={onSave}>
+              Save ({counts.acc})
+            </BusyButton>
           </div>
 
           <p className="meta">
@@ -475,7 +480,7 @@ export function MoviePersonScanPage() {
             </div>
             {rows.map((c) => (
               <ScanRow key={c.key} c={c} decision={decisions[c.key]}
-                       focused={focusKey === c.key} onAssign={assign} onReject={reject}
+                       focused={focusKey === c.key} guildId={guildId} onAssign={assign} onReject={reject}
                        onClear={clearOne} onFocus={setFocusKey} />
             ))}
           </div>
@@ -490,7 +495,7 @@ export function MoviePersonScanPage() {
               <ul>
                 {results.unresolved_movies.map((m) => (
                   <li key={m.id}>
-                    <Link className="plain-link" to={`/movies/${m.id}`}>{m.name}</Link>{" "}
+                    <Link className="plain-link" to={`/g/${guildId}/movies/${m.id}`}>{m.name}</Link>{" "}
                     <span className="meta">({m.release_year ?? "?"})</span>
                   </li>
                 ))}
@@ -504,7 +509,7 @@ export function MoviePersonScanPage() {
         <details className="scan-suppressions">
           <summary>{suppressions.count} suppressed suggestion(s)</summary>
           <p className="meta">These never appear in scan results again.</p>
-          <button onClick={() => clearSuppressions.mutate()}>Clear all suppressions</button>
+          <BusyButton busy={clearSuppressions.isPending} busyLabel="Clearing…" onClick={() => clearSuppressions.mutate()}>Clear all suppressions</BusyButton>
           <ul>
             {suppressions.items.map((s) => (
               <li key={`${s.person_id}:${s.movie_id}:${s.slot}`}>

@@ -1,88 +1,85 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
-import { useParams } from "react-router-dom";
-import { Link } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 
 import { api } from "../api/client";
-import { useAlbumIndex, useGameGenres, useGamePlatforms, usePeople } from "../api/hooks";
-import type { AlbumIndex, Game, GamePersonRef, GamePlatform, GameRole, Genre, Person } from "../api/types";
-import { GAME_ROLES, GAME_ROLE_LABELS } from "../api/types";
+import { useEntryMutations, useGameEntry, useGameGenres, useGamePlatforms, useGuildApi, usePeople, useUpdateGameEntry } from "../api/hooks";
+import { gk } from "../api/keys";
+import type { Game, GamePlatform, GameRole, Genre, Person } from "../api/types";
+import { GAME_ROLE_LABELS, GAME_ROLES } from "../api/types";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { GameForm } from "../components/GameForm";
-import { GameGenreChooser } from "../components/GameGenreChooser";
-import { GamePlatformChooser } from "../components/GamePlatformChooser";
+import { LinksSection } from "../components/LinksSection";
 import { PersonForm } from "../components/PersonForm";
 import { matchesPersonSearch, PersonPicker, type PersonSearchField } from "../components/PersonPicker";
+import { GenreChooser } from "../genre/GenreChooser";
+import { GAME_GENRES, GAME_PLATFORMS } from "../genre/config";
+import { useCan } from "../guild/GuildProvider";
+import { BusyButton, InlineBusy, LoadingState } from "../components/Spinner";
 
-// ── People section ─────────────────────────────────────────────────────────────
+type PendingLink = { personId: number; role: GameRole };
+function linkKey(l: PendingLink) { return `${l.personId}:${l.role}`; }
 
-function GamePeopleSection({ game }: { game: Game }) {
+// ── People section ──────────────────────────────────────────────────────────
+
+function GamePeopleSection({ gameId, game }: { gameId: number; game: Game }) {
   const qc = useQueryClient();
-  const { data: allPeople = [] } = usePeople();
+  const { guildId, base } = useGuildApi();
+  const canEdit = useCan("catalog_edit");
+  const { data: allPeople = [], isLoading: peopleLoading } = usePeople();
   const [editing, setEditing] = useState(false);
-  const [confirmUnlink, setConfirmUnlink] = useState<GamePersonRef | null>(null);
-  const [castSearch, setCastSearch] = useState("");
-  const [searchField, setSearchField] = useState<PersonSearchField>("all");
-  const [addRole, setAddRole] = useState<GameRole>("director");
   const [creatingPerson, setCreatingPerson] = useState(false);
   const [dupWarning, setDupWarning] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+  const [searchField, setSearchField] = useState<PersonSearchField>("all");
+  const [addRole, setAddRole] = useState<GameRole>("director");
 
-  const [castKeys, setCastKeys] = useState<Set<string>>(
-    () => new Set(game.persons.map((p) => `${p.id}:${p.role}`))
-  );
+  const castKeys = useMemo(() => new Set(game.persons.map((p) => linkKey({ personId: p.id, role: p.role }))), [game.persons]);
 
-  useEffect(() => {
-    setCastKeys(new Set(game.persons.map((p) => `${p.id}:${p.role}`)));
-  }, [game.persons]);
+  const filteredPeople = useMemo(() => {
+    return allPeople
+      .filter((p) => matchesPersonSearch(p, searchField, search))
+      .sort((a, b) => {
+        const aKey = linkKey({ personId: a.id, role: addRole });
+        const bKey = linkKey({ personId: b.id, role: addRole });
+        return (castKeys.has(aKey) ? 0 : 1) - (castKeys.has(bKey) ? 0 : 1);
+      });
+  }, [search, searchField, allPeople, castKeys, addRole]);
 
-  const filteredPeople = useMemo(
-    () => allPeople.filter((p) => matchesPersonSearch(p, searchField, castSearch)),
-    [castSearch, searchField, allPeople],
-  );
+  const invalidate = () => qc.invalidateQueries({ queryKey: gk(guildId, "games", gameId) });
 
   const link = useMutation({
-    mutationFn: ({ personId, role }: { personId: number; role: GameRole }) =>
-      api.put(`/games/${game.id}/persons/${personId}/${role}`),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["games", game.id] });
-      qc.invalidateQueries({ queryKey: ["games", "ranked"] });
-    },
+    mutationFn: ({ pid, role }: { pid: number; role: GameRole }) =>
+      api.put(`${base}/games/${gameId}/persons/${pid}/${role}`),
+    onSuccess: invalidate,
   });
-
   const unlink = useMutation({
-    mutationFn: ({ personId, role }: { personId: number; role: GameRole }) =>
-      api.delete(`/games/${game.id}/persons/${personId}/${role}`),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["games", game.id] });
-      qc.invalidateQueries({ queryKey: ["games", "ranked"] });
-    },
+    mutationFn: ({ pid, role }: { pid: number; role: GameRole }) =>
+      api.delete(`${base}/games/${gameId}/persons/${pid}/${role}`),
+    onSuccess: invalidate,
   });
 
   function toggleLink(person: Person, role: GameRole) {
-    const key = `${person.id}:${role}`;
-    if (castKeys.has(key)) {
-      const ref = game.persons.find((p) => p.id === person.id && p.role === role);
-      if (ref) setConfirmUnlink(ref);
-    } else {
-      link.mutate({ personId: person.id, role });
-      setCastKeys((prev) => new Set([...prev, key]));
-    }
+    const key = linkKey({ personId: person.id, role });
+    if (castKeys.has(key)) unlink.mutate({ pid: person.id, role });
+    else link.mutate({ pid: person.id, role });
   }
 
-  // Group persons by role for display
-  const byRole: Record<string, GamePersonRef[]> = {};
-  for (const p of game.persons) {
-    if (!byRole[p.role]) byRole[p.role] = [];
-    byRole[p.role].push(p);
-  }
+  const byRole: Partial<Record<GameRole, Game["persons"]>> = {};
+  for (const p of game.persons) (byRole[p.role] ??= []).push(p);
 
   return (
     <section style={{ marginBottom: "1.5rem" }}>
       <header className="page-head" style={{ marginBottom: "0.5rem" }}>
-        <h2 style={{ margin: 0 }}>People</h2>
-        <button style={{ fontSize: 12 }} onClick={() => setEditing((o) => !o)}>
-          {editing ? "Done" : "Edit"}
-        </button>
+        <span className="inline">
+          <h2 style={{ margin: 0 }}>People</h2>
+          {(link.isPending || unlink.isPending) && <InlineBusy label="Saving…" />}
+        </span>
+        {canEdit && (
+          <button style={{ fontSize: 12 }} onClick={() => setEditing((o) => !o)}>
+            {editing ? "Done" : "Edit"}
+          </button>
+        )}
       </header>
 
       {editing && (
@@ -93,7 +90,6 @@ function GamePeopleSection({ game }: { game: Game }) {
               <button className="icon" onClick={() => setDupWarning(null)}>✕</button>
             </div>
           )}
-
           <div style={{ marginBottom: "0.75rem" }}>
             <PersonPicker
               roles={GAME_ROLES}
@@ -102,12 +98,14 @@ function GamePeopleSection({ game }: { game: Game }) {
               onRole={setAddRole}
               searchField={searchField}
               onSearchField={setSearchField}
-              search={castSearch}
-              onSearch={setCastSearch}
+              search={search}
+              onSearch={setSearch}
               onNewPerson={() => setCreatingPerson(true)}
               people={filteredPeople}
-              isChecked={(p, role) => castKeys.has(`${p.id}:${role}`)}
+              isChecked={(p, role) => castKeys.has(linkKey({ personId: p.id, role }))}
               onToggle={toggleLink}
+              loading={peopleLoading}
+              busy={link.isPending || unlink.isPending}
             />
           </div>
         </>
@@ -116,23 +114,14 @@ function GamePeopleSection({ game }: { game: Game }) {
       {game.persons.length > 0 ? (
         GAME_ROLES.filter((r) => byRole[r]?.length).map((role) => (
           <div key={role} style={{ marginBottom: "0.75rem" }}>
-            <div className="detail-label" style={{ marginBottom: "0.25rem" }}>
-              {GAME_ROLE_LABELS[role]}
-            </div>
+            <div className="detail-label" style={{ marginBottom: "0.25rem" }}>{GAME_ROLE_LABELS[role]}</div>
             <ul className="sortable plain-list">
-              {byRole[role].map((p) => (
+              {byRole[role]!.map((p) => (
                 <li key={`${p.id}:${p.role}`} className="sortable-item">
-                  <div className="row" style={{ gridTemplateColumns: "1fr auto" }}>
-                    <Link className="name" to={`/people/${p.id}`}>
+                  <div className="row" style={{ gridTemplateColumns: "1fr" }}>
+                    <Link className="name" to={`/g/${guildId}/people/${p.id}`}>
                       {p.name}{p.name_en && <span style={{ opacity: 0.6 }}> ({p.name_en})</span>}
                     </Link>
-                    {editing && (
-                      <button
-                        className="icon"
-                        title="Remove"
-                        onClick={() => setConfirmUnlink(p)}
-                      >✕</button>
-                    )}
                   </div>
                 </li>
               ))}
@@ -143,22 +132,6 @@ function GamePeopleSection({ game }: { game: Game }) {
         <p style={{ opacity: 0.5, margin: "0.25rem 0 0" }}>No people linked.</p>
       )}
 
-      {confirmUnlink && (
-        <ConfirmDialog
-          message={`Remove "${confirmUnlink.name}" (${GAME_ROLE_LABELS[confirmUnlink.role]}) from this game?`}
-          onConfirm={() => {
-            unlink.mutate({ personId: confirmUnlink.id, role: confirmUnlink.role });
-            setCastKeys((prev) => {
-              const next = new Set(prev);
-              next.delete(`${confirmUnlink!.id}:${confirmUnlink!.role}`);
-              return next;
-            });
-            setConfirmUnlink(null);
-          }}
-          onCancel={() => setConfirmUnlink(null)}
-        />
-      )}
-
       {creatingPerson && (
         <div className="modal-backdrop" onClick={() => setCreatingPerson(false)}>
           <div onClick={(e) => e.stopPropagation()}>
@@ -166,9 +139,8 @@ function GamePeopleSection({ game }: { game: Game }) {
               onClose={(savedName, savedId) => {
                 setCreatingPerson(false);
                 if (savedId != null) {
-                  qc.invalidateQueries({ queryKey: ["people"] });
-                  link.mutate({ personId: savedId, role: addRole });
-                  setCastKeys((prev) => new Set([...prev, `${savedId}:${addRole}`]));
+                  qc.invalidateQueries({ queryKey: gk(guildId, "people") });
+                  link.mutate({ pid: savedId, role: addRole });
                 }
                 if (savedName != null) {
                   const nameLower = savedName.toLowerCase();
@@ -184,54 +156,38 @@ function GamePeopleSection({ game }: { game: Game }) {
   );
 }
 
-// ── Genres section ─────────────────────────────────────────────────────────────
+// ── Genres section ───────────────────────────────────────────────────────────
 
-function GameGenresSection({ game }: { game: Game }) {
+function GameGenresSection({ gameId, game }: { gameId: number; game: Game }) {
   const qc = useQueryClient();
+  const { guildId, base } = useGuildApi();
+  const canEdit = useCan("catalog_edit");
   const [editing, setEditing] = useState(false);
   const [confirmUnlink, setConfirmUnlink] = useState<Genre | null>(null);
   const { data: allGenres = [] } = useGameGenres();
 
-  const { data: gameGenres = [] } = useQuery({
-    queryKey: ["games", game.id, "genres"],
-    queryFn: () => api.get<Genre[]>(`/games/${game.id}/genres`),
-  });
-
   const [genreIds, setGenreIds] = useState<Set<number>>(new Set());
-  useEffect(() => {
-    setGenreIds(new Set(gameGenres.map((g) => g.id)));
-  }, [gameGenres]);
+  useEffect(() => { setGenreIds(new Set(game.genre_ids)); }, [game.genre_ids]);
 
   const genreMap = Object.fromEntries(allGenres.map((g) => [g.id, g]));
+  const gameGenres = game.genre_ids.map((id) => genreMap[id]).filter(Boolean);
 
   const addGenre = useMutation({
-    mutationFn: (gid: number) => api.put(`/games/${game.id}/genres/${gid}`),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["games", game.id, "genres"] });
-      qc.invalidateQueries({ queryKey: ["games", game.id] });
-    },
+    mutationFn: (gid: number) => api.put(`${base}/games/${gameId}/genres/${gid}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: gk(guildId, "games") }),
   });
-
   const removeGenre = useMutation({
-    mutationFn: (gid: number) => api.delete(`/games/${game.id}/genres/${gid}`),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["games", game.id, "genres"] });
-      qc.invalidateQueries({ queryKey: ["games", game.id] });
-    },
+    mutationFn: (gid: number) => api.delete(`${base}/games/${gameId}/genres/${gid}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: gk(guildId, "games") }),
   });
 
   function handleChange(next: Set<number>) {
     const prev = genreIds;
-    for (const id of next) {
-      if (!prev.has(id)) addGenre.mutate(id);
-    }
+    for (const id of next) if (!prev.has(id)) addGenre.mutate(id);
     for (const id of prev) {
       if (!next.has(id)) {
         const g = genreMap[id];
-        if (g) {
-          setConfirmUnlink(g);
-          return;
-        }
+        if (g) { setConfirmUnlink(g); return; }
       }
     }
     setGenreIds(next);
@@ -240,15 +196,20 @@ function GameGenresSection({ game }: { game: Game }) {
   return (
     <section style={{ marginBottom: "1.5rem" }}>
       <header className="page-head" style={{ marginBottom: "0.5rem" }}>
-        <h2 style={{ margin: 0 }}>Genres</h2>
-        <button style={{ fontSize: 12 }} onClick={() => setEditing((o) => !o)}>
-          {editing ? "Done" : "Edit"}
-        </button>
+        <span className="inline">
+          <h2 style={{ margin: 0 }}>Genres</h2>
+          {(addGenre.isPending || removeGenre.isPending) && <InlineBusy label="Saving…" />}
+        </span>
+        {canEdit && (
+          <button style={{ fontSize: 12 }} onClick={() => setEditing((o) => !o)}>
+            {editing ? "Done" : "Edit"}
+          </button>
+        )}
       </header>
 
       {editing && (
         <div style={{ marginBottom: "0.75rem" }}>
-          <GameGenreChooser selected={genreIds} onChange={handleChange} />
+          <GenreChooser domain={GAME_GENRES} selected={genreIds} onChange={handleChange} />
         </div>
       )}
 
@@ -257,7 +218,7 @@ function GameGenresSection({ game }: { game: Game }) {
           {gameGenres.map((g) => (
             <li key={g.id} className="sortable-item">
               <div className="row" style={{ gridTemplateColumns: "1fr" }}>
-                <Link className="name" to={`/games/genres/${g.id}`}>{g.name}</Link>
+                <Link className="name" to={`/g/${guildId}/games/genres/${g.id}`}>{g.name}</Link>
               </div>
             </li>
           ))}
@@ -269,14 +230,11 @@ function GameGenresSection({ game }: { game: Game }) {
       {confirmUnlink && (
         <ConfirmDialog
           message={`Remove genre "${confirmUnlink.name}" from this game?`}
+          busy={removeGenre.isPending}
           onConfirm={() => {
-            removeGenre.mutate(confirmUnlink.id);
-            setGenreIds((prev) => {
-              const next = new Set(prev);
-              next.delete(confirmUnlink!.id);
-              return next;
-            });
-            setConfirmUnlink(null);
+            const id = confirmUnlink.id;
+            setGenreIds((prev) => { const next = new Set(prev); next.delete(id); return next; });
+            removeGenre.mutate(id, { onSettled: () => setConfirmUnlink(null) });
           }}
           onCancel={() => setConfirmUnlink(null)}
         />
@@ -285,54 +243,38 @@ function GameGenresSection({ game }: { game: Game }) {
   );
 }
 
-// ── Platforms section ──────────────────────────────────────────────────────────
+// ── Platforms section ────────────────────────────────────────────────────────
 
-function GamePlatformsSection({ game }: { game: Game }) {
+function GamePlatformsSection({ gameId, game }: { gameId: number; game: Game }) {
   const qc = useQueryClient();
+  const { guildId, base } = useGuildApi();
+  const canEdit = useCan("catalog_edit");
   const [editing, setEditing] = useState(false);
   const [confirmUnlink, setConfirmUnlink] = useState<GamePlatform | null>(null);
   const { data: allPlatforms = [] } = useGamePlatforms();
 
-  const { data: gamePlatforms = [] } = useQuery({
-    queryKey: ["games", game.id, "platforms"],
-    queryFn: () => api.get<GamePlatform[]>(`/games/${game.id}/platforms`),
-  });
-
   const [platformIds, setPlatformIds] = useState<Set<number>>(new Set());
-  useEffect(() => {
-    setPlatformIds(new Set(gamePlatforms.map((p) => p.id)));
-  }, [gamePlatforms]);
+  useEffect(() => { setPlatformIds(new Set(game.platform_ids)); }, [game.platform_ids]);
 
   const platformMap = Object.fromEntries(allPlatforms.map((p) => [p.id, p]));
+  const gamePlatforms = game.platform_ids.map((id) => platformMap[id]).filter(Boolean);
 
   const addPlatform = useMutation({
-    mutationFn: (pid: number) => api.put(`/games/${game.id}/platforms/${pid}`),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["games", game.id, "platforms"] });
-      qc.invalidateQueries({ queryKey: ["games", game.id] });
-    },
+    mutationFn: (pid: number) => api.put(`${base}/games/${gameId}/platforms/${pid}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: gk(guildId, "games") }),
   });
-
   const removePlatform = useMutation({
-    mutationFn: (pid: number) => api.delete(`/games/${game.id}/platforms/${pid}`),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["games", game.id, "platforms"] });
-      qc.invalidateQueries({ queryKey: ["games", game.id] });
-    },
+    mutationFn: (pid: number) => api.delete(`${base}/games/${gameId}/platforms/${pid}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: gk(guildId, "games") }),
   });
 
   function handleChange(next: Set<number>) {
     const prev = platformIds;
-    for (const id of next) {
-      if (!prev.has(id)) addPlatform.mutate(id);
-    }
+    for (const id of next) if (!prev.has(id)) addPlatform.mutate(id);
     for (const id of prev) {
       if (!next.has(id)) {
         const p = platformMap[id];
-        if (p) {
-          setConfirmUnlink(p);
-          return;
-        }
+        if (p) { setConfirmUnlink(p); return; }
       }
     }
     setPlatformIds(next);
@@ -341,28 +283,25 @@ function GamePlatformsSection({ game }: { game: Game }) {
   return (
     <section style={{ marginBottom: "1.5rem" }}>
       <header className="page-head" style={{ marginBottom: "0.5rem" }}>
-        <h2 style={{ margin: 0 }}>Platforms</h2>
-        <button style={{ fontSize: 12 }} onClick={() => setEditing((o) => !o)}>
-          {editing ? "Done" : "Edit"}
-        </button>
+        <span className="inline">
+          <h2 style={{ margin: 0 }}>Platforms</h2>
+          {(addPlatform.isPending || removePlatform.isPending) && <InlineBusy label="Saving…" />}
+        </span>
+        {canEdit && (
+          <button style={{ fontSize: 12 }} onClick={() => setEditing((o) => !o)}>
+            {editing ? "Done" : "Edit"}
+          </button>
+        )}
       </header>
 
       {editing && (
         <div style={{ marginBottom: "0.75rem" }}>
-          <GamePlatformChooser selected={platformIds} onChange={handleChange} />
+          <GenreChooser domain={GAME_PLATFORMS} selected={platformIds} onChange={handleChange} />
         </div>
       )}
 
       {gamePlatforms.length > 0 ? (
-        <ul className="sortable plain-list">
-          {gamePlatforms.map((p) => (
-            <li key={p.id} className="sortable-item">
-              <div className="row" style={{ gridTemplateColumns: "1fr" }}>
-                <Link className="name" to={`/games/platforms/${p.id}`}>{p.name}</Link>
-              </div>
-            </li>
-          ))}
-        </ul>
+        <p style={{ margin: "0.25rem 0 0" }}>{gamePlatforms.map((p) => p.name).join(", ")}</p>
       ) : (
         <p style={{ opacity: 0.5, margin: "0.25rem 0 0" }}>No platforms linked.</p>
       )}
@@ -370,14 +309,11 @@ function GamePlatformsSection({ game }: { game: Game }) {
       {confirmUnlink && (
         <ConfirmDialog
           message={`Remove platform "${confirmUnlink.name}" from this game?`}
+          busy={removePlatform.isPending}
           onConfirm={() => {
-            removePlatform.mutate(confirmUnlink.id);
-            setPlatformIds((prev) => {
-              const next = new Set(prev);
-              next.delete(confirmUnlink!.id);
-              return next;
-            });
-            setConfirmUnlink(null);
+            const id = confirmUnlink.id;
+            setPlatformIds((prev) => { const next = new Set(prev); next.delete(id); return next; });
+            removePlatform.mutate(id, { onSettled: () => setConfirmUnlink(null) });
           }}
           onCancel={() => setConfirmUnlink(null)}
         />
@@ -386,86 +322,100 @@ function GamePlatformsSection({ game }: { game: Game }) {
   );
 }
 
-// ── Soundtrack section ─────────────────────────────────────────────────────────
+// ── My list section ──────────────────────────────────────────────────────────
 
-function GameSoundtrackSection({ game }: { game: Game }) {
-  const qc = useQueryClient();
+function MyGameListSection({ gameId }: { gameId: number }) {
+  const canRank = useCan("rank");
+  const { data: entry, isLoading } = useGameEntry(gameId);
+  const update = useUpdateGameEntry(gameId);
+  const entryMutations = useEntryMutations("games");
   const [editing, setEditing] = useState(false);
-  const [albumSearch, setAlbumSearch] = useState("");
-  const { data: allAlbums = [] } = useAlbumIndex();
+  const [notes, setNotes] = useState("");
+  const [confirmRemove, setConfirmRemove] = useState(false);
 
-  const linkedIds = new Set(game.soundtrack_albums.map((a) => a.id));
+  useEffect(() => {
+    if (entry) setNotes(entry.notes ?? "");
+  }, [entry]);
 
-  const link = useMutation({
-    mutationFn: (aid: number) => api.put(`/games/${game.id}/soundtrack/${aid}`),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["games", game.id] });
-      qc.invalidateQueries({ queryKey: ["games", "ranked"] });
-    },
-  });
-
-  const unlink = useMutation({
-    mutationFn: (aid: number) => api.delete(`/games/${game.id}/soundtrack/${aid}`),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["games", game.id] });
-      qc.invalidateQueries({ queryKey: ["games", "ranked"] });
-    },
-  });
-
-  const filteredAlbums = useMemo(() => {
-    const q = albumSearch.trim().toLowerCase();
-    return (q
-      ? allAlbums.filter((a: AlbumIndex) => a.name.toLowerCase().includes(q) || !!a.name_en?.toLowerCase().includes(q))
-      : allAlbums
-    ).filter((a: AlbumIndex) => !linkedIds.has(a.id)).slice(0, 50);
-  }, [albumSearch, allAlbums, linkedIds]);
+  if (!canRank) return null;
+  const saving = update.isPending || entryMutations.add.isPending || entryMutations.remove.isPending;
 
   return (
     <section style={{ marginBottom: "1.5rem" }}>
       <header className="page-head" style={{ marginBottom: "0.5rem" }}>
-        <h2 style={{ margin: 0 }}>Soundtrack</h2>
-        <button style={{ fontSize: 12 }} onClick={() => setEditing((o) => !o)}>
-          {editing ? "Done" : "Edit"}
-        </button>
+        <span className="inline">
+          <h2 style={{ margin: 0 }}>My List</h2>
+          {saving && <InlineBusy label="Saving…" />}
+        </span>
+        {entry && (
+          <button style={{ fontSize: 12 }} onClick={() => setEditing((o) => !o)}>
+            {editing ? "Done" : "Edit"}
+          </button>
+        )}
       </header>
 
-      {editing && (
-        <div style={{ marginBottom: "0.75rem" }}>
-          <input
-            className="genre-search"
-            type="search"
-            placeholder="Search albums…"
-            value={albumSearch}
-            onChange={(e) => setAlbumSearch(e.target.value)}
-          />
-          <div className="chips">
-            {filteredAlbums.map((a: AlbumIndex) => (
-              <label key={a.id} className="chip">
-                <input type="checkbox" checked={false} onChange={() => link.mutate(a.id)} />
-                {a.name}
-              </label>
-            ))}
+      {isLoading ? (
+        <LoadingState compact />
+      ) : !entry ? (
+        <p style={{ opacity: 0.5, margin: "0.25rem 0 0" }}>
+          Not in your list. <BusyButton busy={entryMutations.add.isPending} busyLabel="Adding…"
+                                        onClick={() => entryMutations.add.mutate(gameId)}>+ Add to my list</BusyButton>
+        </p>
+      ) : (
+        <>
+          <div className="artist-detail-grid">
+            <div>
+              <span className="detail-label">Hours played</span>
+              <span className="listens-ctrl">
+                <button className="icon" title="Subtract half an hour"
+                        disabled={entry.hours_played == null || Number(entry.hours_played) <= 0}
+                        onClick={() => update.mutate({ hours_played: Math.max(0, Number(entry.hours_played ?? 0) - 0.5) })}
+                >−</button>
+                <input
+                  type="number" min={0} step={0.5} className="listens-input"
+                  value={entry.hours_played ?? 0}
+                  onChange={(e) => {
+                    const n = Number(e.target.value);
+                    if (Number.isFinite(n) && n >= 0) update.mutate({ hours_played: n });
+                  }}
+                />
+                <button className="icon" title="Add half an hour"
+                        onClick={() => update.mutate({ hours_played: Number(entry.hours_played ?? 0) + 0.5 })}
+                >+</button>
+              </span>
+            </div>
           </div>
-        </div>
+
+          {editing ? (
+            <div className="detail-section-form" style={{ marginTop: "0.75rem" }}>
+              <label>My notes
+                <textarea rows={3} value={notes} onChange={(e) => setNotes(e.target.value)} />
+              </label>
+              <div style={{ marginTop: "0.5rem", display: "flex", gap: "0.5rem" }}>
+                <BusyButton busy={update.isPending} busyLabel="Saving…"
+                            onClick={() => update.mutate({ notes: notes.trim() === "" ? null : notes })}>Save notes</BusyButton>
+                <button className="danger" onClick={() => setConfirmRemove(true)}>✕ Remove from my list</button>
+              </div>
+            </div>
+          ) : (
+            entry.notes && (
+              <div className="detail-tags" style={{ marginTop: "0.5rem" }}>
+                <span className="detail-label">My notes</span>
+                <span>{entry.notes}</span>
+              </div>
+            )
+          )}
+        </>
       )}
 
-      {game.soundtrack_albums.length > 0 ? (
-        <ul className="sortable plain-list">
-          {game.soundtrack_albums.map((a) => (
-            <li key={a.id} className="sortable-item">
-              <div className="row" style={{ gridTemplateColumns: "1fr auto" }}>
-                <Link className="name" to={`/music/albums/${a.id}`}>
-                  {a.name}{a.name_en && <span style={{ opacity: 0.6 }}> ({a.name_en})</span>}
-                </Link>
-                {editing && (
-                  <button className="icon" title="Remove" onClick={() => unlink.mutate(a.id)}>✕</button>
-                )}
-              </div>
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <p style={{ opacity: 0.5, margin: "0.25rem 0 0" }}>No soundtrack albums linked.</p>
+      {confirmRemove && (
+        <ConfirmDialog
+          message="Remove this game from your list? Your hours played and personal notes for it will be lost."
+          confirmLabel="Remove"
+          busy={entryMutations.remove.isPending}
+          onConfirm={() => entryMutations.remove.mutate(gameId, { onSettled: () => { setConfirmRemove(false); setEditing(false); } })}
+          onCancel={() => setConfirmRemove(false)}
+        />
       )}
     </section>
   );
@@ -477,15 +427,17 @@ export function GameDetailPage() {
   const { id } = useParams<{ id: string }>();
   const gameId = Number(id);
   const qc = useQueryClient();
+  const { guildId, base } = useGuildApi();
+  const canEdit = useCan("catalog_edit");
   const [editing, setEditing] = useState(false);
 
   const { data: game, isLoading, isError } = useQuery({
-    queryKey: ["games", gameId],
-    queryFn: () => api.get<Game>(`/games/${gameId}`),
+    queryKey: gk(guildId, "games", gameId),
+    queryFn: () => api.get<Game>(`${base}/games/${gameId}`),
     enabled: !isNaN(gameId),
   });
 
-  if (isLoading) return <section><p>Loading…</p></section>;
+  if (isLoading) return <section><LoadingState label="Loading game…" /></section>;
   if (isError || !game) return <section><p>Game not found.</p></section>;
 
   return (
@@ -493,24 +445,29 @@ export function GameDetailPage() {
       <header className="page-head">
         <h1>
           {game.name}{game.name_en && <span style={{ opacity: 0.6, fontWeight: "normal" }}> ({game.name_en})</span>}
-          {game.play_link && (
-            <> <a href={game.play_link} target="_blank" rel="noreferrer" style={{ textDecoration: "none", fontStyle: "italic", fontSize: "0.6em", opacity: 0.7, fontWeight: "normal", color: "inherit" }}>(link)</a></>
-          )}
         </h1>
-        <button onClick={() => setEditing(true)}>✎ Edit</button>
+        {canEdit && <button onClick={() => setEditing(true)}>✎ Edit</button>}
       </header>
 
       <div className="artist-detail-dropdown" style={{ marginBottom: "1.5rem" }}>
         <div className="artist-detail-grid">
-          <div>
-            <span className="detail-label">Release year</span>
-            <span>{game.release_year}</span>
-          </div>
-          <div>
-            <span className="detail-label">Hours played</span>
-            <span>{game.hours_played != null ? `${game.hours_played}h` : "untracked"}</span>
-          </div>
+          <div><span className="detail-label">Release year</span><span>{game.release_year}</span></div>
         </div>
+        {game.soundtrack_albums.length > 0 && (
+          <div className="detail-tags" style={{ marginTop: "0.5rem" }}>
+            <span className="detail-label">Soundtrack</span>
+            <span>
+              {game.soundtrack_albums.map((a, i) => (
+                <span key={a.id}>
+                  {i > 0 && ", "}
+                  <Link to={`/g/${guildId}/music/albums/${a.id}`}>
+                    {a.name}{a.name_en && <span style={{ opacity: 0.6 }}> ({a.name_en})</span>}
+                  </Link>
+                </span>
+              ))}
+            </span>
+          </div>
+        )}
         {game.notes && (
           <div className="detail-tags" style={{ marginTop: "0.5rem" }}>
             <span className="detail-label">Notes</span>
@@ -519,10 +476,11 @@ export function GameDetailPage() {
         )}
       </div>
 
-      <GamePeopleSection game={game} />
-      <GameGenresSection game={game} />
-      <GamePlatformsSection game={game} />
-      <GameSoundtrackSection game={game} />
+      <GamePeopleSection gameId={gameId} game={game} />
+      <GameGenresSection gameId={gameId} game={game} />
+      <GamePlatformsSection gameId={gameId} game={game} />
+      <LinksSection path="games" section="games" ownerId={gameId} />
+      <MyGameListSection gameId={gameId} />
 
       {editing && (
         <div className="modal-backdrop" onClick={() => setEditing(false)}>
@@ -531,8 +489,7 @@ export function GameDetailPage() {
               initial={game}
               onClose={() => {
                 setEditing(false);
-                qc.invalidateQueries({ queryKey: ["games", gameId] });
-                qc.invalidateQueries({ queryKey: ["games", "ranked"] });
+                qc.invalidateQueries({ queryKey: gk(guildId, "games", gameId) });
               }}
             />
           </div>

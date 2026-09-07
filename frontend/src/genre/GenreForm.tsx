@@ -3,7 +3,10 @@ import { useEffect, useState } from "react";
 
 import { api } from "../api/client";
 import { useUpdateGenreMediaTypes } from "../api/hooks";
+import { gk } from "../api/keys";
 import type { Genre } from "../api/types";
+import { useGuild } from "../guild/GuildProvider";
+import { BusyButton, InlineBusy } from "../components/Spinner";
 import { GenreChooser } from "./GenreChooser";
 import type { GenreDomain, GenreLike } from "./config";
 
@@ -22,6 +25,8 @@ export function GenreForm(props: {
   const { domain, initial, onClose } = props;
   const editing = initial !== undefined;
   const qc = useQueryClient();
+  const guild = useGuild();
+  const apiBase = domain.useApiBase();
   const [parentsOpen, setParentsOpen] = useState(false);
 
   const [f, setF] = useState({
@@ -30,9 +35,9 @@ export function GenreForm(props: {
     notes:    initial?.notes ?? "",
   });
 
-  const { data: parents } = useQuery({
-    queryKey: [domain.key, initial?.id, "parents"],
-    queryFn: () => api.get<GenreLike[]>(`${domain.apiBase}/${initial!.id}/parents`),
+  const { data: parents, isLoading: parentsLoading } = useQuery({
+    queryKey: [domain.key, apiBase, initial?.id, "parents"],
+    queryFn: () => api.get<GenreLike[]>(`${apiBase}/${initial!.id}/parents`),
     enabled: editing,
   });
   const [parentIds, setParentIds] = useState<Set<number>>(new Set());
@@ -81,27 +86,28 @@ export function GenreForm(props: {
       };
 
       const genre = editing
-        ? await api.patch<GenreLike>(`${domain.apiBase}/${initial.id}`, body)
-        : await api.post<GenreLike>(domain.apiBase, body);
+        ? await api.patch<GenreLike>(`${apiBase}/${initial.id}`, body)
+        : await api.post<GenreLike>(apiBase, body);
 
       const before = new Set((parents ?? []).map((p) => p.id));
       for (const id of parentIds)
-        if (!before.has(id)) await api.put(`${domain.apiBase}/${genre.id}/parents/${id}`);
+        if (!before.has(id)) await api.put(`${apiBase}/${genre.id}/parents/${id}`);
       for (const id of before)
-        if (!parentIds.has(id)) await api.delete(`${domain.apiBase}/${genre.id}/parents/${id}`);
+        if (!parentIds.has(id)) await api.delete(`${apiBase}/${genre.id}/parents/${id}`);
 
       if (isRoot) {
         const beforeCategories = new Set(initial?.category_ids ?? []);
         for (const id of categoryIds)
-          if (!beforeCategories.has(id)) await api.put(`${domain.apiBase}/${genre.id}/categories/${id}`);
+          if (!beforeCategories.has(id)) await api.put(`${apiBase}/${genre.id}/categories/${id}`);
         for (const id of beforeCategories)
-          if (!categoryIds.has(id)) await api.delete(`${domain.apiBase}/${genre.id}/categories/${id}`);
+          if (!categoryIds.has(id)) await api.delete(`${apiBase}/${genre.id}/categories/${id}`);
       }
 
       return genre;
     },
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: [domain.key] });
+      qc.invalidateQueries({ queryKey: [domain.key, apiBase] });
+      qc.invalidateQueries({ queryKey: gk(guild.id, domain.key) });
       onClose();
     },
   });
@@ -145,7 +151,7 @@ export function GenreForm(props: {
           )}
           {!parentsOpen && (
             <span className="collapsed-summary" onClick={() => setParentsOpen(true)}>
-              {parentIds.size > 0 ? `${parentIds.size} selected` : "None selected"}
+              {parentsLoading ? <InlineBusy label="Loading parents…" /> : parentIds.size > 0 ? `${parentIds.size} selected` : "None selected"}
             </span>
           )}
         </fieldset>
@@ -174,7 +180,7 @@ export function GenreForm(props: {
 
         {domain.mediaTypeFlag && (
           <fieldset>
-            <legend>Media types</legend>
+            <legend className="inline">Media types {updateMediaTypes.isPending && <InlineBusy />}</legend>
             <div className="chips">
               {(Object.keys(MEDIA_TYPE_LABELS) as Array<keyof typeof MEDIA_TYPE_LABELS>).map((flag) => (
                 <label key={flag} className="chip">
@@ -203,10 +209,10 @@ export function GenreForm(props: {
         )}
 
         <footer>
-          <button type="button" onClick={onClose}>Cancel</button>
-          <button type="submit" disabled={save.isPending}>
+          <button type="button" onClick={onClose} disabled={save.isPending}>Cancel</button>
+          <BusyButton type="submit" busy={save.isPending} busyLabel={editing ? "Saving…" : "Creating…"} disabled={parentsLoading}>
             {editing ? "Save" : "Create"}
-          </button>
+          </BusyButton>
         </footer>
         {save.isError && <p className="err">{(save.error as Error).message}</p>}
       </form>

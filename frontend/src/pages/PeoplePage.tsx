@@ -1,52 +1,49 @@
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
-import { useArtists, useMoviesRanked, usePeople } from "../api/hooks";
+import { api } from "../api/client";
+import { useGuildApi, usePeople } from "../api/hooks";
+import { gk } from "../api/keys";
 import type { Person } from "../api/types";
-import { CAST_ROLE_LABELS } from "../api/types";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { PersonForm } from "../components/PersonForm";
-import { DupWarningBanner, useDupWarning } from "../hooks/useDupWarning";
-import { useExpandAll } from "../hooks/useExpandAll";
-import { useOptimisticDelete } from "../hooks/useOptimisticDelete";
+import { LoadingState, Spinner } from "../components/Spinner";
+import { useCan } from "../guild/GuildProvider";
 
 type PeopleSearchBy = "all" | "name" | "nationality" | "artist" | "movie" | "game" | "television";
 
 function PersonRow({ person }: { person: Person }) {
-  const { data: artists = [] } = useArtists();
-  const { data: movies = [] } = useMoviesRanked();
-
-  const linkedArtists = artists.filter((a) => person.artist_ids.includes(a.id));
-  const linkedMovies = movies.flatMap((m) =>
-    m.persons
-      .filter((p) => p.id === person.id)
-      .map((p) => ({ movie: m, role: p.role }))
-  );
+  const hasAny = person.artist_names.length > 0 || person.movie_names.length > 0
+    || person.game_names.length > 0 || person.television_names.length > 0;
 
   return (
     <div className="artist-detail-dropdown">
-      {linkedArtists.length === 0 && linkedMovies.length === 0 && (
-        <div style={{ opacity: 0.5, fontSize: 13 }}>No linked artists or movies</div>
+      {!hasAny && (
+        <div style={{ opacity: 0.5, fontSize: 13 }}>No linked artists, movies, games, or shows</div>
       )}
-      {linkedArtists.length > 0 && (
+      {person.artist_names.length > 0 && (
         <div>
           <div className="detail-label" style={{ marginBottom: "0.25rem" }}>Artists</div>
-          {linkedArtists.map((a) => (
-            <div key={a.id}>
-              <Link to={`/music/artists/${a.id}`} className="plain-link">{a.name}</Link>
-            </div>
-          ))}
+          <div>{person.artist_names.join(", ")}</div>
         </div>
       )}
-      {linkedMovies.length > 0 && (
-        <div style={{ marginTop: linkedArtists.length > 0 ? "0.5rem" : 0 }}>
+      {person.movie_names.length > 0 && (
+        <div style={{ marginTop: "0.5rem" }}>
           <div className="detail-label" style={{ marginBottom: "0.25rem" }}>Movies</div>
-          {linkedMovies.map(({ movie, role }) => (
-            <div key={movie.id}>
-              <Link to={`/movies/${movie.id}`} className="plain-link">{movie.name}</Link>
-              <span style={{ opacity: 0.6, fontSize: 11, marginLeft: 4 }}>({CAST_ROLE_LABELS[role]})</span>
-            </div>
-          ))}
+          <div>{person.movie_names.join(", ")}</div>
+        </div>
+      )}
+      {person.game_names.length > 0 && (
+        <div style={{ marginTop: "0.5rem" }}>
+          <div className="detail-label" style={{ marginBottom: "0.25rem" }}>Games</div>
+          <div>{person.game_names.join(", ")}</div>
+        </div>
+      )}
+      {person.television_names.length > 0 && (
+        <div style={{ marginTop: "0.5rem" }}>
+          <div className="detail-label" style={{ marginBottom: "0.25rem" }}>Television</div>
+          <div>{person.television_names.join(", ")}</div>
         </div>
       )}
     </div>
@@ -54,14 +51,18 @@ function PersonRow({ person }: { person: Person }) {
 }
 
 export function PeoplePage() {
+  const qc = useQueryClient();
+  const { guildId, base } = useGuildApi();
+  const canEdit = useCan("catalog_edit");
+  const canDelete = useCan("catalog_delete");
   const [editing, setEditing] = useState<{ person: Person } | "new" | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<Person | null>(null);
   const [searchQ, setSearchQ] = useState("");
   const [searchBy, setSearchBy] = useState<PeopleSearchBy>("all");
   const [showDupsOnly, setShowDupsOnly] = useState(false);
-  const { dupWarning, clear: clearDup, checkAfterSave } = useDupWarning("person");
+  const [expandedIds, setExpandedIds] = useState<Set<number>>(new Set());
 
-  const { data: people = [] } = usePeople();
+  const { data: people = [], isLoading } = usePeople();
 
   const dupNameSet = useMemo(() => {
     const counts = new Map<string, number>();
@@ -103,26 +104,33 @@ export function PeoplePage() {
         ) return true;
       }
       if (searchBy === "artist" || searchBy === "all") {
-        if ((p.artist_names ?? []).some((n) => n.toLowerCase().includes(needle))) return true;
+        if (p.artist_names.some((n) => n.toLowerCase().includes(needle))) return true;
       }
       if (searchBy === "movie" || searchBy === "all") {
-        if ((p.movie_names ?? []).some((n) => n.toLowerCase().includes(needle))) return true;
+        if (p.movie_names.some((n) => n.toLowerCase().includes(needle))) return true;
       }
       if (searchBy === "game" || searchBy === "all") {
-        if ((p.game_names ?? []).some((n) => n.toLowerCase().includes(needle))) return true;
+        if (p.game_names.some((n) => n.toLowerCase().includes(needle))) return true;
       }
       if (searchBy === "television" || searchBy === "all") {
-        if ((p.television_names ?? []).some((n) => n.toLowerCase().includes(needle))) return true;
+        if (p.television_names.some((n) => n.toLowerCase().includes(needle))) return true;
       }
       return false;
     });
   }, [searchQ, searchBy, showDupsOnly, dupNameSet, people]);
 
-  const { expandedIds, toggle: toggleExpand, allExpanded, toggleAll } = useExpandAll(visiblePeople);
+  const allExpanded = visiblePeople.length > 0 && expandedIds.size === visiblePeople.length;
+  function toggleExpand(id: number) {
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }
 
-  const remove = useOptimisticDelete<Person>({
-    queryKey: ["people"],
-    endpoint: (id) => `/persons/${id}`,
+  const remove = useMutation({
+    mutationFn: (id: number) => api.delete(`${base}/persons/${id}`),
+    onSettled: () => qc.invalidateQueries({ queryKey: gk(guildId, "people") }),
   });
 
   return (
@@ -130,14 +138,12 @@ export function PeoplePage() {
       <header className="page-head">
         <h1>People</h1>
         <div style={{ display: "flex", gap: "0.5rem" }}>
-          <button onClick={toggleAll}>
+          <button onClick={() => setExpandedIds(allExpanded ? new Set() : new Set(visiblePeople.map((p) => p.id)))}>
             {allExpanded ? "Collapse all" : "Expand all"}
           </button>
-          <button onClick={() => setEditing("new")}>+ Add</button>
+          {canEdit && <button onClick={() => setEditing("new")}>+ Add</button>}
         </div>
       </header>
-
-      {dupWarning && <DupWarningBanner message={dupWarning} onDismiss={clearDup} />}
 
       <div className="search-bar">
         <input
@@ -163,42 +169,50 @@ export function PeoplePage() {
         >
           Duplicates
         </button>
-        {(searchQ.trim().length > 0 || showDupsOnly) && (
-          <span className="search-count">{visiblePeople.length} result{visiblePeople.length !== 1 ? "s" : ""}</span>
-        )}
+        {isLoading
+          ? <span className="search-count"><Spinner size="sm" /></span>
+          : (searchQ.trim().length > 0 || showDupsOnly) && (
+            <span className="search-count">{visiblePeople.length} result{visiblePeople.length !== 1 ? "s" : ""}</span>
+          )}
       </div>
 
-      <ul className="sortable plain-list">
-        {visiblePeople.map((person) => (
-          <li key={person.id} className="sortable-item">
-            <div className="row" style={{ gridTemplateColumns: "1fr auto auto auto auto" }}>
-              <Link className="name" to={`/people/${person.id}`}>
-                {person.name}{person.name_en && <span style={{ opacity: 0.6 }}> ({person.name_en})</span>}
-              </Link>
-              <span className="meta">
-                {person.core_nationality}
-                {person.birth_nationality !== person.core_nationality && (
-                  <> ({person.birth_nationality})</>
-                )}
-              </span>
-              <button className="icon" title="Show links" onClick={() => toggleExpand(person.id)}>
-                {expandedIds.has(person.id) ? "▲" : "▼"}
-              </button>
-              <button className="icon" onClick={() => setEditing({ person })}>✎</button>
-              <button className="icon" onClick={() => setConfirmDelete(person)}>✕</button>
-            </div>
-            {expandedIds.has(person.id) && <PersonRow person={person} />}
-          </li>
-        ))}
-      </ul>
+      {isLoading ? (
+        <LoadingState label="Loading people…" />
+      ) : visiblePeople.length === 0 ? (
+        <p className="rank-empty">
+          {people.length === 0 ? "No people in this guild yet." : "No people match."}
+        </p>
+      ) : (
+        <ul className="sortable plain-list">
+          {visiblePeople.map((person) => (
+            <li key={person.id} className="sortable-item">
+              <div className="row" style={{ gridTemplateColumns: "1fr auto auto auto auto" }}>
+                <Link className="name" to={`/g/${guildId}/people/${person.id}`}>
+                  {person.name}{person.name_en && <span style={{ opacity: 0.6 }}> ({person.name_en})</span>}
+                </Link>
+                <span className="meta">
+                  {person.core_nationality}
+                  {person.birth_nationality !== person.core_nationality && (
+                    <> ({person.birth_nationality})</>
+                  )}
+                </span>
+                <button className="icon" title="Show links" onClick={() => toggleExpand(person.id)}>
+                  {expandedIds.has(person.id) ? "▲" : "▼"}
+                </button>
+                {canEdit ? <button className="icon" onClick={() => setEditing({ person })}>✎</button> : <span />}
+                {canDelete ? <button className="icon" onClick={() => setConfirmDelete(person)}>✕</button> : <span />}
+              </div>
+              {expandedIds.has(person.id) && <PersonRow person={person} />}
+            </li>
+          ))}
+        </ul>
+      )}
 
       {confirmDelete && (
         <ConfirmDialog
           message={`Delete "${confirmDelete.name}"?`}
-          onConfirm={() => {
-            remove.mutate(confirmDelete.id);
-            setConfirmDelete(null);
-          }}
+          busy={remove.isPending}
+          onConfirm={() => remove.mutate(confirmDelete.id, { onSettled: () => setConfirmDelete(null) })}
           onCancel={() => setConfirmDelete(null)}
         />
       )}
@@ -208,10 +222,7 @@ export function PeoplePage() {
           <div onClick={(e) => e.stopPropagation()}>
             <PersonForm
               initial={editing === "new" ? undefined : editing.person}
-              onClose={(savedName, savedId) => {
-                setEditing(null);
-                checkAfterSave(people, savedName, savedId);
-              }}
+              onClose={() => setEditing(null)}
             />
           </div>
         </div>

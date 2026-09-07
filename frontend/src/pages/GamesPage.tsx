@@ -3,283 +3,368 @@ import { useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
 import { api } from "../api/client";
-import { useGameGenres, useGamePlatforms, useGamesRanked, usePeople } from "../api/hooks";
-import type { Game, GamePersonRef } from "../api/types";
+import { useEntryMutations, useGameCatalog, useGameGenres, useGamePlatforms, useGuildApi, usePeople, useRankedGames } from "../api/hooks";
+import { gk, rk } from "../api/keys";
+import type { Game, GameRole } from "../api/types";
 import { GAME_ROLES, GAME_ROLE_LABELS } from "../api/types";
+import { CatalogList } from "../components/CatalogList";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { GameForm } from "../components/GameForm";
 import { IgdbImportDialog } from "../components/IgdbImportDialog";
+import { MemberPicker } from "../components/MemberPicker";
+import { SearchFilterBar } from "../components/SearchFilterBar";
 import { SortableList } from "../components/SortableList";
-import { useDupWarning, DupWarningBanner } from "../hooks/useDupWarning";
-import { useExpandAll } from "../hooks/useExpandAll";
-import { useOptimisticDelete } from "../hooks/useOptimisticDelete";
+import { BusyButton, Spinner } from "../components/Spinner";
+import { useCan } from "../guild/GuildProvider";
+import { matchesAny } from "../search/textMatch";
 
 type GameSearchBy = "all" | "title" | "genre" | "platform" | "person";
+const GAME_SEARCH_BY: GameSearchBy[] = ["all", "title", "genre", "platform", "person"];
+type View = "mine" | "catalog";
 
 export function GamesPage() {
   const qc = useQueryClient();
   const navigate = useNavigate();
+  const { guildId, userId: me, base } = useGuildApi();
+  const canCreate = useCan("catalog_create");
+  const canEdit = useCan("catalog_edit");
+  const canDelete = useCan("catalog_delete");
+  const [view, setView] = useState<View>("mine");
   const [editing, setEditing] = useState<{ game: Game } | "new" | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<{ game: Game; rankingsDestroyed: number } | null>(null);
+  const [confirmRemoveFromList, setConfirmRemoveFromList] = useState<Game | null>(null);
   const [showIgdbImport, setShowIgdbImport] = useState(false);
-  const [confirmDelete, setConfirmDelete] = useState<Game | null>(null);
   const [searchQ, setSearchQ] = useState("");
   const [searchBy, setSearchBy] = useState<GameSearchBy>("all");
-  const { dupWarning, clear: clearDup, checkAfterSave } = useDupWarning("game");
+  const [expandedIds, setExpandedIds] = useState<Set<number>>(new Set());
+  const [viewingUser, setViewingUser] = useState(me);
+  const [impactFor, setImpactFor] = useState<number | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
-  const { data: games = [] } = useGamesRanked();
+  const { data: ranked = [], isLoading: rankedLoading } = useRankedGames(viewingUser);
+  const { data: catalog = [], isLoading: catalogLoading } = useGameCatalog();
   const { data: genres = [] } = useGameGenres();
   const { data: platforms = [] } = useGamePlatforms();
   const { data: people = [] } = usePeople();
   const genreMap = Object.fromEntries(genres.map((g) => [g.id, g.name]));
   const platformMap = Object.fromEntries(platforms.map((p) => [p.id, p.name]));
-  const { expandedIds, toggle: toggleExpand, allExpanded, toggleAll } = useExpandAll(games);
+  const entry = useEntryMutations("games");
+  const isMine = viewingUser === me;
 
-  const visibleGames = useMemo(() => {
-    const needle = searchQ.trim().toLowerCase();
-    if (!needle) return games;
+  const rankKey = rk(guildId, me, "games", "ranked");
 
-    const matchingIds = new Set<number>();
-
+  function gameMatches(g: Game, needle: string): boolean {
     if (searchBy === "title" || searchBy === "all") {
-      for (const g of games) {
-        if (g.name.toLowerCase().includes(needle) || g.name_en?.toLowerCase().includes(needle)) matchingIds.add(g.id);
-      }
+      if (matchesAny(needle, g.name, g.name_en)) return true;
     }
-
     if (searchBy === "genre" || searchBy === "all") {
       const matchingGenreIds = new Set(
-        genres
-          .filter((g) =>
-            g.name.toLowerCase().includes(needle) ||
-            g.synonyms?.some((s) => s.toLowerCase().includes(needle))
-          )
-          .map((g) => g.id)
+        genres.filter((gn) => matchesAny(needle, gn.name) || gn.synonyms?.some((s) => s.toLowerCase().includes(needle))).map((gn) => gn.id)
       );
-      for (const g of games) {
-        if (g.genre_ids.some((gid) => matchingGenreIds.has(gid))) matchingIds.add(g.id);
-      }
+      if (g.genre_ids.some((gid) => matchingGenreIds.has(gid))) return true;
     }
-
     if (searchBy === "platform" || searchBy === "all") {
       const matchingPlatformIds = new Set(
-        platforms
-          .filter((p) =>
-            p.name.toLowerCase().includes(needle) ||
-            p.synonyms?.some((s) => s.toLowerCase().includes(needle))
-          )
-          .map((p) => p.id)
+        platforms.filter((p) => matchesAny(needle, p.name) || p.synonyms?.some((s) => s.toLowerCase().includes(needle))).map((p) => p.id)
       );
-      for (const g of games) {
-        if (g.platform_ids.some((pid) => matchingPlatformIds.has(pid))) matchingIds.add(g.id);
-      }
+      if (g.platform_ids.some((pid) => matchingPlatformIds.has(pid))) return true;
     }
-
     if (searchBy === "person" || searchBy === "all") {
       const matchingPersonIds = new Set(
-        people.filter((p) => p.name.toLowerCase().includes(needle) || p.name_en?.toLowerCase().includes(needle)).map((p) => p.id)
+        people.filter((p) => matchesAny(needle, p.name, p.name_en)).map((p) => p.id)
       );
-      for (const g of games) {
-        if (g.persons.some((p) => matchingPersonIds.has(p.id))) matchingIds.add(g.id);
-      }
+      if (g.persons.some((p) => matchingPersonIds.has(p.id))) return true;
     }
+    return false;
+  }
 
-    return games.filter((g) => matchingIds.has(g.id));
-  }, [searchQ, searchBy, games, genres, platforms, people]);
+  const visible = useMemo(() => {
+    const needle = searchQ.trim().toLowerCase();
+    if (!needle) return ranked;
+    return ranked.filter((r) => gameMatches(r.game, needle));
+  }, [searchQ, searchBy, ranked, genres, platforms, people]);
 
   const move = useMutation({
-    mutationFn: (v: { id: number; position: number }) =>
-      api.put(`/games/${v.id}/position`, { position: v.position }),
-    onSettled: () => qc.invalidateQueries({ queryKey: ["games", "ranked"] }),
+    mutationFn: (v: { id: number; position: number }) => api.put(`${base}/games/${v.id}/position`, { position: v.position }),
+    onSettled: () => qc.invalidateQueries({ queryKey: rk(guildId, me, "games") }),
   });
 
-  const remove = useOptimisticDelete<Game>({
-    queryKey: ["games", "ranked"],
-    endpoint: (id) => `/games/${id}`,
-    invalidateKeys: [["games", "ranked"], ["games", "index"]],
+  const adjustHours = useMutation({
+    mutationFn: ({ gameId, hours }: { gameId: number; hours: number | null }) =>
+      api.put(`${base}/games/${gameId}/entry`, { hours_played: hours }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: rk(guildId, me, "games") }),
   });
 
-  // Group persons by role for display
-  function groupPersons(persons: GamePersonRef[]) {
-    const byRole: Record<string, GamePersonRef[]> = {};
-    for (const p of persons) {
-      if (!byRole[p.role]) byRole[p.role] = [];
-      byRole[p.role].push(p);
+  const remove = useMutation({
+    mutationFn: (gameId: number) => api.delete(`${base}/games/${gameId}`),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: gk(guildId, "games") });
+      qc.invalidateQueries({ queryKey: rk(guildId, me, "games") });
+    },
+  });
+
+  async function confirmRemoval(game: Game) {
+    setImpactFor(game.id);
+    setActionError(null);
+    try {
+      const { rankings_destroyed } = await api.get<{ rankings_destroyed: number }>(`${base}/games/${game.id}/impact`);
+      setConfirmDelete({ game, rankingsDestroyed: rankings_destroyed });
+    } catch (e) {
+      setActionError((e as Error).message);
+    } finally {
+      setImpactFor(null);
     }
+  }
+
+  function toggleExpand(id: number) {
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }
+
+  function groupPersons(persons: Game["persons"]) {
+    const byRole: Partial<Record<GameRole, Game["persons"]>> = {};
+    for (const p of persons) (byRole[p.role] ??= []).push(p);
     return byRole;
   }
+
+  function renderGameDetail(g: Game) {
+    if (!expandedIds.has(g.id)) return null;
+    return (
+      <div className="album-detail-dropdown">
+        {g.persons.length > 0 && (() => {
+          const byRole = groupPersons(g.persons);
+          return GAME_ROLES.filter((r) => byRole[r]?.length).map((role) => (
+            <div key={role} className="album-detail-row">
+              <span className="detail-label">{GAME_ROLE_LABELS[role]}</span>
+              <span>
+                {byRole[role]!.map((p, i) => (
+                  <span key={p.id}>
+                    {i > 0 && ", "}
+                    <Link className="plain-link" to={`/g/${guildId}/people/${p.id}`}>
+                      {p.name}{p.name_en && <span style={{ opacity: 0.6 }}> ({p.name_en})</span>}
+                    </Link>
+                  </span>
+                ))}
+              </span>
+            </div>
+          ));
+        })()}
+        {g.genre_ids.length > 0 && (
+          <div className="album-detail-row">
+            <span className="detail-label">Genres</span>
+            <span>
+              {g.genre_ids
+                .filter((id) => genreMap[id])
+                .sort((a, b) => genreMap[a].localeCompare(genreMap[b]))
+                .map((id, i) => (
+                  <span key={id}>
+                    {i > 0 && ", "}
+                    <Link className="plain-link" to={`/g/${guildId}/games/genres/${id}`}>{genreMap[id]}</Link>
+                  </span>
+                ))}
+            </span>
+          </div>
+        )}
+        {g.platform_ids.length > 0 && (
+          <div className="album-detail-row">
+            <span className="detail-label">Platforms</span>
+            <span>
+              {g.platform_ids
+                .filter((id) => platformMap[id])
+                .sort((a, b) => platformMap[a].localeCompare(platformMap[b]))
+                .map((id, i) => (
+                  <span key={id}>{i > 0 && ", "}{platformMap[id]}</span>
+                ))}
+            </span>
+          </div>
+        )}
+        {g.soundtrack_albums.length > 0 && (
+          <div className="album-detail-row">
+            <span className="detail-label">Soundtrack</span>
+            <span>
+              {g.soundtrack_albums.map((a, i) => (
+                <span key={a.id}>
+                  {i > 0 && ", "}
+                  <Link to={`/g/${guildId}/music/albums/${a.id}`}>
+                    {a.name}{a.name_en && <span style={{ opacity: 0.6 }}> ({a.name_en})</span>}
+                  </Link>
+                </span>
+              ))}
+            </span>
+          </div>
+        )}
+        {g.notes && (
+          <div className="album-detail-row">
+            <span className="detail-label">Notes</span>
+            <span>{g.notes}</span>
+          </div>
+        )}
+        {g.persons.length === 0 && !g.notes && g.genre_ids.length === 0 && g.platform_ids.length === 0 && g.soundtrack_albums.length === 0 && (
+          <span style={{ opacity: 0.5 }}>No extra info.</span>
+        )}
+      </div>
+    );
+  }
+
+  const allExpanded = visible.length > 0 && expandedIds.size === visible.length;
+  const sortable = visible.map((r) => ({ ...r.game, position: r.position }));
+
+  const catalogNeedle = searchQ.trim().toLowerCase();
+  const visibleCatalog = useMemo(
+    () => catalog.filter((g) => !catalogNeedle || gameMatches(g, catalogNeedle)),
+    [catalog, catalogNeedle, searchBy, genres, platforms, people],
+  );
 
   return (
     <section>
       <header className="page-head">
         <h1>Games</h1>
         <div style={{ display: "flex", gap: "0.5rem" }}>
-          <button onClick={toggleAll}>
+          <div className="view-toggle">
+            <button className={view === "mine" ? "view-toggle-active" : ""} onClick={() => setView("mine")}>Ranking</button>
+            <button className={view === "catalog" ? "view-toggle-active" : ""} onClick={() => setView("catalog")}>Catalog</button>
+          </div>
+          {view === "mine" && <MemberPicker value={viewingUser} onChange={setViewingUser} />}
+          <button onClick={() => setExpandedIds(allExpanded ? new Set() : new Set(visible.map((r) => r.game.id)))}>
             {allExpanded ? "Collapse all" : "Expand all"}
           </button>
-          <button onClick={() => setEditing("new")}>+ Add</button>
-          <button onClick={() => setShowIgdbImport(true)}>Import from IGDB</button>
+          {canCreate && <button onClick={() => setEditing("new")}>+ Add</button>}
+          {canCreate && <button onClick={() => setShowIgdbImport(true)}>Import from IGDB</button>}
         </div>
       </header>
-
-      {dupWarning && <DupWarningBanner message={dupWarning} onDismiss={clearDup} />}
-
-      <div className="search-bar">
-        <input
-          type="search"
-          placeholder="Search games…"
-          value={searchQ}
-          onChange={(e) => setSearchQ(e.target.value)}
-        />
-        <div className="search-by-chips">
-          {(["all", "title", "genre", "platform", "person"] as GameSearchBy[]).map((opt) => (
-            <button
-              key={opt}
-              className={`chip${searchBy === opt ? " chip-active" : ""}`}
-              onClick={() => setSearchBy(opt)}
-            >
-              {opt.charAt(0).toUpperCase() + opt.slice(1)}
-            </button>
-          ))}
-        </div>
-        {searchQ.trim().length > 0 && (
-          <span className="search-count">{visibleGames.length} result{visibleGames.length !== 1 ? "s" : ""}</span>
-        )}
-      </div>
-
-      <SortableList
-        items={visibleGames}
-        rowClassName="album-row"
-        onReorder={(next) => qc.setQueryData(["games", "ranked"], next)}
-        onMove={(id, position) => move.mutate({ id, position })}
-        disableDrag={searchQ.trim().length > 0}
-        renderDetail={(g) =>
-          expandedIds.has(g.id) ? (
-            <div className="album-detail-dropdown">
-              {g.persons.length > 0 && (() => {
-                const byRole = groupPersons(g.persons);
-                return GAME_ROLES
-                  .filter((r) => byRole[r]?.length)
-                  .map((role) => (
-                    <div key={role} className="album-detail-row">
-                      <span className="detail-label">{GAME_ROLE_LABELS[role]}</span>
-                      <span>
-                        {byRole[role].map((p, i) => (
-                          <span key={p.id}>
-                            {i > 0 && ", "}
-                            <Link className="plain-link" to={`/people/${p.id}`}>
-                              {p.name}{p.name_en && <span style={{ opacity: 0.6 }}> ({p.name_en})</span>}
-                            </Link>
-                          </span>
-                        ))}
-                      </span>
-                    </div>
-                  ));
-              })()}
-              {g.genre_ids.length > 0 && (
-                <div className="album-detail-row">
-                  <span className="detail-label">Genres</span>
-                  <span>
-                    {g.genre_ids
-                      .filter((id) => genreMap[id])
-                      .sort((a, b) => genreMap[a].localeCompare(genreMap[b]))
-                      .map((id, i) => (
-                        <span key={id}>
-                          {i > 0 && ", "}
-                          <Link className="plain-link" to={`/games/genres/${id}`}>{genreMap[id]}</Link>
-                        </span>
-                      ))}
-                  </span>
-                </div>
-              )}
-              {g.platform_ids.length > 0 && (
-                <div className="album-detail-row">
-                  <span className="detail-label">Platforms</span>
-                  <span>
-                    {g.platform_ids
-                      .filter((id) => platformMap[id])
-                      .sort((a, b) => platformMap[a].localeCompare(platformMap[b]))
-                      .map((id, i) => (
-                        <span key={id}>
-                          {i > 0 && ", "}
-                          <Link className="plain-link" to={`/games/platforms/${id}`}>{platformMap[id]}</Link>
-                        </span>
-                      ))}
-                  </span>
-                </div>
-              )}
-              {g.soundtrack_albums.length > 0 && (
-                <div className="album-detail-row">
-                  <span className="detail-label">Soundtrack</span>
-                  <span>
-                    {g.soundtrack_albums.map((a, i) => (
-                      <span key={a.id}>
-                        {i > 0 && ", "}
-                        <Link to={`/music/albums/${a.id}`}>
-                          {a.name}{a.name_en && <span style={{ opacity: 0.6 }}> ({a.name_en})</span>}
-                        </Link>
-                      </span>
-                    ))}
-                  </span>
-                </div>
-              )}
-              {g.play_link && (
-                <div className="album-detail-row">
-                  <span className="detail-label">Play</span>
-                  <a href={g.play_link} target="_blank" rel="noreferrer">{g.play_link}</a>
-                </div>
-              )}
-              {g.notes && (
-                <div className="album-detail-row">
-                  <span className="detail-label">Notes</span>
-                  <span>{g.notes}</span>
-                </div>
-              )}
-              {g.persons.length === 0 && !g.play_link && !g.notes && g.genre_ids.length === 0 &&
-                g.platform_ids.length === 0 && g.soundtrack_albums.length === 0 && (
-                <span style={{ opacity: 0.5 }}>No extra info.</span>
-              )}
-            </div>
-          ) : null
+      {actionError && <p className="err">{actionError}</p>}
+      <SearchFilterBar
+        value={searchQ}
+        onChange={setSearchQ}
+        searchBy={searchBy}
+        onSearchByChange={setSearchBy}
+        options={GAME_SEARCH_BY}
+        count={
+          view === "mine"
+            ? (rankedLoading ? <Spinner size="sm" /> : (searchQ.trim().length > 0 ? `${visible.length} result${visible.length !== 1 ? "s" : ""}` : ""))
+            : (catalogLoading ? <Spinner size="sm" /> : `${visibleCatalog.length} in catalog`)
         }
-        render={(g) => (
-          <>
-            <span className="name">
-              <Link to={`/games/${g.id}`} className="plain-link">
-                {g.name}{g.name_en && <span style={{ opacity: 0.6 }}> ({g.name_en})</span>}
-              </Link>
-              {g.play_link && (
-                <> <a href={g.play_link} target="_blank" rel="noreferrer" style={{ textDecoration: "none", fontStyle: "italic", fontSize: "0.85em", opacity: 0.7, color: "inherit" }}>(link)</a></>
-              )}
-            </span>
-            <span className="meta">
-              {g.release_year}
-              {g.platform_ids.length > 0 && (
-                <> · {g.platform_ids.map((id) => platformMap[id]).filter(Boolean).join(", ")}</>
-              )}
-              {g.persons.filter((p) => p.role === "director").length > 0 && (
-                <> · {g.persons.filter((p) => p.role === "director").map((p) => p.name).join(", ")}</>
-              )}
-            </span>
-            {g.hours_played != null && (
-              <span className="listens-count">{g.hours_played}h</span>
-            )}
-            <button className="icon" title="Show details" onClick={() => toggleExpand(g.id)}>
-              {expandedIds.has(g.id) ? "▲" : "▼"}
-            </button>
-            <button className="icon" onClick={() => setEditing({ game: g })}>✎</button>
-            <button className="icon" onClick={() => setConfirmDelete(g)}>✕</button>
-          </>
-        )}
       />
+
+      {view === "mine" && (
+      <SortableList
+        items={sortable}
+        loading={rankedLoading}
+        loadingLabel="Loading ranking…"
+        empty={
+          <p className="rank-empty">
+            {ranked.length > 0 ? "No games match your search." : isMine ? "No games ranked yet." : "This member hasn't ranked any games yet."}
+          </p>
+        }
+        pendingId={move.isPending ? move.variables?.id ?? null : null}
+        rowClassName="album-row"
+        disableDrag={!isMine || searchQ.trim().length > 0}
+        onReorder={(next) => qc.setQueryData(rankKey, next.map((g, i) => ({ ...ranked[i], position: i + 1, game: g })))}
+        onMove={(id, position) => move.mutate({ id, position })}
+        renderDetail={renderGameDetail}
+        render={(g) => {
+          const r = ranked.find((x) => x.game.id === g.id)!;
+          return (
+            <>
+              <span className="name">
+                <Link to={`/g/${guildId}/games/${g.id}`} className="plain-link">
+                  {g.name}{g.name_en && <span style={{ opacity: 0.6 }}> ({g.name_en})</span>}
+                </Link>
+              </span>
+              <span className="meta">
+                {g.release_year}
+                {r.hours_played != null && <> · {r.hours_played}h</>}
+              </span>
+              {isMine ? (() => {
+                const counting = adjustHours.isPending && adjustHours.variables?.gameId === g.id;
+                return (
+                  <span className="listens-ctrl">
+                    <button
+                      className="icon"
+                      title="Subtract half an hour"
+                      disabled={r.hours_played == null || Number(r.hours_played) <= 0 || counting}
+                      onClick={() => adjustHours.mutate({ gameId: g.id, hours: Math.max(0, Number(r.hours_played ?? 0) - 0.5) })}
+                    >−</button>
+                    <span className="listens-count">{counting ? <Spinner size="sm" /> : `${r.hours_played ?? "—"}h`}</span>
+                    <button
+                      className="icon"
+                      title="Add half an hour"
+                      disabled={counting}
+                      onClick={() => adjustHours.mutate({ gameId: g.id, hours: Number(r.hours_played ?? 0) + 0.5 })}
+                    >+</button>
+                  </span>
+                );
+              })() : <span />}
+              <button className="icon" title="Show details" onClick={() => toggleExpand(g.id)}>
+                {expandedIds.has(g.id) ? "▲" : "▼"}
+              </button>
+              {isMine
+                ? <button className="icon" title="Remove from my ranking" onClick={() => setConfirmRemoveFromList(g)}>✕ list</button>
+                : <span />}
+              {canEdit ? <button className="icon" onClick={() => setEditing({ game: g })}>✎</button> : <span />}
+              {canDelete ? (
+                <BusyButton className="icon" title="Delete from catalog" busy={impactFor === g.id} busyLabel={null}
+                            onClick={() => void confirmRemoval(g)}>✕</BusyButton>
+              ) : <span />}
+            </>
+          );
+        }}
+      />
+      )}
+
+      {view === "catalog" && (
+        <CatalogList
+          items={visibleCatalog}
+          loading={catalogLoading}
+          empty={<p><small>{catalog.length > 0 ? "No games match your search." : "No games in this guild's catalog yet."}</small></p>}
+          rowClassName="catalog-row"
+          renderDetail={renderGameDetail}
+          render={(g) => (
+            <>
+              <span className="name">
+                <Link to={`/g/${guildId}/games/${g.id}`} className="plain-link">
+                  {g.name}{g.name_en && <span style={{ opacity: 0.6 }}> ({g.name_en})</span>}
+                </Link>
+              </span>
+              <span className="meta">{g.release_year}</span>
+              {g.in_my_list
+                ? <span className="meta">in your list</span>
+                : (
+                  <BusyButton busy={entry.add.isPending && entry.add.variables === g.id} busyLabel="Adding…"
+                              onClick={() => entry.add.mutate(g.id)}>+ Add to my list</BusyButton>
+                )}
+              <button className="icon" title="Show details" onClick={() => toggleExpand(g.id)}>
+                {expandedIds.has(g.id) ? "▲" : "▼"}
+              </button>
+              {canEdit ? <button className="icon" onClick={() => setEditing({ game: g })}>✎</button> : <span />}
+              {canDelete ? (
+                <BusyButton className="icon" title="Delete from catalog" busy={impactFor === g.id} busyLabel={null}
+                            onClick={() => void confirmRemoval(g)}>✕</BusyButton>
+              ) : <span />}
+            </>
+          )}
+        />
+      )}
 
       {confirmDelete && (
         <ConfirmDialog
-          message={`Delete "${confirmDelete.name}"?`}
-          onConfirm={() => {
-            remove.mutate(confirmDelete.id);
-            setConfirmDelete(null);
-          }}
+          message={`Delete "${confirmDelete.game.name}" from the guild catalog? ${confirmDelete.rankingsDestroyed} member ranking(s) will be destroyed.`}
+          busy={remove.isPending}
+          onConfirm={() => remove.mutate(confirmDelete.game.id, { onSettled: () => setConfirmDelete(null) })}
           onCancel={() => setConfirmDelete(null)}
+        />
+      )}
+
+      {confirmRemoveFromList && (
+        <ConfirmDialog
+          message={`Remove "${confirmRemoveFromList.name}" from your list? Your hours played and personal notes for it will be lost.`}
+          confirmLabel="Remove"
+          busy={entry.remove.isPending}
+          onConfirm={() => entry.remove.mutate(confirmRemoveFromList.id, { onSettled: () => setConfirmRemoveFromList(null) })}
+          onCancel={() => setConfirmRemoveFromList(null)}
         />
       )}
 
@@ -288,10 +373,7 @@ export function GamesPage() {
           <div onClick={(e) => e.stopPropagation()}>
             <GameForm
               initial={editing === "new" ? undefined : editing.game}
-              onClose={(savedName, savedId) => {
-                setEditing(null);
-                checkAfterSave(games, savedName, savedId);
-              }}
+              onClose={() => setEditing(null)}
             />
           </div>
         </div>
@@ -302,7 +384,7 @@ export function GamesPage() {
           <div onClick={(e) => e.stopPropagation()}>
             <IgdbImportDialog
               onClose={() => setShowIgdbImport(false)}
-              onSuccess={(gameId) => navigate(`/games/${gameId}`)}
+              onSuccess={(gameId) => navigate(`/g/${guildId}/games/${gameId}`)}
             />
           </div>
         </div>

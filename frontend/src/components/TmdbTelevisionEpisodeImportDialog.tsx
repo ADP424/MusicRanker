@@ -1,8 +1,13 @@
+import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useState } from "react";
-import { useTmdbTvEpisodeImport, useTmdbTvEpisodeLookup } from "../api/hooks";
+import { api } from "../api/client";
+import { useGuildApi, useTmdbTvEpisodeImport, useTmdbTvEpisodeLookup } from "../api/hooks";
+import { rk } from "../api/keys";
 import type {
   CastRole, TelevisionEpisode, TelevisionShow, TmdbTvEpisodeLookup, TmdbTvImportPersonIn, TmdbTvPerson,
 } from "../api/types";
+import { useCan } from "../guild/GuildProvider";
+import { BusyButton, LoadingState } from "./Spinner";
 import { TmdbPersonRow, tmdbCreditDescription, type TmdbRowPerson } from "./TmdbPersonRow";
 
 const ACTOR_ROLES: CastRole[] = ["lead_actor", "actor", "cameo_actor"];
@@ -21,6 +26,7 @@ function toRow(p: TmdbTvPerson): TmdbRowPerson {
       person_id: m.person_id,
       person_name: m.person_name,
       has_entries: m.has_screen_entries,
+      filmography_overlap: m.filmography_overlap,
       artist_summary: m.artist_summary,
       game_summary: m.game_summary,
     })),
@@ -63,8 +69,11 @@ export function TmdbTelevisionEpisodeImportDialog({
   const [resolutions, setResolutions] = useState<Record<number, number | null>>({});
   const [inheritShowPeople, setInheritShowPeople] = useState(false);
   const [updateFields, setUpdateFields] = useState(false);
-  const [watches, setWatches] = useState(String(episode?.watches ?? 1));
+  const [addToList, setAddToList] = useState(true);
 
+  const qc = useQueryClient();
+  const { guildId, userId, base } = useGuildApi();
+  const canRank = useCan("rank");
   const lookupMut = useTmdbTvEpisodeLookup();
   const importMut = useTmdbTvEpisodeImport();
 
@@ -90,7 +99,7 @@ export function TmdbTelevisionEpisodeImportDialog({
           data.episode.people.forEach((p, i) => {
             c.add(i);
             r[i] = p.suggested_role;
-            const v = p.db_matches.find((m) => m.has_screen_entries);
+            const v = p.db_matches.find((m) => m.filmography_overlap);
             if (v) res[p.tmdb_id] = v.person_id;
           });
           setChecked(c);
@@ -135,8 +144,6 @@ export function TmdbTelevisionEpisodeImportDialog({
           name_en: null,
           runtime_minutes: e.runtime,
           release_year: e.release_year,
-          watches: Math.max(1, parseInt(watches || "1", 10)),
-          watch_link: null,
           notes: null,
           people,
           inherit_show_people: inheritShowPeople,
@@ -144,16 +151,24 @@ export function TmdbTelevisionEpisodeImportDialog({
         },
       },
       {
-        onSuccess(result) {
+        async onSuccess(result) {
+          if (!episode && addToList && canRank) {
+            await api.put(`${base}/television/episodes/${result.episode_id}/entry`, {});
+            qc.invalidateQueries({ queryKey: rk(guildId, userId, "television", "shows", show.id, "episodes") });
+          }
           onSuccess?.(result.episode_id);
           onClose();
         },
         onError: (err) => setError(err.message),
       },
     );
-  }, [lookup, checked, roles, resolutions, inheritShowPeople, updateFields, watches, show.id, episode, importMut, onClose, onSuccess]);
+  }, [
+    lookup, checked, roles, resolutions, inheritShowPeople, updateFields, show.id, episode, importMut, onClose,
+    onSuccess, addToList, canRank, base, qc, guildId, userId,
+  ]);
 
   const notFound = lookupMut.isError && !lookup;
+  const importing = importMut.isPending || importMut.isSuccess;
 
   return (
     <div className="modal tmdb-import-panel">
@@ -184,11 +199,10 @@ export function TmdbTelevisionEpisodeImportDialog({
           Episode #
           <input value={epNumber} onChange={(e) => setEpNumber(e.target.value)} type="number" min={1} placeholder="auto" />
         </label>
-        <button type="submit" disabled={lookupMut.isPending}>
-          {lookupMut.isPending ? "Loading…" : lookup ? "Reload" : "Find episode"}
-        </button>
+        <BusyButton type="submit" busy={lookupMut.isPending} busyLabel={lookup ? "Reloading…" : "Looking up…"}>{lookup ? "Reload" : "Find episode"}</BusyButton>
         {!lookup && <button type="button" onClick={onClose}>Cancel</button>}
       </form>
+      {lookupMut.isPending && !lookup && <LoadingState label="Looking up the episode on TMDB…" />}
       {notFound && (
         <p className="tip-warn">
           Couldn't find that episode by title — enter its season and episode number above.
@@ -243,15 +257,10 @@ export function TmdbTelevisionEpisodeImportDialog({
               <input type="checkbox" checked={inheritShowPeople} onChange={(e) => setInheritShowPeople(e.target.checked)} />
               Also inherit the show's people (creator excluded)
             </label>
-            {episode ? (
+            {episode && (
               <label className={`chip${updateFields ? " chip-active" : ""}`} style={{ cursor: "pointer" }}>
                 <input type="checkbox" checked={updateFields} onChange={(e) => setUpdateFields(e.target.checked)} />
                 Also overwrite title / runtime / year from TMDB
-              </label>
-            ) : (
-              <label>
-                Watches
-                <input type="number" min={1} value={watches} onChange={(e) => setWatches(e.target.value)} />
               </label>
             )}
             <p className="meta">
@@ -261,10 +270,16 @@ export function TmdbTelevisionEpisodeImportDialog({
           </section>
 
           <footer className="tip-footer">
-            <button type="button" onClick={onClose}>Cancel</button>
-            <button type="button" className="tip-primary" disabled={importMut.isPending} onClick={handleImport}>
-              {importMut.isPending ? "Importing…" : `Import ${checked.size} credit${checked.size !== 1 ? "s" : ""}`}
-            </button>
+            {!episode && canRank && (
+              <label className="checkbox-label tip-add-to-list">
+                <input type="checkbox" checked={addToList} onChange={(e) => setAddToList(e.target.checked)} />
+                Add to my list
+              </label>
+            )}
+            <button type="button" onClick={onClose} disabled={importing}>Cancel</button>
+            <BusyButton type="button" className="tip-primary" busy={importing} busyLabel="Importing…" onClick={handleImport}>
+              Import {checked.size} credit{checked.size !== 1 ? "s" : ""}
+            </BusyButton>
           </footer>
         </>
       )}

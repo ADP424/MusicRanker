@@ -28,6 +28,8 @@ from urllib.parse import urlencode
 import requests
 from dotenv import load_dotenv
 
+from .lanes import TMDB_LANE
+
 load_dotenv()
 
 TMDB_BASE = "https://api.themoviedb.org/3"
@@ -268,7 +270,8 @@ class TmdbClient:
         for attempt in range(4):
             _BUCKET.acquire()
             try:
-                r = _SESSION.get(f"{TMDB_BASE}{path}", params=params, headers=headers, timeout=20)
+                with TMDB_LANE.slot():
+                    r = _SESSION.get(f"{TMDB_BASE}{path}", params=params, headers=headers, timeout=20)
             except requests.RequestException as exc:
                 last_exc = exc
                 time.sleep(1.5**attempt)
