@@ -7,7 +7,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .album_movie_soundtrack import album_movie_soundtrack
 from .base import Base
-from .junctions import movie_genres_junction
+from .junctions import book_movie_adaptations, movie_genres_junction
 from .mixins import Audited, GuildScoped, NormalizedNames, guild_unique
 
 
@@ -29,4 +29,5 @@ class Movie(GuildScoped, Audited, NormalizedNames, Base):
                                 foreign_keys="MoviePerson.movie_id")
     genres = relationship("Genre", secondary=movie_genres_junction)
     soundtrack_albums = relationship("Album", secondary=album_movie_soundtrack, back_populates="soundtrack_movies")
+    source_books = relationship("Book", secondary=book_movie_adaptations, back_populates="adaptation_movies")
     links = relationship("MovieLink", cascade="all, delete-orphan", order_by="MovieLink.position")

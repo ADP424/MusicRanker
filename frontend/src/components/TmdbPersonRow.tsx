@@ -51,6 +51,7 @@ export function TmdbPersonRow({
   role,
   resolution,
   roleOptions = TMDB_ACTOR_ROLES,
+  note,
   onToggle,
   onRoleChange,
   onResolve,
@@ -62,6 +63,8 @@ export function TmdbPersonRow({
   resolution: number | null | undefined;
   /** Actor-role choices; crew rows are locked to their suggestion. */
   roleOptions?: CastRole[];
+  /** Highlighted context line, e.g. "Already on the show as Lead Actor". */
+  note?: string;
   onToggle: () => void;
   onRoleChange: (r: CastRole) => void;
   onResolve: (personId: number | null) => void;
@@ -110,6 +113,7 @@ export function TmdbPersonRow({
         )}
 
         <div className="tip-suggestion">💡 {person.suggestion_reason}</div>
+        {note && <div className="tip-match tip-match--ok">📌 {note}</div>}
 
         {/* Verified match, not overridden — compact green badge with override button */}
         {verifiedMatch && !isOverridden && (

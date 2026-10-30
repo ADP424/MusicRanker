@@ -66,6 +66,7 @@ def _out(m: Movie, mine: set[int]) -> MovieOut:
     ]
     out.genre_ids = [g.id for g in m.genres]
     out.soundtrack_albums = [NamedRef(id=a.id, name=a.name, name_en=a.name_en) for a in m.soundtrack_albums]
+    out.source_books = [NamedRef(id=b.id, name=b.name, name_en=b.name_en) for b in m.source_books]
     out.in_my_list = m.id in mine
     return out
 

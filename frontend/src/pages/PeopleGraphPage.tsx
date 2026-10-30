@@ -2,53 +2,120 @@ import * as d3 from "d3-force";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { usePersonGraph, useGuildApi } from "../api/hooks";
-import type { CastRole, GraphPerson } from "../api/types";
-import { CAST_ROLE_LABELS, CAST_ROLES } from "../api/types";
+import type { GraphHub, GraphHubKind, GraphPerson } from "../api/types";
+import {
+  BAND_ROLE_LABELS, BAND_ROLES, BOOK_ROLE_LABELS, BOOK_ROLES, CAST_ROLE_LABELS, GAME_ROLE_LABELS, GAME_ROLES, MOVIE_ROLES,
+} from "../api/types";
 import { LoadingState } from "../components/Spinner";
 
 // ─── Constants ─────────────────────────────────────────────────────────────
 
 const PERSON_R = 18;
-const HUB_R = 12; // movie/artist hub nodes
+const HUB_R = 12; // artist/album/book/movie/game/show/episode hub nodes
 const PERSON_COLOR = "#6b8cba";
-const MOVIE_COLOR = "#c47c3e";
-const ARTIST_COLOR = "#6ba06b";
 const EDGE_COLOR_DEFAULT = "rgba(150,150,150,0.18)";
 const EDGE_COLOR_HL = "rgba(150,150,150,0.75)";
 const EDGE_COLOR_DIM = "rgba(150,150,150,0.05)";
 
+// A filter group is one vertical; TV covers both shows and episodes.
+type Group = "music" | "books" | "movies" | "games" | "television";
+
+interface HubConfig {
+  label: string;
+  color: string;
+  group: Group;
+  path: (hub: GraphHub) => string; // relative to /g/:guildId
+}
+
+const HUBS: Record<GraphHubKind, HubConfig> = {
+  artist: { label: "Artist", color: "#6ba06b", group: "music", path: (h) => `music/artists/${h.id}` },
+  album: { label: "Album", color: "#a3c46b", group: "music", path: (h) => `music/albums/${h.id}` },
+  book: { label: "Book", color: "#b5626b", group: "books", path: (h) => `books/${h.id}` },
+  movie: { label: "Movie", color: "#c47c3e", group: "movies", path: (h) => `movies/${h.id}` },
+  game: { label: "Game", color: "#9b6bc4", group: "games", path: (h) => `games/${h.id}` },
+  show: { label: "TV show", color: "#3fa3a3", group: "television", path: (h) => `television/shows/${h.id}` },
+  episode: { label: "TV episode", color: "#b89a3a", group: "television", path: (h) => `television/episodes/${h.id}` },
+};
+const HUB_KINDS = Object.keys(HUBS) as GraphHubKind[];
+
+const ALL_CAST_LABELS: Record<string, string> = CAST_ROLE_LABELS;
+
+interface GroupConfig {
+  label: string; // filter checkbox label
+  short: string; // search pill label
+  color: string;
+  kinds: GraphHubKind[];
+  roles: Array<[string, string]>; // [role, label], in display order
+}
+
+const GROUPS: Record<Group, GroupConfig> = {
+  music: {
+    label: "Music people", short: "Music", color: HUBS.artist.color, kinds: ["artist"],
+    roles: BAND_ROLES.map((r) => [r, BAND_ROLE_LABELS[r]]),
+  },
+  books: {
+    label: "Book people", short: "Books", color: HUBS.book.color, kinds: ["book"],
+    roles: BOOK_ROLES.map((r) => [r, BOOK_ROLE_LABELS[r]]),
+  },
+  movies: {
+    label: "Movie people", short: "Movies", color: HUBS.movie.color, kinds: ["movie"],
+    roles: MOVIE_ROLES.map((r) => [r, CAST_ROLE_LABELS[r]]),
+  },
+  games: {
+    label: "Game people", short: "Games", color: HUBS.game.color, kinds: ["game"],
+    roles: GAME_ROLES.map((r) => [r, GAME_ROLE_LABELS[r]]),
+  },
+  television: {
+    label: "TV people", short: "TV", color: HUBS.show.color, kinds: ["show", "episode"],
+    roles: ["creator", "director", "composer", "lead_actor", "actor", "cameo_actor"].map((r) => [r, ALL_CAST_LABELS[r]]),
+  },
+};
+const GROUP_KEYS = Object.keys(GROUPS) as Group[];
+
+function roleLabel(kind: GraphHubKind, role: string): string {
+  return GROUPS[HUBS[kind].group].roles.find(([r]) => r === role)?.[1] ?? role;
+}
+
+const personUid = (id: number) => `p-${id}`;
+const hubUid = (kind: GraphHubKind, id: number) => `${kind}-${id}`;
+const personLabel = (p: GraphPerson) => (p.name_en ? `${p.name} (${p.name_en})` : p.name);
+const hubLabel = (h: GraphHub) => (h.kind === "episode" && h.show_name ? `${h.show_name} — ${h.name}` : h.name);
+
 // ─── Filters ───────────────────────────────────────────────────────────────
 
-interface Filters {
-  moviePerson: boolean;
-  movieRoles: Set<CastRole>;
-  musicArtist: boolean;
+type Filters = Record<Group, { on: boolean; roles: Set<string> }>;
+
+const EMPTY_FILTERS: Filters = {
+  music: { on: false, roles: new Set() },
+  books: { on: false, roles: new Set() },
+  movies: { on: false, roles: new Set() },
+  games: { on: false, roles: new Set() },
+  television: { on: false, roles: new Set() },
+};
+
+function personGroupRoles(person: GraphPerson, group: Group): string[] {
+  return GROUPS[group].kinds.flatMap((k) => person.roles[k] ?? []);
 }
 
 function personPassesFilter(person: GraphPerson, filters: Filters): boolean {
-  const hasMovies = person.movie_roles.length > 0;
-  const hasMusic = person.artist_ids.length > 0;
-
-  if (!filters.moviePerson && !filters.musicArtist) return true;
-
-  if (filters.moviePerson && hasMovies) {
-    if (filters.movieRoles.size > 0) {
-      if (person.movie_roles.some((r) => filters.movieRoles.has(r))) return true;
-    } else {
-      return true;
-    }
-  }
-  if (filters.musicArtist && hasMusic) return true;
-
-  return false;
+  const active = GROUP_KEYS.filter((g) => filters[g].on);
+  if (active.length === 0) return true;
+  return active.some((g) => {
+    const roles = personGroupRoles(person, g);
+    if (roles.length === 0) return false;
+    const wanted = filters[g].roles;
+    return wanted.size === 0 || roles.some((r) => wanted.has(r));
+  });
 }
 
 // ─── D3 node/link types ────────────────────────────────────────────────────
 
+type NodeKind = "person" | GraphHubKind;
+
 interface SimNode extends d3.SimulationNodeDatum {
-  uid: string; // "p-{id}" | "m-{id}" | "a-{id}"
+  uid: string; // "p-{id}" | "{hubKind}-{id}"
   label: string;
-  kind: "person" | "movie" | "artist";
+  kind: NodeKind;
   id_: number;
 }
 
@@ -57,14 +124,16 @@ interface SimLink extends d3.SimulationLinkDatum<SimNode> {
   target: SimNode;
 }
 
+const nodeColor = (kind: NodeKind) => (kind === "person" ? PERSON_COLOR : HUBS[kind].color);
+
 // ─── Search result type ───────────────────────────────────────────────────
 
-type SearchKind = "all" | "person" | "movie" | "artist";
+type SearchKind = "all" | "person" | Group;
 
 interface SearchResult {
   uid: string;
   label: string;
-  kind: "person" | "movie" | "artist";
+  kind: NodeKind;
   id_: number;
 }
 
@@ -101,38 +170,31 @@ export function PeopleGraphPage() {
   const [, forceRedraw] = useState(0);
 
   // Filters
-  const [filterMoviePerson, setFilterMoviePerson] = useState(false);
-  const [filterMovieRoles, setFilterMovieRoles] = useState<Set<CastRole>>(new Set());
-  const [filterMusicArtist, setFilterMusicArtist] = useState(false);
+  const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
 
   // Search
   const [searchQuery, setSearchQuery] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchKind, setSearchKind] = useState<SearchKind>("all");
 
-  function toggleRole(role: CastRole) {
-    setFilterMovieRoles((prev) => {
-      const next = new Set(prev);
-      if (next.has(role)) next.delete(role); else next.add(role);
-      return next;
-    });
+  function setGroupOn(group: Group, on: boolean) {
+    setFilters((prev) => ({ ...prev, [group]: { ...prev[group], on } }));
   }
 
-  const filters: Filters = {
-    moviePerson: filterMoviePerson,
-    movieRoles: filterMovieRoles,
-    musicArtist: filterMusicArtist,
-  };
+  function setGroupRoles(group: Group, roles: Set<string>) {
+    setFilters((prev) => ({ ...prev, [group]: { ...prev[group], roles } }));
+  }
+
+  function toggleRole(group: Group, role: string) {
+    const next = new Set(filters[group].roles);
+    if (next.has(role)) next.delete(role); else next.add(role);
+    setGroupRoles(group, next);
+  }
 
   // Derived lookup maps
-  const movieById = useMemo(() => {
-    if (!data) return new Map<number, string>();
-    return new Map(data.movies.map((m) => [m.id, m.name]));
-  }, [data]);
-
-  const artistById = useMemo(() => {
-    if (!data) return new Map<number, string>();
-    return new Map(data.artists.map((a) => [a.id, a.name]));
+  const hubByUid = useMemo(() => {
+    if (!data) return new Map<string, GraphHub>();
+    return new Map(data.hubs.map((h) => [hubUid(h.kind, h.id), h]));
   }, [data]);
 
   const personById = useMemo(() => {
@@ -144,73 +206,53 @@ export function PeopleGraphPage() {
   const filteredPersons = useMemo(() => {
     if (!data) return [];
     return data.persons.filter((p) => personPassesFilter(p, filters));
-  }, [data, filterMoviePerson, filterMovieRoles, filterMusicArtist]);
+  }, [data, filters]);
 
   const filteredPersonUids = useMemo(
-    () => new Set(filteredPersons.map((p) => `p-${p.id}`)),
+    () => new Set(filteredPersons.map((p) => personUid(p.id))),
     [filteredPersons],
   );
 
-  // Build bipartite sim nodes + links from filtered data
+  // Build sim nodes + links from filtered data. Every hub with at least one
+  // visible person shows up, even if it doesn't connect two people; albums
+  // hang off their visible artists rather than linking to people directly.
   const { simNodes, simLinks } = useMemo(() => {
     if (!data) return { simNodes: [], simLinks: [] };
 
     const nodeMap = new Map<string, SimNode>();
 
     for (const p of filteredPersons) {
-      const uid = `p-${p.id}`;
-      nodeMap.set(uid, { uid, label: p.name_en ? `${p.name} (${p.name_en})` : p.name, kind: "person", id_: p.id });
+      const uid = personUid(p.id);
+      nodeMap.set(uid, { uid, label: personLabel(p), kind: "person", id_: p.id });
     }
 
-    const links: Array<{ sourceUid: string; targetUid: string }> = [];
+    function hubNode(kind: GraphHubKind, id: number): SimNode {
+      const uid = hubUid(kind, id);
+      let node = nodeMap.get(uid);
+      if (!node) {
+        const hub = hubByUid.get(uid);
+        node = { uid, label: hub ? hubLabel(hub) : String(id), kind, id_: id };
+        nodeMap.set(uid, node);
+      }
+      return node;
+    }
+
+    const simLinks: SimLink[] = [];
 
     for (const edge of data.edges) {
-      const personUid = `p-${edge.person_id}`;
-      if (!filteredPersonUids.has(personUid)) continue;
-
-      const hubUid =
-        edge.target_type === "movie" ? `m-${edge.target_id}` : `a-${edge.target_id}`;
-
-      if (!nodeMap.has(hubUid)) {
-        const label =
-          edge.target_type === "movie"
-            ? (movieById.get(edge.target_id) ?? String(edge.target_id))
-            : (artistById.get(edge.target_id) ?? String(edge.target_id));
-        nodeMap.set(hubUid, {
-          uid: hubUid,
-          label,
-          kind: edge.target_type === "movie" ? "movie" : "artist",
-          id_: edge.target_id,
-        });
-      }
-
-      links.push({ sourceUid: personUid, targetUid: hubUid });
+      const pUid = personUid(edge.person_id);
+      if (!filteredPersonUids.has(pUid)) continue;
+      simLinks.push({ source: nodeMap.get(pUid)!, target: hubNode(edge.kind, edge.target_id) });
     }
 
-    // Prune hub nodes connected to only 1 filtered person
-    const hubDegree = new Map<string, number>();
-    for (const { targetUid } of links) {
-      if (!targetUid.startsWith("p-")) {
-        hubDegree.set(targetUid, (hubDegree.get(targetUid) ?? 0) + 1);
-      }
-    }
-    for (const [uid, deg] of hubDegree) {
-      if (deg < 2) nodeMap.delete(uid);
+    for (const { album_id, artist_id } of data.album_artists) {
+      const artist = nodeMap.get(hubUid("artist", artist_id));
+      if (!artist) continue; // none of the artist's people are visible
+      simLinks.push({ source: artist, target: hubNode("album", album_id) });
     }
 
-    const filteredLinks = links.filter(
-      ({ sourceUid, targetUid }) => nodeMap.has(sourceUid) && nodeMap.has(targetUid),
-    );
-
-    const simNodes = Array.from(nodeMap.values());
-    const nodeByUid = new Map(simNodes.map((n) => [n.uid, n]));
-    const simLinks: SimLink[] = filteredLinks.map(({ sourceUid, targetUid }) => ({
-      source: nodeByUid.get(sourceUid)!,
-      target: nodeByUid.get(targetUid)!,
-    }));
-
-    return { simNodes, simLinks };
-  }, [filteredPersons, filteredPersonUids, data, movieById, artistById]);
+    return { simNodes: Array.from(nodeMap.values()), simLinks };
+  }, [filteredPersons, filteredPersonUids, data, hubByUid]);
 
   // ─── D3 simulation ──────────────────────────────────────────────────────
 
@@ -265,8 +307,7 @@ export function PeopleGraphPage() {
 
       ctx.globalAlpha = isDimmed ? 0.15 : 1;
 
-      const baseColor =
-        node.kind === "person" ? PERSON_COLOR : node.kind === "movie" ? MOVIE_COLOR : ARTIST_COLOR;
+      const baseColor = nodeColor(node.kind);
 
       ctx.beginPath();
       ctx.arc(nx, ny, r, 0, Math.PI * 2);
@@ -472,20 +513,20 @@ export function PeopleGraphPage() {
 
   // ─── Derived data ────────────────────────────────────────────────────────
 
+  // Roles that actually occur per group, so the filter only offers useful ones
   const existingRoles = useMemo(() => {
-    if (!data) return new Set<CastRole>();
-    const roles = new Set<CastRole>();
-    for (const p of data.persons) for (const r of p.movie_roles) roles.add(r as CastRole);
-    return roles;
+    const out = Object.fromEntries(GROUP_KEYS.map((g) => [g, new Set<string>()])) as Record<Group, Set<string>>;
+    if (!data) return out;
+    for (const p of data.persons) for (const g of GROUP_KEYS) for (const r of personGroupRoles(p, g)) out[g].add(r);
+    return out;
   }, [data]);
 
-  // All searchable items across all three kinds
+  // All searchable items: people plus every hub
   const searchPool = useMemo((): SearchResult[] => {
     if (!data) return [];
     const results: SearchResult[] = [];
-    for (const p of data.persons) results.push({ uid: `p-${p.id}`, label: p.name_en ? `${p.name} (${p.name_en})` : p.name, kind: "person", id_: p.id });
-    for (const m of data.movies) results.push({ uid: `m-${m.id}`, label: m.name, kind: "movie", id_: m.id });
-    for (const a of data.artists) results.push({ uid: `a-${a.id}`, label: a.name, kind: "artist", id_: a.id });
+    for (const p of data.persons) results.push({ uid: personUid(p.id), label: personLabel(p), kind: "person", id_: p.id });
+    for (const h of data.hubs) results.push({ uid: hubUid(h.kind, h.id), label: hubLabel(h), kind: h.kind, id_: h.id });
     return results;
   }, [data]);
 
@@ -494,7 +535,8 @@ export function PeopleGraphPage() {
     if (!q) return [];
     return searchPool
       .filter((r) => {
-        if (searchKind !== "all" && r.kind !== searchKind) return false;
+        if (searchKind === "person" && r.kind !== "person") return false;
+        if (searchKind !== "all" && searchKind !== "person" && (r.kind === "person" || HUBS[r.kind].group !== searchKind)) return false;
         return r.label.toLowerCase().includes(q);
       })
       .slice(0, 10);
@@ -516,47 +558,39 @@ export function PeopleGraphPage() {
 
   // For a selected person: list the visible hub nodes they connect to
   const personConnections = useMemo(() => {
-    if (!selected || !data || !selected.startsWith("p-")) return [];
-    const personId = parseInt(selected.slice(2));
+    if (!selectedNode || selectedNode.kind !== "person" || !data) return [];
+    const personId = selectedNode.id_;
     const visibleHubs = new Set(nodesRef.current.filter((n) => n.kind !== "person").map((n) => n.uid));
     return data.edges
-      .filter((e) => e.person_id === personId)
+      .filter((e) => e.person_id === personId && visibleHubs.has(hubUid(e.kind, e.target_id)))
       .map((e) => {
-        const hubUid = e.target_type === "movie" ? `m-${e.target_id}` : `a-${e.target_id}`;
-        if (!visibleHubs.has(hubUid)) return null;
-        return {
-          uid: hubUid,
-          label: e.target_type === "movie"
-            ? (movieById.get(e.target_id) ?? String(e.target_id))
-            : (artistById.get(e.target_id) ?? String(e.target_id)),
-          kind: e.target_type as "movie" | "artist",
-          id_: e.target_id,
-        };
-      })
-      .filter(Boolean) as Array<{ uid: string; label: string; kind: "movie" | "artist"; id_: number }>;
-  }, [selected, data, movieById, artistById, simNodes]);
+        const uid = hubUid(e.kind, e.target_id);
+        const hub = hubByUid.get(uid);
+        return { uid, label: hub ? hubLabel(hub) : String(e.target_id), kind: e.kind, roles: e.roles };
+      });
+  }, [selectedNode, data, hubByUid, simNodes]);
 
-  // For a selected hub: list the visible people connected to it
+  // For a selected hub: list its visible neighbours — people (with their roles),
+  // plus albums for an artist or artists for an album.
   const hubConnections = useMemo(() => {
-    if (!selected || !data || selected.startsWith("p-")) return [];
-    const visiblePersonUids = new Set(nodesRef.current.filter((n) => n.kind === "person").map((n) => n.uid));
-    return data.edges
-      .filter((e) => {
-        const hubUid = e.target_type === "movie" ? `m-${e.target_id}` : `a-${e.target_id}`;
-        return hubUid === selected && visiblePersonUids.has(`p-${e.person_id}`);
-      })
-      .map((e) => {
-        const person = personById.get(e.person_id);
-        return person ? { uid: `p-${e.person_id}`, label: person.name_en ? `${person.name} (${person.name_en})` : person.name, id_: e.person_id } : null;
-      })
-      .filter(Boolean) as Array<{ uid: string; label: string; id_: number }>;
-  }, [selected, data, personById, simNodes]);
+    if (!selectedNode || selectedNode.kind === "person" || !data) return [];
+    const { kind, id_, uid } = selectedNode;
+    const rolesByPerson = new Map(
+      data.edges.filter((e) => e.kind === kind && e.target_id === id_).map((e) => [personUid(e.person_id), e.roles]),
+    );
+    const out: Array<{ uid: string; label: string; kind: NodeKind; roles: string[] }> = [];
+    for (const link of simLinks) {
+      const other = link.source.uid === uid ? link.target : link.target.uid === uid ? link.source : null;
+      if (other) out.push({ uid: other.uid, label: other.label, kind: other.kind, roles: rolesByPerson.get(other.uid) ?? [] });
+    }
+    return out;
+  }, [selectedNode, data, simLinks]);
 
   // ─── Legend ──────────────────────────────────────────────────────────────
 
   const Legend = () => (
-    <div style={{ display: "flex", gap: "1rem", fontSize: "0.78rem", opacity: 0.7 }}>
-      {([["Person", PERSON_COLOR], ["Movie", MOVIE_COLOR], ["Artist", ARTIST_COLOR]] as const).map(([label, color]) => (
+    <div style={{ display: "flex", gap: "1rem", fontSize: "0.78rem", opacity: 0.7, flexWrap: "wrap" }}>
+      {([["Person", PERSON_COLOR], ...HUB_KINDS.map((k) => [HUBS[k].label, HUBS[k].color])] as const).map(([label, color]) => (
         <span key={label} style={{ display: "flex", alignItems: "center", gap: "0.3rem" }}>
           <span style={{ display: "inline-block", width: 10, height: 10, borderRadius: "50%", background: color }} />
           {label}
@@ -565,13 +599,19 @@ export function PeopleGraphPage() {
     </div>
   );
 
+  const Dot = ({ color, size = 7 }: { color: string; size?: number }) => (
+    <span style={{ display: "inline-block", width: size, height: size, borderRadius: "50%", flexShrink: 0, background: color }} />
+  );
+
   // ─── Render ──────────────────────────────────────────────────────────────
 
-  const selectedPerson = selected?.startsWith("p-") ? personById.get(parseInt(selected.slice(2))) : null;
-  const selectedHub = selected && !selected.startsWith("p-") ? selectedNode : null;
+  const selectedPerson = selectedNode?.kind === "person" ? personById.get(selectedNode.id_) : null;
+  const selectedHubNode = selectedNode && selectedNode.kind !== "person" ? selectedNode : null;
+  const selectedHub = selectedHubNode ? hubByUid.get(selectedHubNode.uid) ?? null : null;
 
-  const KIND_LABELS: Record<SearchKind, string> = { all: "All", person: "People", movie: "Movies", artist: "Artists" };
-  const KIND_COLORS: Partial<Record<SearchKind, string>> = { person: PERSON_COLOR, movie: MOVIE_COLOR, artist: ARTIST_COLOR };
+  const SEARCH_KINDS: SearchKind[] = ["all", "person", ...GROUP_KEYS];
+  const kindLabel = (k: SearchKind) => (k === "all" ? "All" : k === "person" ? "People" : GROUPS[k].short);
+  const kindColor = (k: SearchKind) => (k === "all" ? undefined : k === "person" ? PERSON_COLOR : GROUPS[k].color);
 
   const overlayMessage = isLoading ? "Loading…"
     : isError ? "Failed to load graph."
@@ -582,58 +622,56 @@ export function PeopleGraphPage() {
     <section>
       {/* Filter + search bar — hidden until data is ready */}
       <div style={{ display: overlayMessage ? "none" : "flex", gap: "1.5rem", flexWrap: "wrap", marginBottom: "0.75rem", alignItems: "flex-start", fontSize: "0.875rem" }}>
-        {/* Movie people filter */}
-        <div>
-          <label style={{ display: "flex", alignItems: "center", gap: "0.4rem", fontWeight: 500, cursor: "pointer" }}>
-            <input type="checkbox" checked={filterMoviePerson} onChange={(e) => setFilterMoviePerson(e.target.checked)} />
-            Movie people
-          </label>
-          {filterMoviePerson && (
-            <div style={{ marginLeft: "1.4rem", marginTop: "0.3rem", display: "flex", flexDirection: "column", gap: "0.2rem" }}>
-              {CAST_ROLES.filter((r) => existingRoles.has(r)).map((role) => (
-                <label key={role} style={{ display: "flex", alignItems: "center", gap: "0.4rem", cursor: "pointer", opacity: 0.85 }}>
-                  <input type="checkbox" checked={filterMovieRoles.has(role)} onChange={() => toggleRole(role)} />
-                  {CAST_ROLE_LABELS[role]}
-                </label>
-              ))}
-              {filterMovieRoles.size > 0 && (
-                <button onClick={() => setFilterMovieRoles(new Set())}
-                  style={{ alignSelf: "flex-start", marginTop: "0.2rem", fontSize: "0.78rem", opacity: 0.55, background: "none", border: "none", cursor: "pointer", padding: 0 }}>
-                  clear roles
-                </button>
+        {/* Per-vertical people filters */}
+        {GROUP_KEYS.map((g) => {
+          const { on, roles } = filters[g];
+          const offered = GROUPS[g].roles.filter(([r]) => existingRoles[g].has(r));
+          return (
+            <div key={g}>
+              <label style={{ display: "flex", alignItems: "center", gap: "0.4rem", fontWeight: 500, cursor: "pointer" }}>
+                <input type="checkbox" checked={on} onChange={(e) => setGroupOn(g, e.target.checked)} />
+                {GROUPS[g].label}
+              </label>
+              {on && offered.length > 0 && (
+                <div style={{ marginLeft: "1.4rem", marginTop: "0.3rem", display: "flex", flexDirection: "column", gap: "0.2rem" }}>
+                  {offered.map(([role, label]) => (
+                    <label key={role} style={{ display: "flex", alignItems: "center", gap: "0.4rem", cursor: "pointer", opacity: 0.85 }}>
+                      <input type="checkbox" checked={roles.has(role)} onChange={() => toggleRole(g, role)} />
+                      {label}
+                    </label>
+                  ))}
+                  {roles.size > 0 && (
+                    <button onClick={() => setGroupRoles(g, new Set())}
+                      style={{ alignSelf: "flex-start", marginTop: "0.2rem", fontSize: "0.78rem", opacity: 0.55, background: "none", border: "none", cursor: "pointer", padding: 0 }}>
+                      clear roles
+                    </button>
+                  )}
+                </div>
               )}
             </div>
-          )}
-        </div>
-
-        {/* Music artist filter */}
-        <div>
-          <label style={{ display: "flex", alignItems: "center", gap: "0.4rem", fontWeight: 500, cursor: "pointer" }}>
-            <input type="checkbox" checked={filterMusicArtist} onChange={(e) => setFilterMusicArtist(e.target.checked)} />
-            Music artists
-          </label>
-        </div>
+          );
+        })}
 
         {/* Search */}
         <div style={{ position: "relative", marginLeft: "auto" }}>
           {/* Type filter pills */}
           <div style={{ display: "flex", gap: "0.3rem", marginBottom: "0.3rem", justifyContent: "flex-end" }}>
-            {(["all", "person", "movie", "artist"] as SearchKind[]).map((k) => (
+            {SEARCH_KINDS.map((k) => (
               <button key={k} onClick={() => setSearchKind(k)}
                 style={{
                   fontSize: "0.72rem", padding: "0.15rem 0.5rem", borderRadius: 10,
-                  border: `1px solid ${KIND_COLORS[k] ?? "#8884"}`,
-                  background: searchKind === k ? (KIND_COLORS[k] ?? "#8884") : "transparent",
+                  border: `1px solid ${kindColor(k) ?? "#8884"}`,
+                  background: searchKind === k ? (kindColor(k) ?? "#8884") : "transparent",
                   color: searchKind === k ? "#fff" : undefined,
                   cursor: "pointer", opacity: searchKind === k ? 1 : 0.6,
                 }}>
-                {KIND_LABELS[k]}
+                {kindLabel(k)}
               </button>
             ))}
           </div>
           <input
             type="search"
-            placeholder={`Search ${KIND_LABELS[searchKind].toLowerCase()}…`}
+            placeholder={`Search ${kindLabel(searchKind).toLowerCase()}…`}
             value={searchQuery}
             onChange={(e) => { setSearchQuery(e.target.value); setSearchOpen(true); }}
             onFocus={() => setSearchOpen(true)}
@@ -655,10 +693,7 @@ export function PeopleGraphPage() {
                   style={{ padding: "0.4rem 0.6rem", cursor: "pointer", fontSize: "0.875rem", display: "flex", alignItems: "center", gap: "0.5rem" }}
                   onMouseEnter={(e) => (e.currentTarget.style.background = "#8882")}
                   onMouseLeave={(e) => (e.currentTarget.style.background = "")}>
-                  <span style={{
-                    display: "inline-block", width: 7, height: 7, borderRadius: "50%", flexShrink: 0,
-                    background: r.kind === "person" ? PERSON_COLOR : r.kind === "movie" ? MOVIE_COLOR : ARTIST_COLOR,
-                  }} />
+                  <Dot color={nodeColor(r.kind)} />
                   {r.label}
                 </div>
               ))}
@@ -701,12 +736,13 @@ export function PeopleGraphPage() {
             <div style={{ display: "flex", flexWrap: "wrap", gap: "0.4rem 1.2rem" }}>
               {personConnections.map((conn) => (
                 <span key={conn.uid} style={{ display: "flex", gap: "0.4rem", alignItems: "center" }}>
-                  <span style={{ display: "inline-block", width: 7, height: 7, borderRadius: "50%", flexShrink: 0, background: conn.kind === "movie" ? MOVIE_COLOR : ARTIST_COLOR }} />
-                  <span style={{ opacity: 0.55, fontSize: "0.78rem" }}>{conn.kind}</span>
+                  <Dot color={HUBS[conn.kind].color} />
+                  <span style={{ opacity: 0.55, fontSize: "0.78rem" }}>{HUBS[conn.kind].label.toLowerCase()}</span>
                   <button onClick={() => selectNode(conn.uid)}
                     style={{ fontWeight: 500, background: "none", border: "none", cursor: "pointer", padding: 0, fontSize: "inherit" }}>
                     {conn.label}
                   </button>
+                  <span style={{ opacity: 0.55, fontSize: "0.78rem" }}>{conn.roles.map((r) => roleLabel(conn.kind, r)).join(", ")}</span>
                 </span>
               ))}
             </div>
@@ -714,16 +750,14 @@ export function PeopleGraphPage() {
         </div>
       )}
 
-      {/* Info panel — hub (movie/artist) selected */}
-      {selectedHub && (
+      {/* Info panel — hub selected */}
+      {selectedHubNode && selectedHub && (
         <div style={{ marginTop: "1rem", padding: "0.75rem 1rem", border: "1px solid #8884", borderRadius: 6, fontSize: "0.875rem" }}>
           <div style={{ display: "flex", alignItems: "baseline", gap: "1rem", marginBottom: "0.5rem" }}>
-            <span style={{ display: "inline-block", width: 9, height: 9, borderRadius: "50%", background: selectedHub.kind === "movie" ? MOVIE_COLOR : ARTIST_COLOR, flexShrink: 0, alignSelf: "center" }} />
-            <strong style={{ fontSize: "1rem" }}>{selectedHub.label}</strong>
-            <Link
-              to={selectedHub.kind === "movie" ? `/g/${guildId}/movies/${selectedHub.id_}` : `/g/${guildId}/music/artists/${selectedHub.id_}`}
-              style={{ opacity: 0.6, fontSize: "0.8rem" }}>
-              view {selectedHub.kind} →
+            <span style={{ alignSelf: "center", display: "flex" }}><Dot color={HUBS[selectedHub.kind].color} size={9} /></span>
+            <strong style={{ fontSize: "1rem" }}>{selectedHubNode.label}</strong>
+            <Link to={`/g/${guildId}/${HUBS[selectedHub.kind].path(selectedHub)}`} style={{ opacity: 0.6, fontSize: "0.8rem" }}>
+              view {HUBS[selectedHub.kind].label.toLowerCase()} →
             </Link>
             <button onClick={() => centerOn(selected!)}
               style={{ marginLeft: "auto", opacity: 0.5, background: "none", border: "none", cursor: "pointer", fontSize: "0.78rem" }}>
@@ -731,14 +765,23 @@ export function PeopleGraphPage() {
             </button>
           </div>
           {hubConnections.length === 0 ? (
-            <p style={{ opacity: 0.5, margin: 0 }}>No visible people connected.</p>
+            <p style={{ opacity: 0.5, margin: 0 }}>No visible connections.</p>
           ) : (
             <div style={{ display: "flex", flexWrap: "wrap", gap: "0.4rem 1.2rem" }}>
               {hubConnections.map((conn) => (
-                <button key={conn.uid} onClick={() => selectNode(conn.uid)}
-                  style={{ fontWeight: 500, background: "none", border: "none", cursor: "pointer", padding: 0, fontSize: "inherit" }}>
-                  {conn.label}
-                </button>
+                <span key={conn.uid} style={{ display: "flex", gap: "0.4rem", alignItems: "center" }}>
+                  {conn.kind !== "person" && (
+                    <>
+                      <Dot color={HUBS[conn.kind].color} />
+                      <span style={{ opacity: 0.55, fontSize: "0.78rem" }}>{HUBS[conn.kind].label.toLowerCase()}</span>
+                    </>
+                  )}
+                  <button onClick={() => selectNode(conn.uid)}
+                    style={{ fontWeight: 500, background: "none", border: "none", cursor: "pointer", padding: 0, fontSize: "inherit" }}>
+                    {conn.label}
+                  </button>
+                  <span style={{ opacity: 0.55, fontSize: "0.78rem" }}>{conn.roles.map((r) => roleLabel(selectedHub.kind, r)).join(", ")}</span>
+                </span>
               ))}
             </div>
           )}

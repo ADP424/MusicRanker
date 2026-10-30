@@ -4,53 +4,34 @@ import { api } from "../api/client";
 import { useGuildApi, useTmdbTvEpisodeImport, useTmdbTvEpisodeLookup } from "../api/hooks";
 import { rk } from "../api/keys";
 import type {
-  CastRole, TelevisionEpisode, TelevisionShow, TmdbTvEpisodeLookup, TmdbTvImportPersonIn, TmdbTvPerson,
+  CastRole, TelevisionEpisode, TelevisionSeason, TelevisionShow, TmdbTvEpisodeLookup, TmdbTvImportPersonIn,
 } from "../api/types";
 import { useCan } from "../guild/GuildProvider";
 import { BusyButton, LoadingState } from "./Spinner";
-import { TmdbPersonRow, tmdbCreditDescription, type TmdbRowPerson } from "./TmdbPersonRow";
-
-const ACTOR_ROLES: CastRole[] = ["lead_actor", "actor", "cameo_actor"];
-
-function toRow(p: TmdbTvPerson): TmdbRowPerson {
-  return {
-    tmdb_id: p.tmdb_id,
-    name: p.name,
-    description: tmdbCreditDescription(p),
-    suggested_role: p.suggested_role,
-    suggestion_reason: p.suggestion_reason,
-    top_credits: p.top_credits,
-    nationality_guess: p.nationality_guess,
-    roleLocked: p.credit_type === "crew",
-    matches: p.db_matches.map((m) => ({
-      person_id: m.person_id,
-      person_name: m.person_name,
-      has_entries: m.has_screen_entries,
-      filmography_overlap: m.filmography_overlap,
-      artist_summary: m.artist_summary,
-      game_summary: m.game_summary,
-    })),
-  };
-}
+import { TmdbPersonRow } from "./TmdbPersonRow";
+import { ACTOR_ROLES, parentNote, personIn, seedResolutions, toRow } from "./tmdbTvShared";
 
 /**
- * Per-episode TMDB import — the same review flow as the show dialog, scoped to
- * one episode's own cast and crew.
+ * Per-episode TMDB import — the episode's entire cast, guest stars and crew,
+ * the way a movie import shows them. People already on the season come
+ * preselected (and say so); the rest are opt-in.
  *
- * With `episode` it merges into that existing row (the show-level import
+ * With `episode` it merges into that existing row (the show/season import
  * creates episodes with only title/runtime/year + director/composer, so this is
- * how they get cast); without it, it appends a new episode to the show.
+ * how they get cast); without it, it appends a new episode to the season.
  *
- * Our episodes don't store season/episode numbers, so the lookup finds the
- * episode by title and the S/E inputs are only a manual override.
+ * Our episodes don't store their episode number, so the lookup finds the
+ * episode by title within the season and the S/E inputs are a manual override.
  */
 export function TmdbTelevisionEpisodeImportDialog({
   show,
+  season,
   episode,
   onClose,
   onSuccess,
 }: {
   show: TelevisionShow;
+  season: TelevisionSeason;
   episode?: TelevisionEpisode;
   onClose: () => void;
   onSuccess?: (episodeId: number) => void;
@@ -58,7 +39,7 @@ export function TmdbTelevisionEpisodeImportDialog({
   const [title, setTitle] = useState(show.name);
   const [year, setYear] = useState(String(show.release_year));
   const [episodeName, setEpisodeName] = useState(episode?.name ?? "");
-  const [season, setSeason] = useState("");
+  const [seasonNumber, setSeasonNumber] = useState(season.season_number != null ? String(season.season_number) : "");
   const [epNumber, setEpNumber] = useState("");
 
   const [lookup, setLookup] = useState<TmdbTvEpisodeLookup | null>(null);
@@ -67,7 +48,7 @@ export function TmdbTelevisionEpisodeImportDialog({
   const [checked, setChecked] = useState<Set<number>>(new Set());
   const [roles, setRoles] = useState<Record<number, CastRole>>({});
   const [resolutions, setResolutions] = useState<Record<number, number | null>>({});
-  const [inheritShowPeople, setInheritShowPeople] = useState(false);
+  const [inheritSeasonPeople, setInheritSeasonPeople] = useState(false);
   const [updateFields, setUpdateFields] = useState(false);
   const [addToList, setAddToList] = useState(true);
 
@@ -81,36 +62,31 @@ export function TmdbTelevisionEpisodeImportDialog({
     setError(null);
     lookupMut.mutate(
       {
+        season_id: season.id,
         tmdb_show_id: lookup?.tmdb_show_id ?? null,
         title: title.trim() || null,
         year: year ? parseInt(year, 10) : null,
-        season_number: season ? parseInt(season, 10) : null,
+        season_number: seasonNumber ? parseInt(seasonNumber, 10) : null,
         episode_number: epNumber ? parseInt(epNumber, 10) : null,
         episode_name: episodeName.trim() || null,
       },
       {
         onSuccess(data) {
           setLookup(data);
-          setSeason(String(data.episode.season_number));
+          setSeasonNumber(String(data.episode.season_number));
           setEpNumber(String(data.episode.episode_number));
-          const c = new Set<number>();
-          const r: Record<number, CastRole> = {};
+          const people = data.episode.people;
+          setChecked(new Set(people.flatMap((p, i) => (p.parent_roles.length > 0 ? [i] : []))));
+          setRoles(Object.fromEntries(people.map((p, i) => [i, p.suggested_role])));
           const res: Record<number, number | null> = {};
-          data.episode.people.forEach((p, i) => {
-            c.add(i);
-            r[i] = p.suggested_role;
-            const v = p.db_matches.find((m) => m.filmography_overlap);
-            if (v) res[p.tmdb_id] = v.person_id;
-          });
-          setChecked(c);
-          setRoles(r);
+          seedResolutions(people, res);
           setResolutions(res);
         },
         onError: (e) => setError(e.message),
       },
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [title, year, season, epNumber, episodeName, lookupMut]);
+  }, [title, year, seasonNumber, epNumber, episodeName, lookupMut, season.id]);
 
   // Opened from an episode row/page: we already know what to look for.
   useEffect(() => {
@@ -121,22 +97,13 @@ export function TmdbTelevisionEpisodeImportDialog({
   const handleImport = useCallback(() => {
     if (!lookup) return;
     const e = lookup.episode;
-    const people: TmdbTvImportPersonIn[] = e.people
-      .map((p, i): TmdbTvImportPersonIn | null => {
-        if (!checked.has(i)) return null;
-        return {
-          tmdb_id: p.tmdb_id,
-          name: p.name,
-          role: roles[i] ?? p.suggested_role,
-          nationality: p.nationality_guess,
-          existing_person_id: resolutions[p.tmdb_id] ?? null,
-        };
-      })
+    const people = e.people
+      .map((p, i) => (checked.has(i) ? personIn(p, roles[i] ?? p.suggested_role, resolutions) : null))
       .filter((x): x is TmdbTvImportPersonIn => x !== null);
 
     importMut.mutate(
       {
-        show_id: show.id,
+        season_id: season.id,
         episode_id: episode?.id ?? null,
         update_episode_fields: episode ? updateFields : false,
         episode: {
@@ -146,7 +113,7 @@ export function TmdbTelevisionEpisodeImportDialog({
           release_year: e.release_year,
           notes: null,
           people,
-          inherit_show_people: inheritShowPeople,
+          inherit_parent_people: inheritSeasonPeople,
           genre_ids: null, // inherit the show's genres
         },
       },
@@ -154,7 +121,7 @@ export function TmdbTelevisionEpisodeImportDialog({
         async onSuccess(result) {
           if (!episode && addToList && canRank) {
             await api.put(`${base}/television/episodes/${result.episode_id}/entry`, {});
-            qc.invalidateQueries({ queryKey: rk(guildId, userId, "television", "shows", show.id, "episodes") });
+            qc.invalidateQueries({ queryKey: rk(guildId, userId, "television", "seasons", season.id, "episodes") });
           }
           onSuccess?.(result.episode_id);
           onClose();
@@ -163,7 +130,7 @@ export function TmdbTelevisionEpisodeImportDialog({
       },
     );
   }, [
-    lookup, checked, roles, resolutions, inheritShowPeople, updateFields, show.id, episode, importMut, onClose,
+    lookup, checked, roles, resolutions, inheritSeasonPeople, updateFields, season.id, episode, importMut, onClose,
     onSuccess, addToList, canRank, base, qc, guildId, userId,
   ]);
 
@@ -174,7 +141,7 @@ export function TmdbTelevisionEpisodeImportDialog({
     <div className="modal tmdb-import-panel">
       <h2>
         {episode ? "Import Episode Credits from TMDB" : "Import Episode from TMDB"}
-        <span style={{ opacity: 0.6, fontWeight: "normal" }}> — {show.name}</span>
+        <span style={{ opacity: 0.6, fontWeight: "normal" }}> — {show.name} · {season.name}</span>
       </h2>
       {error && <p className="tip-error">{error}</p>}
 
@@ -193,7 +160,7 @@ export function TmdbTelevisionEpisodeImportDialog({
         </label>
         <label>
           Season
-          <input value={season} onChange={(e) => setSeason(e.target.value)} type="number" min={0} placeholder="auto" />
+          <input value={seasonNumber} onChange={(e) => setSeasonNumber(e.target.value)} type="number" min={0} placeholder="auto" />
         </label>
         <label>
           Episode #
@@ -228,6 +195,7 @@ export function TmdbTelevisionEpisodeImportDialog({
               <button type="button" onClick={() => setChecked(new Set(lookup.episode.people.map((_, i) => i)))}>Check All</button>
               <button type="button" onClick={() => setChecked(new Set())}>Uncheck All</button>
             </div>
+            <p className="meta">The episode's full cast, guest stars and crew. People already on the season are preselected.</p>
             <div className="tip-people-list">
               {lookup.episode.people.map((p, i) => (
                 <TmdbPersonRow
@@ -238,6 +206,7 @@ export function TmdbTelevisionEpisodeImportDialog({
                   role={roles[i] ?? p.suggested_role}
                   resolution={resolutions[p.tmdb_id]}
                   roleOptions={ACTOR_ROLES}
+                  note={parentNote(p, "season")}
                   onToggle={() =>
                     setChecked((prev) => {
                       const next = new Set(prev);
@@ -253,9 +222,9 @@ export function TmdbTelevisionEpisodeImportDialog({
           </section>
 
           <section className="tip-section">
-            <label className={`chip${inheritShowPeople ? " chip-active" : ""}`} style={{ cursor: "pointer" }}>
-              <input type="checkbox" checked={inheritShowPeople} onChange={(e) => setInheritShowPeople(e.target.checked)} />
-              Also inherit the show's people (creator excluded)
+            <label className={`chip${inheritSeasonPeople ? " chip-active" : ""}`} style={{ cursor: "pointer" }}>
+              <input type="checkbox" checked={inheritSeasonPeople} onChange={(e) => setInheritSeasonPeople(e.target.checked)} />
+              Also attach all of the season's people
             </label>
             {episode && (
               <label className={`chip${updateFields ? " chip-active" : ""}`} style={{ cursor: "pointer" }}>

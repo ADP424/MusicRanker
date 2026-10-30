@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from .person import Person
     from .television import TelevisionShow
     from .television_episode import TelevisionEpisode
+    from .television_season import TelevisionSeason
 
 
 class TelevisionShowPerson(Base):
@@ -34,6 +35,30 @@ class TelevisionShowPerson(Base):
 
     show: Mapped[TelevisionShow] = relationship("TelevisionShow", back_populates="person_links", foreign_keys=[show_id])
     person: Mapped[Person] = relationship("Person", back_populates="television_links", foreign_keys=[person_id])
+
+
+class TelevisionSeasonPerson(Base):
+    """Association: a person in a role on a season (the default for its
+    episodes). Like episodes, seasons keep ``director``; ``creator`` is show-only."""
+
+    __tablename__ = "television_season_persons"
+    __table_args__ = (
+        CheckConstraint("role <> 'creator'", name="chk_tv_season_person_no_creator"),
+        ForeignKeyConstraint(
+            ["season_id", "guild_id"], ["television_seasons.id", "television_seasons.guild_id"], ondelete="CASCADE"
+        ),
+        ForeignKeyConstraint(["person_id", "guild_id"], ["people.id", "people.guild_id"], ondelete="CASCADE"),
+    )
+
+    season_id: Mapped[int] = mapped_column(primary_key=True)
+    person_id: Mapped[int] = mapped_column(primary_key=True)
+    role: Mapped[CastRole] = mapped_column(cast_role_type, primary_key=True)
+    guild_id: Mapped[int] = mapped_column(ForeignKey("guilds.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    season: Mapped[TelevisionSeason] = relationship(
+        "TelevisionSeason", back_populates="person_links", foreign_keys=[season_id]
+    )
+    person: Mapped[Person] = relationship("Person", back_populates="television_season_links", foreign_keys=[person_id])
 
 
 class TelevisionEpisodePerson(Base):

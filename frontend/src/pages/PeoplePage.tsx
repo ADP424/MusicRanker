@@ -11,21 +11,27 @@ import { PersonForm } from "../components/PersonForm";
 import { LoadingState, Spinner } from "../components/Spinner";
 import { useCan } from "../guild/GuildProvider";
 
-type PeopleSearchBy = "all" | "name" | "nationality" | "artist" | "movie" | "game" | "television";
+type PeopleSearchBy = "all" | "name" | "nationality" | "artist" | "book" | "movie" | "game" | "television";
 
 function PersonRow({ person }: { person: Person }) {
-  const hasAny = person.artist_names.length > 0 || person.movie_names.length > 0
+  const hasAny = person.artist_names.length > 0 || (person.book_names ?? []).length > 0 || person.movie_names.length > 0
     || person.game_names.length > 0 || person.television_names.length > 0;
 
   return (
     <div className="artist-detail-dropdown">
       {!hasAny && (
-        <div style={{ opacity: 0.5, fontSize: 13 }}>No linked artists, movies, games, or shows</div>
+        <div style={{ opacity: 0.5, fontSize: 13 }}>No linked artists, books, movies, games, or shows</div>
       )}
       {person.artist_names.length > 0 && (
         <div>
           <div className="detail-label" style={{ marginBottom: "0.25rem" }}>Artists</div>
           <div>{person.artist_names.join(", ")}</div>
+        </div>
+      )}
+      {(person.book_names ?? []).length > 0 && (
+        <div style={{ marginTop: "0.5rem" }}>
+          <div className="detail-label" style={{ marginBottom: "0.25rem" }}>Books</div>
+          <div>{person.book_names.join(", ")}</div>
         </div>
       )}
       {person.movie_names.length > 0 && (
@@ -106,6 +112,9 @@ export function PeoplePage() {
       if (searchBy === "artist" || searchBy === "all") {
         if (p.artist_names.some((n) => n.toLowerCase().includes(needle))) return true;
       }
+      if (searchBy === "book" || searchBy === "all") {
+        if ((p.book_names ?? []).some((n) => n.toLowerCase().includes(needle))) return true;
+      }
       if (searchBy === "movie" || searchBy === "all") {
         if (p.movie_names.some((n) => n.toLowerCase().includes(needle))) return true;
       }
@@ -153,7 +162,7 @@ export function PeoplePage() {
           onChange={(e) => setSearchQ(e.target.value)}
         />
         <div className="search-by-chips">
-          {(["all", "name", "nationality", "artist", "movie", "game", "television"] as PeopleSearchBy[]).map((opt) => (
+          {(["all", "name", "nationality", "artist", "book", "movie", "game", "television"] as PeopleSearchBy[]).map((opt) => (
             <button
               key={opt}
               className={`chip${searchBy === opt ? " chip-active" : ""}`}

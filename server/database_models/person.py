@@ -31,12 +31,18 @@ class Person(GuildScoped, Audited, NormalizedNames, Base):
 
     artist_links = relationship("ArtistPerson", back_populates="person", cascade="all, delete-orphan",
                                 foreign_keys="ArtistPerson.person_id")
+    book_links = relationship("BookPerson", back_populates="person", cascade="all, delete-orphan",
+                              foreign_keys="BookPerson.person_id")
     movie_links = relationship("MoviePerson", back_populates="person", cascade="all, delete-orphan",
                                foreign_keys="MoviePerson.person_id")
     game_links = relationship("GamePerson", back_populates="person", cascade="all, delete-orphan",
                               foreign_keys="GamePerson.person_id")
     television_links = relationship("TelevisionShowPerson", back_populates="person", cascade="all, delete-orphan",
                                     foreign_keys="TelevisionShowPerson.person_id")
+    television_season_links = relationship(
+        "TelevisionSeasonPerson", back_populates="person", cascade="all, delete-orphan",
+        foreign_keys="TelevisionSeasonPerson.person_id",
+    )
     television_episode_links = relationship(
         "TelevisionEpisodePerson", back_populates="person", cascade="all, delete-orphan",
         foreign_keys="TelevisionEpisodePerson.person_id",

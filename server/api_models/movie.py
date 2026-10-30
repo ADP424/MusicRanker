@@ -43,6 +43,7 @@ class MovieOut(ORMSchema):
     genre_ids: list[int] = []
     links: list[LinkOut] = []
     soundtrack_albums: list[NamedRef] = []
+    source_books: list[NamedRef] = []
     in_my_list: bool = False
 
 

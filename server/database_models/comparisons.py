@@ -70,8 +70,24 @@ class TelevisionShowComparison(Comparison, Base):
     __table_args__ = _pair_fks("television_shows")
 
 
+class TelevisionSeasonComparison(Comparison, Base):
+    __tablename__ = "television_season_comparison"
+    show_id: Mapped[int] = mapped_column(ForeignKey("television_shows.id", ondelete="CASCADE"), primary_key=True)
+    winner_id: Mapped[int] = mapped_column(primary_key=True)
+    loser_id: Mapped[int] = mapped_column(primary_key=True)
+    __table_args__ = _pair_fks("television_seasons")
+
+
 class TelevisionEpisodeComparison(Comparison, Base):
     __tablename__ = "television_episode_comparison"
+    season_id: Mapped[int] = mapped_column(ForeignKey("television_seasons.id", ondelete="CASCADE"), primary_key=True)
     winner_id: Mapped[int] = mapped_column(primary_key=True)
     loser_id: Mapped[int] = mapped_column(primary_key=True)
     __table_args__ = _pair_fks("television_episodes")
+
+
+class BookComparison(Comparison, Base):
+    __tablename__ = "book_comparison"
+    winner_id: Mapped[int] = mapped_column(primary_key=True)
+    loser_id: Mapped[int] = mapped_column(primary_key=True)
+    __table_args__ = _pair_fks("books")

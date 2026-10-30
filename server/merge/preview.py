@@ -6,13 +6,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..database_models import (
-    Album, Artist, Game, GamePlatform, Genre, Movie, Person, TelevisionShow,
+    Album, Artist, Book, Game, GamePlatform, Genre, Movie, Person, TelevisionShow,
 )
 from ..normalize import norm, norm_or_none
 from .spec import Candidate, Item, MergeAction
 
 # Which entity carries a year in its conflict key (D4).
-_YEARED = {Album, Movie, Game, TelevisionShow}
+_YEARED = {Album, Book, Movie, Game, TelevisionShow}
 
 
 def _keys(row) -> set[str]:
@@ -39,6 +39,8 @@ def _media_titles(person: Person) -> set[str]:
         out |= _keys(link.game)
     for link in person.artist_links:
         out |= _keys(link.artist)
+    for link in person.book_links:
+        out |= _keys(link.book)
     return out
 
 
@@ -68,7 +70,10 @@ def _simple_candidates(src, idx: dict[str, list], *, match_year: bool) -> list[C
                 continue
             if match_year and getattr(src, "release_year", None) != getattr(tgt, "release_year", None):
                 continue  # "Dune (1984)" and "Dune (2021)" are not the same film
-            out[tgt.id] = Candidate(tgt.id, tgt.name, tgt.name_en, "name_only", "Name (and year) match")
+            # Platforms have no name_en.
+            out[tgt.id] = Candidate(
+                tgt.id, tgt.name, getattr(tgt, "name_en", None), "name_only", "Name (and year) match"
+            )
     return list(out.values())
 
 
@@ -117,6 +122,7 @@ def build_preview(db: Session, source_guild_id: int, target_guild_id: int) -> di
     for key, model, sub in (
         ("artists", Artist, lambda r: r.core_nationality),
         ("albums", Album, lambda r: f"{r.release_year}"),
+        ("books", Book, lambda r: f"{r.release_year}" + (f" · {r.word_count:,} words" if r.word_count else "")),
         ("movies", Movie, lambda r: f"{r.release_year} · {r.runtime_minutes} min"),
         ("games", Game, lambda r: f"{r.release_year}"),
         ("television_shows", TelevisionShow, lambda r: f"{r.release_year} · {len(r.episodes)} episodes"),

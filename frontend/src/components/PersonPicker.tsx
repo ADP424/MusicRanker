@@ -1,25 +1,27 @@
 import type { Person } from "../api/types";
 import { InlineBusy, LoadingState } from "./Spinner";
 
-export type PersonSearchField = "all" | "person" | "artist" | "movie" | "game" | "television";
+export type PersonSearchField = "all" | "person" | "artist" | "book" | "movie" | "game" | "television";
 
 export const PERSON_SEARCH_FIELDS: PersonSearchField[] = [
-  "all", "person", "artist", "movie", "game", "television",
+  "all", "person", "artist", "book", "movie", "game", "television",
 ];
 
 const FIELD_LABEL: Record<PersonSearchField, string> = {
   all: "All",
   person: "Person",
   artist: "Artist",
+  book: "Book",
   movie: "Movie",
   game: "Game",
   television: "TV",
 };
 
 const FIELD_PLACEHOLDER: Record<PersonSearchField, string> = {
-  all: "Search people, artists, movies, games, TV shows…",
+  all: "Search people, artists, books, movies, games, TV shows…",
   person: "Search by person name…",
   artist: "Search by artist name…",
+  book: "Search by book name…",
   movie: "Search by movie name…",
   game: "Search by game name…",
   television: "Search by show name…",
@@ -43,16 +45,18 @@ export function matchesPersonSearch(
   const nameHit = hit(p.name) || !!p.name_en?.toLowerCase().includes(q);
   // `?? []` guards against a response cached by a build that predates game_names/television_names
   const artistHit = (p.artist_names ?? []).some(hit);
+  const bookHit = (p.book_names ?? []).some(hit);
   const movieHit = (p.movie_names ?? []).some(hit);
   const gameHit = (p.game_names ?? []).some(hit);
   const televisionHit = (p.television_names ?? []).some(hit);
   switch (field) {
     case "person": return nameHit;
     case "artist": return artistHit;
+    case "book":   return bookHit;
     case "movie":  return movieHit;
     case "game":   return gameHit;
     case "television": return televisionHit;
-    default:       return nameHit || artistHit || movieHit || gameHit || televisionHit;
+    default:       return nameHit || artistHit || bookHit || movieHit || gameHit || televisionHit;
   }
 }
 

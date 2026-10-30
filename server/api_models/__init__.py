@@ -8,6 +8,10 @@ from .game_platform import (
     GamePlatformPatch,
 )
 from .genre import (
+    BookGenreCategoryIn,
+    BookGenreCategoryOut,
+    BookGenreCategoryPatch,
+    BookGenreOut,
     GameGenreCategoryIn,
     GameGenreCategoryOut,
     GameGenreCategoryPatch,
@@ -52,6 +56,10 @@ __all__ = [
     "GameGenreCategoryIn",
     "GameGenreCategoryPatch",
     "GameGenreCategoryOut",
+    "BookGenreOut",
+    "BookGenreCategoryIn",
+    "BookGenreCategoryPatch",
+    "BookGenreCategoryOut",
     "GamePlatformIn",
     "GamePlatformPatch",
     "GamePlatformOut",

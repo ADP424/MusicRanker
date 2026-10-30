@@ -9,12 +9,15 @@ a `Client-ID` header on every request. Queries are POSTed as raw
 no ETag/conditional-GET support, so caching here is TTL-only (no 304
 branch, unlike tmdb_client.py).
 
-The sidecar SQLite file holds two things:
+The sidecar SQLite file holds three things:
 
   http_cache   raw IGDB JSON, keyed by resource+query, with a TTL
-  kv           small key/value store; currently the cached Twitch access
-               token + its expiry, so a fresh token isn't fetched on every
-               process start
+  kv           small key/value store; the cached Twitch access token + its
+               expiry, so a fresh token isn't fetched on every process
+               start, and the game scan's game.id -> igdb id map
+  scoped_scan_rejections
+               links the user rejected in the game scan (see
+               scan_common.ScopedRejections)
 """
 
 from __future__ import annotations
@@ -31,6 +34,7 @@ import requests
 from dotenv import load_dotenv
 
 from .lanes import IGDB_LANE
+from .scan_common import SCOPED_REJECTIONS_DDL, ScopedRejections
 
 load_dotenv()
 
@@ -51,7 +55,7 @@ TOKEN_SAFETY_MARGIN = 24 * 3600  # refetch a day before Twitch expires it
 # ──────────────────────────────────────────────────────────────
 #  Sidecar store
 # ──────────────────────────────────────────────────────────────
-class Sidecar:
+class Sidecar(ScopedRejections):
     _DDL = """
     CREATE TABLE IF NOT EXISTS http_cache (
         key        TEXT PRIMARY KEY,
@@ -63,7 +67,7 @@ class Sidecar:
         value      TEXT NOT NULL,
         expires_at REAL NOT NULL
     );
-    """
+    """ + SCOPED_REJECTIONS_DDL
 
     def __init__(self, path: Path):
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -195,12 +199,25 @@ class IgdbClient:
     def __init__(self, sidecar: Sidecar, *, force_refresh: bool = False):
         self.sidecar = sidecar
         self.force_refresh = force_refresh
+        self._stats_lock = threading.Lock()
+        self.network_calls = 0
+        self.cache_hits = 0
 
-    def post(self, resource: str, query: str, ttl: float = TTL_DETAILS) -> Optional[list]:
+    def _bump(self, attr: str) -> None:
+        with self._stats_lock:
+            setattr(self, attr, getattr(self, attr) + 1)
+
+    def post(
+        self, resource: str, query: str, ttl: float = TTL_DETAILS, *, allow_network: bool = True
+    ) -> Optional[list]:
         key = f"{resource}:{query}"
 
         payload, fresh = self.sidecar.http_get(key)
         if payload is not None and fresh and not self.force_refresh:
+            self._bump("cache_hits")
+            return payload
+        if not allow_network:
+            # Stale is better than nothing when we're only here for evidence.
             return payload
 
         token = _access_token()
@@ -220,6 +237,8 @@ class IgdbClient:
                 last_exc = exc
                 time.sleep(1.5**attempt)
                 continue
+
+            self._bump("network_calls")
 
             if r.status_code == 401:
                 # Token expired mid-lifetime (Twitch revoked/rotated) — refetch once

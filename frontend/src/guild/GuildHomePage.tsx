@@ -3,6 +3,7 @@ import { useCan, useGuild } from "./GuildProvider";
 
 const SECTIONS = [
   { to: "music", icon: "🎵", label: "Music", ready: true },
+  { to: "books", icon: "📚", label: "Books", ready: true },
   { to: "movies", icon: "🎬", label: "Movies", ready: true },
   { to: "television", icon: "📺", label: "Television", ready: true },
   { to: "games", icon: "🎮", label: "Games", ready: true },

@@ -184,13 +184,28 @@ export function MoviesPage() {
             </span>
           </div>
         )}
+        {m.source_books.length > 0 && (
+          <div className="album-detail-row">
+            <span className="detail-label">Based on</span>
+            <span>
+              {m.source_books.map((b, i) => (
+                <span key={b.id}>
+                  {i > 0 && ", "}
+                  <Link to={`/g/${guildId}/books/${b.id}`}>
+                    {b.name}{b.name_en && <span style={{ opacity: 0.6 }}> ({b.name_en})</span>}
+                  </Link>
+                </span>
+              ))}
+            </span>
+          </div>
+        )}
         {m.notes && (
           <div className="album-detail-row">
             <span className="detail-label">Notes</span>
             <span>{m.notes}</span>
           </div>
         )}
-        {m.persons.length === 0 && !m.notes && m.genre_ids.length === 0 && m.soundtrack_albums.length === 0 && (
+        {m.persons.length === 0 && !m.notes && m.genre_ids.length === 0 && m.soundtrack_albums.length === 0 && m.source_books.length === 0 && (
           <span style={{ opacity: 0.5 }}>No extra info.</span>
         )}
       </div>

@@ -31,10 +31,17 @@ class TelevisionShowPatch(BaseModel):
     notes: str | None = None
 
 
-class EpisodeRef(BaseModel):
+class EpisodeRef(ORMSchema):
     id: int
     name: str
     name_en: str | None = None
+
+
+class SeasonRef(ORMSchema):
+    id: int
+    name: str
+    name_en: str | None = None
+    season_number: int | None = None
 
 
 class TelevisionShowOut(ORMSchema):
@@ -47,7 +54,10 @@ class TelevisionShowOut(ORMSchema):
     genre_ids: list[int] = []
     links: list[LinkOut] = []
     soundtrack_albums: list[NamedRef] = []
-    episodes: list[EpisodeRef] = []
+    source_books: list[NamedRef] = []
+    seasons: list[SeasonRef] = []
+    season_count: int = 0
+    episodes: list[EpisodeRef] = []  # every episode, all seasons — for search
     episode_count: int = 0
     in_my_list: bool = False
 
@@ -70,18 +80,75 @@ class TelevisionShowEntryOut(BaseModel):
     notes: str | None
 
 
+# ── Seasons ──────────────────────────────────────────────────────────────────
+class TelevisionSeasonIn(BaseModel):
+    """Omitting ``release_year`` copies the show's. ``inherit_from_show`` copies
+    the show's people onto the new season (minus ``creator``, which is
+    show-only); editable afterwards."""
+
+    name: str
+    name_en: str | None = None
+    season_number: int | None = Field(default=None, ge=0)
+    release_year: int | None = None
+    notes: str | None = None
+    inherit_from_show: bool = True
+
+
+class TelevisionSeasonPatch(BaseModel):
+    name: str | None = None
+    name_en: str | None = None
+    season_number: int | None = Field(default=None, ge=0)
+    release_year: int | None = None
+    notes: str | None = None
+
+
+class TelevisionSeasonOut(ORMSchema):
+    id: int
+    show_id: int
+    name: str
+    name_en: str | None
+    season_number: int | None
+    release_year: int
+    notes: str | None
+    season_rank: Decimal | None
+    persons: list[TelevisionPersonRef] = []
+    links: list[LinkOut] = []
+    episodes: list[EpisodeRef] = []
+    episode_count: int = 0
+    runtime_minutes: int = 0  # sum over its episodes
+    in_my_list: bool = False
+
+
+class RankedTelevisionSeasonOut(BaseModel):
+    position: int
+    rank: Decimal
+    notes: str | None
+    season: TelevisionSeasonOut
+
+
+class TelevisionSeasonEntryIn(BaseModel):
+    """Fields left unset (rather than explicitly null) are a partial update —
+    the existing value on the row is kept. See upsert_season_entry in routers/television.py."""
+    notes: str | None = None
+    position: int | None = Field(default=None, ge=1)
+
+
+class TelevisionSeasonEntryOut(BaseModel):
+    notes: str | None
+
+
 # ── Episodes ─────────────────────────────────────────────────────────────────
 class TelevisionEpisodeIn(BaseModel):
-    """Inheritable scalars are optional: omitting one copies the parent show's
-    value. ``inherit_from_show`` additionally copies the show's people and
-    genres onto the new episode (both editable afterwards)."""
+    """Inheritable scalars are optional: omitting one copies the parent
+    season's value. ``inherit_from_parent`` additionally copies the season's
+    people and the show's genres onto the new episode (both editable afterwards)."""
 
     name: str
     name_en: str | None = None
     runtime_minutes: int = Field(default=0, ge=0)
     release_year: int | None = None
     notes: str | None = None
-    inherit_from_show: bool = True
+    inherit_from_parent: bool = True
 
 
 class TelevisionEpisodePatch(BaseModel):
@@ -90,11 +157,14 @@ class TelevisionEpisodePatch(BaseModel):
     runtime_minutes: int | None = Field(default=None, ge=0)
     release_year: int | None = None
     notes: str | None = None
+    #: Move the episode to another season of the same show (appended at the end).
+    season_id: int | None = None
 
 
 class TelevisionEpisodeOut(ORMSchema):
     id: int
     show_id: int
+    season_id: int
     name: str
     name_en: str | None
     runtime_minutes: int

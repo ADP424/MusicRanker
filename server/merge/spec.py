@@ -41,4 +41,6 @@ class Decision:
 
 
 #: Order matters: leaves first, then the media that reference them.
-SECTIONS = ("genres", "platforms", "people", "artists", "albums", "movies", "games", "television_shows")
+SECTIONS = (
+    "genres", "platforms", "people", "artists", "albums", "books", "movies", "games", "television_shows",
+)

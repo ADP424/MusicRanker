@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select
@@ -9,9 +10,12 @@ from sqlalchemy.orm import Session as DbSession
 from ..api_models.music import AlbumIn, AlbumOut, AlbumPatch, NamedRef
 from ..authz import Capability
 from ..database import get_database
-from ..database_models import Album, AlbumArtist, AlbumLink, Artist, Genre, UserAlbumRank
+from ..database_models import (
+    Album, AlbumArtist, AlbumLink, Artist, Game, Genre, Movie, TelevisionShow, UserAlbumRank,
+)
 from ..deps import GuildContext, guild_ctx
 from ..guild_junction_helpers import link_guild_scoped
+from ..ranking import next_rank
 from .links import make_links_router
 
 router = APIRouter(prefix="/guilds/{guild_id}/albums", tags=["albums"])
@@ -23,6 +27,14 @@ DELETE = guild_ctx(Capability.CATALOG_DELETE)
 links_router = make_links_router(
     owner_model=Album, link_model=AlbumLink, owner_fk="album_id", prefix="/albums", tag="albums"
 )
+
+SoundtrackKind = Literal["movie", "game", "television_show"]
+# kind -> (scored media model, Album relationship)
+_SOUNDTRACKS = {
+    "movie": (Movie, Album.soundtrack_movies),
+    "game": (Game, Album.soundtrack_games),
+    "television_show": (TelevisionShow, Album.soundtrack_television_shows),
+}
 
 
 def _album(db: DbSession, ctx: GuildContext, aid: int) -> Album:
@@ -108,6 +120,27 @@ def link_artist(aid: int, artist_id: int, ctx: GuildContext = Depends(EDIT),
         raise HTTPException(404, "Artist not found")
     if not db.get(AlbumArtist, (aid, artist_id)):
         db.add(AlbumArtist(album_id=aid, artist_id=artist_id, guild_id=ctx.guild_id))
+        _carry_ranks_to_artist(db, ctx.guild_id, aid, artist_id)
+
+
+def _carry_ranks_to_artist(db: DbSession, guild_id: int, aid: int, artist_id: int) -> None:
+    """Every member who already has this album in their list under a co-credited
+    artist gets it appended to their list for the newly linked artist too — having
+    listened to the album doesn't depend on which artist's discography you file it under."""
+    listens = dict(db.execute(
+        select(UserAlbumRank.user_id, func.max(UserAlbumRank.listens))
+        .where(UserAlbumRank.guild_id == guild_id, UserAlbumRank.album_id == aid,
+               UserAlbumRank.artist_id != artist_id)
+        .group_by(UserAlbumRank.user_id)
+    ).all())
+    for user_id, n in listens.items():
+        if db.get(UserAlbumRank, {"user_id": user_id, "artist_id": artist_id, "album_id": aid}):
+            continue
+        db.add(UserAlbumRank(
+            user_id=user_id, guild_id=guild_id, artist_id=artist_id, album_id=aid, listens=n,
+            rank=next_rank(db, UserAlbumRank, user_id=user_id, guild_id=guild_id,
+                           scope=UserAlbumRank.artist_id == artist_id),
+        ))
 
 
 @router.delete("/{aid}/artists/{artist_id}", status_code=204)
@@ -147,3 +180,26 @@ def remove_genre(aid: int, gid: int, ctx: GuildContext = Depends(EDIT), db: DbSe
     genre = db.get(Genre, gid)
     if genre is not None and genre in album.genres:
         album.genres.remove(genre)
+
+
+# ── soundtracks: the movies / games / TV shows this album scores ─────────────
+@router.put("/{aid}/soundtracks/{kind}/{target_id}", status_code=204)
+def link_soundtrack(aid: int, kind: SoundtrackKind, target_id: int, ctx: GuildContext = Depends(EDIT),
+                    db: DbSession = Depends(get_database)):
+    album = _album(db, ctx, aid)
+    model, rel = _SOUNDTRACKS[kind]
+    target = db.get(model, target_id)
+    if target is None or target.guild_id != ctx.guild_id:
+        raise HTTPException(404, f"{model.__name__} not found")
+    if target not in getattr(album, rel.key):
+        link_guild_scoped(db, album, rel, target, guild_id=ctx.guild_id)
+
+
+@router.delete("/{aid}/soundtracks/{kind}/{target_id}", status_code=204)
+def unlink_soundtrack(aid: int, kind: SoundtrackKind, target_id: int, ctx: GuildContext = Depends(EDIT),
+                      db: DbSession = Depends(get_database)):
+    album = _album(db, ctx, aid)
+    model, rel = _SOUNDTRACKS[kind]
+    target = db.get(model, target_id)
+    if target is not None and target in getattr(album, rel.key):
+        getattr(album, rel.key).remove(target)

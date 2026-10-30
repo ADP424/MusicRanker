@@ -69,7 +69,19 @@ class TelevisionShowLink(ExternalLink, Base):
     __table_args__ = _link_table("television_show_links", "television_shows", "show_id")
 
 
+class TelevisionSeasonLink(ExternalLink, Base):
+    __tablename__ = "television_season_links"
+    season_id: Mapped[int] = mapped_column(index=True)
+    __table_args__ = _link_table("television_season_links", "television_seasons", "season_id")
+
+
 class TelevisionEpisodeLink(ExternalLink, Base):
     __tablename__ = "television_episode_links"
     episode_id: Mapped[int] = mapped_column(index=True)
     __table_args__ = _link_table("television_episode_links", "television_episodes", "episode_id")
+
+
+class BookLink(ExternalLink, Base):
+    __tablename__ = "book_links"
+    book_id: Mapped[int] = mapped_column(index=True)
+    __table_args__ = _link_table("book_links", "books", "book_id")

@@ -7,7 +7,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .album_game_soundtrack import album_game_soundtrack
 from .base import Base
-from .junctions import game_genres_junction, game_platforms_junction
+from .junctions import book_game_adaptations, game_genres_junction, game_platforms_junction
 from .mixins import Audited, GuildScoped, NormalizedNames, guild_unique
 
 if TYPE_CHECKING:
@@ -38,4 +38,5 @@ class Game(GuildScoped, Audited, NormalizedNames, Base):
     soundtrack_albums: Mapped[list[Album]] = relationship(
         "Album", secondary=album_game_soundtrack, back_populates="soundtrack_games"
     )
+    source_books = relationship("Book", secondary=book_game_adaptations, back_populates="adaptation_games")
     links = relationship("GameLink", cascade="all, delete-orphan", order_by="GameLink.position")

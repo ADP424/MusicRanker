@@ -80,25 +80,54 @@ def _load_db(db, guild_id: int):
 # ──────────────────────────────────────────────────────────────
 #  Phase 1: local movie -> tmdb id  (the no-schema-change workaround)
 # ──────────────────────────────────────────────────────────────
+#: How many title/year-plausible TMDB films get their credits fetched to be
+#: told apart by the people already linked to the local movie.
+DISAMBIGUATE_TOP = 3
+
+#: A movie with at least this many links whose resolved TMDB credits contain
+#: none of them was resolved to the wrong film (a same-titled remake, an
+#: unreleased reboot...).  Its cast must not be offered as missing links.
+MISMATCH_MIN_LINKS = 3
+
+
 def _score_result(r: dict, want_norm: str, want_year: Optional[int]):
     title_n = _norm(r.get("title") or "")
     orig_n = _norm(r.get("original_title") or "")
     raw_year = (r.get("release_date") or "")[:4]
     yr = int(raw_year) if raw_year.isdigit() else None
 
-    if want_year and yr and abs(yr - want_year) > 1:
+    # An undated result is usually an unannounced remake or reboot sharing the
+    # title; it can't be confirmed against a known year, so it doesn't qualify.
+    if want_year and (yr is None or abs(yr - want_year) > 1):
         return None
     exact = want_norm in (title_n, orig_n)
     if not exact and not (want_year and yr == want_year):
         return None
-    return (1 if exact else 0, float(r.get("popularity") or 0.0))
+    # Festival-vs-wide-release years drift by one, so an off-by-one year stays
+    # a candidate; when it loses to an obscure exact-year namesake here, the
+    # linked-people overlap in `_resolve_movie_id` is what corrects it.
+    return (1 if exact else 0, 1 if yr == want_year else 0, float(r.get("popularity") or 0.0))
 
 
-def _resolve_movie_id(client: TmdbClient, m: LMovie, *, allow_network: bool) -> Optional[int]:
+def _credit_norms(credits: Optional[dict]) -> set[str]:
+    out: set[str] = set()
+    for c in (credits or {}).get("cast", []) + (credits or {}).get("crew", []):
+        out |= {_norm(n) for n in (c.get("name"), c.get("original_name")) if n}
+    return out
+
+
+def _resolve_movie_id(
+    client: TmdbClient, m: LMovie, linked: set[str], *, allow_network: bool
+) -> Optional[int]:
+    """`linked` is the normalised names of people already linked to `m`: when
+    several TMDB films fit the title and year, the one crediting the most of
+    them wins."""
     # Keyed on the DB id *plus* a fingerprint, so fixing a title or year
-    # invalidates the mapping automatically.
+    # invalidates the mapping automatically.  (v2: the v1 resolver stopped at
+    # the first exact title within the DB year, mapping e.g. Enemy (2013) to an
+    # obscure namesake instead of Villeneuve's film, TMDB-dated 2014.)
     fp = f"{_norm(m.name)}|{_norm(m.name_en or '')}|{m.release_year}"
-    key = f"movie_id:{m.id}:{fp}"
+    key = f"movie_id:v2:{m.id}:{fp}"
 
     # force_refresh must bypass this, or a forced re-scan keeps honouring the
     # 7-day negative cache and never retries a movie whose title you just fixed.
@@ -108,13 +137,15 @@ def _resolve_movie_id(client: TmdbClient, m: LMovie, *, allow_network: bool) -> 
     if not allow_network:
         return None
 
-    attempts: list[tuple[str, Optional[int]]] = []
-    for title in filter(None, (m.name_en, m.name)):
-        attempts.append((title, m.release_year))
+    titles = list(filter(None, (m.name_en, m.name)))
+    attempts: list[tuple[str, Optional[int]]] = [(t, m.release_year) for t in titles]
     if m.release_year:
-        attempts.append((m.name_en or m.name, None))
+        attempts += [(t, None) for t in titles]
 
-    seen, best, best_score = set(), None, None
+    # Every attempt runs: stopping at the first exact title inside the DB year
+    # would never see the real film when TMDB dates it a year later.
+    seen: set = set()
+    scores: dict[int, tuple] = {}
     for title, year in attempts:
         k = (title.lower(), year)
         if k in seen:
@@ -131,12 +162,24 @@ def _resolve_movie_id(client: TmdbClient, m: LMovie, *, allow_network: bool) -> 
         want_norm = _norm(title)
         for r in data.get("results", [])[:10]:
             sc = _score_result(r, want_norm, m.release_year)
-            if sc and (best_score is None or sc > best_score):
-                best, best_score = r, sc
-        if best_score and best_score[0] == 1:  # exact title -> stop searching
-            break
+            if sc and sc > scores.get(r["id"], ()):
+                scores[r["id"]] = sc
 
-    tid = best["id"] if best else None
+    ranked = sorted(scores, key=scores.get, reverse=True)
+    tid = ranked[0] if ranked else None
+    if linked and len(ranked) > 1:
+        # By score *and* by popularity: a handful of obscure exact-year
+        # namesakes can otherwise crowd the famous film out of the pool.
+        by_pop = sorted(scores, key=lambda cid: scores[cid][2], reverse=True)
+        pool = dict.fromkeys(ranked[:DISAMBIGUATE_TOP] + by_pop[:DISAMBIGUATE_TOP])
+        overlap = {
+            cid: len(linked & _credit_norms(client.get(f"/movie/{cid}/credits", ttl=TTL_CREDITS)))
+            for cid in pool
+        }
+        best = max(overlap, key=lambda cid: (overlap[cid], scores[cid]))
+        if overlap[best] > 0:
+            tid = best
+
     client.sidecar.kv_set(key, tid or 0, TTL_SEARCH if tid else TTL_NEGATIVE)
     return tid
 
@@ -428,14 +471,17 @@ REGISTRY = JobRegistry()
 # ──────────────────────────────────────────────────────────────
 #  Entry point for BackgroundTasks
 # ──────────────────────────────────────────────────────────────
-def _fetch_one(client: TmdbClient, m: LMovie, in_scope: bool, cancel: threading.Event):
+def _fetch_one(client: TmdbClient, m: LMovie, linked: set[str], in_scope: bool, cancel: threading.Event):
     if cancel.is_set():
         return None
     try:
-        tid = _resolve_movie_id(client, m, allow_network=in_scope)
+        tid = _resolve_movie_id(client, m, linked, allow_network=in_scope)
         if tid is None or cancel.is_set():
             return None
-        return client.get(f"/movie/{tid}/credits", ttl=TTL_CREDITS, allow_network=in_scope)
+        credits = client.get(f"/movie/{tid}/credits", ttl=TTL_CREDITS, allow_network=in_scope)
+        if len(linked) >= MISMATCH_MIN_LINKS and not (linked & _credit_norms(credits)):
+            return None  # wrong film: report it unresolved rather than offer its cast
+        return credits
     except Exception:
         return None  # one bad movie must not kill the scan
 
@@ -463,9 +509,14 @@ def run_scan(job_id: str, guild_id: int, movie_ids: Optional[list[int]], force_r
             movies, people, links = _load_db(db, guild_id)
 
         by_norm: dict[str, set[int]] = defaultdict(set)
+        pnorms: dict[int, set[str]] = defaultdict(set)
         for p in people:
             for nm in filter(None, (p.name, p.name_en)):
                 by_norm[_norm(nm)].add(p.id)
+                pnorms[p.id].add(_norm(nm))
+        linked: dict[int, set[str]] = defaultdict(set)
+        for pid, mid, _role in links:
+            linked[mid] |= pnorms[pid]
 
         all_ids = {m.id for m in movies}
         scope = (set(movie_ids) & all_ids) if movie_ids else all_ids
@@ -479,7 +530,9 @@ def run_scan(job_id: str, guild_id: int, movie_ids: Optional[list[int]], force_r
         resolved = 0
 
         with ThreadPoolExecutor(max_workers=WORKERS) as ex:
-            futures = {ex.submit(_fetch_one, client, m, m.id in scope, job.cancel): m for m in movies}
+            futures = {
+                ex.submit(_fetch_one, client, m, linked[m.id], m.id in scope, job.cancel): m for m in movies
+            }
             for fut in as_completed(futures):
                 m = futures[fut]
                 if job.cancel.is_set():

@@ -4,13 +4,16 @@ import { gk, rk } from "./keys";
 import { useMe } from "../auth/AuthProvider";
 import { useGuild } from "../guild/GuildProvider";
 import type {
-  Album, AlbumEntry, Artist, Comparison, ComparisonIn, Game, GameEntry, GamePlatform, Genre, GenreCategory,
+  Album, AlbumEntry, Artist, Book, BookEntry, RankedBook, Comparison, ComparisonIn, Game, GameEntry, GamePlatform, Genre, GenreCategory,
   IgdbImportIn, IgdbImportOut, IgdbLookup, IgdbLookupIn, Link as LinkItem, Movie, MovieEntry, Person, PersonDetail,
-  PersonGraph, RankedAlbum, RankedArtist, RankedGame, RankedMovie, RankedTelevisionEpisode, RankedTelevisionShow,
+  PersonGraph, PersonScanApplyIn, PersonScanApplyResult, PersonScanJob, PersonScanResults,
+  PersonScanSuppressionList, RankedAlbum, RankedArtist, RankedGame, RankedMovie, RankedTelevisionEpisode, RankedTelevisionSeason,
+  RankedTelevisionShow,
   ScanApplyIn, ScanApplyResult, ScanJob, ScanResults, SuppressionList, TelevisionEpisode, TelevisionEpisodeEntry,
-  TelevisionShow, TelevisionShowEntry, TmdbImportIn, TmdbImportOut, TmdbLookup, TmdbLookupIn,
+  TelevisionSeason, TelevisionSeasonEntry, TelevisionShow, TelevisionShowEntry, TmdbImportIn, TmdbImportOut, TmdbLookup, TmdbLookupIn,
   TmdbTvEpisodeImportIn, TmdbTvEpisodeImportOut, TmdbTvEpisodeLookup, TmdbTvEpisodeLookupIn, TmdbTvImportIn,
-  TmdbTvImportOut, TmdbTvLookup, TmdbTvLookupIn,
+  TmdbTvImportOut, TmdbTvLookup, TmdbTvLookupIn, TmdbTvSeasonImportIn, TmdbTvSeasonImportOut, TmdbTvSeasonLookup,
+  TmdbTvSeasonLookupIn,
 } from "./types";
 
 /** Every path and every cache key is scoped to the active guild. */
@@ -72,6 +75,10 @@ export function useTelevisionGenres() {
     queryFn: () => api.get<Genre[]>(`${base}/television-genres`),
   });
 }
+export function useBookGenres() {
+  const { guildId, base } = useGuildApi();
+  return useQuery({ queryKey: gk(guildId, "book-genres"), queryFn: () => api.get<Genre[]>(`${base}/book-genres`) });
+}
 export function useGamePlatforms() {
   const { guildId, base } = useGuildApi();
   return useQuery({
@@ -84,7 +91,7 @@ export function useUpdateGenreMediaTypes() {
   const { guildId, base } = useGuildApi();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: { id: number } & Partial<Record<"is_music" | "is_movie" | "is_game" | "is_television", boolean>>) => {
+    mutationFn: (body: { id: number } & Partial<Record<"is_music" | "is_movie" | "is_game" | "is_television" | "is_book", boolean>>) => {
       const { id, ...patch } = body;
       return api.patch(`${base}/genres/${id}/media-types`, patch);
     },
@@ -93,6 +100,7 @@ export function useUpdateGenreMediaTypes() {
       qc.invalidateQueries({ queryKey: gk(guildId, "movie-genres") });
       qc.invalidateQueries({ queryKey: gk(guildId, "game-genres") });
       qc.invalidateQueries({ queryKey: gk(guildId, "television-genres") });
+      qc.invalidateQueries({ queryKey: gk(guildId, "book-genres") });
     },
   });
 }
@@ -125,6 +133,13 @@ export function useTelevisionGenreCategories() {
     queryFn: () => api.get<GenreCategory[]>(`${base}/television-genres/categories`),
   });
 }
+export function useBookGenreCategories() {
+  const { guildId, base } = useGuildApi();
+  return useQuery({
+    queryKey: gk(guildId, "book-genres", "categories"),
+    queryFn: () => api.get<GenreCategory[]>(`${base}/book-genres/categories`),
+  });
+}
 export function useGamePlatformCategories() {
   const { guildId, base } = useGuildApi();
   return useQuery({
@@ -155,6 +170,11 @@ export function useAlbumCatalog(artistId: number) {
     queryFn: () => api.get<Album[]>(`${base}/artists/${artistId}/albums`),
     enabled: !!artistId,
   });
+}
+
+export function useBookCatalog() {
+  const { guildId, base } = useGuildApi();
+  return useQuery({ queryKey: gk(guildId, "books"), queryFn: () => api.get<Book[]>(`${base}/books`) });
 }
 
 export function useMovieCatalog() {
@@ -198,12 +218,28 @@ export function useTelevisionShow(sid: number) {
     enabled: !!sid,
   });
 }
-export function useTelevisionEpisodes(sid: number) {
+export function useTelevisionSeasons(sid: number) {
   const { guildId, base } = useGuildApi();
   return useQuery({
-    queryKey: gk(guildId, "television", "shows", sid, "episodes"),
-    queryFn: () => api.get<TelevisionEpisode[]>(`${base}/television/shows/${sid}/episodes`),
+    queryKey: gk(guildId, "television", "shows", sid, "seasons"),
+    queryFn: () => api.get<TelevisionSeason[]>(`${base}/television/shows/${sid}/seasons`),
     enabled: !!sid,
+  });
+}
+export function useTelevisionSeason(seid: number) {
+  const { guildId, base } = useGuildApi();
+  return useQuery({
+    queryKey: gk(guildId, "television", "seasons", seid),
+    queryFn: () => api.get<TelevisionSeason>(`${base}/television/seasons/${seid}`),
+    enabled: !!seid,
+  });
+}
+export function useTelevisionEpisodes(seasonId: number) {
+  const { guildId, base } = useGuildApi();
+  return useQuery({
+    queryKey: gk(guildId, "television", "seasons", seasonId, "episodes"),
+    queryFn: () => api.get<TelevisionEpisode[]>(`${base}/television/seasons/${seasonId}/episodes`),
+    enabled: !!seasonId,
   });
 }
 export function useTelevisionEpisode(eid: number) {
@@ -275,6 +311,15 @@ export function useRankedAlbums(artistId: number, userId?: number) {
   });
 }
 
+export function useRankedBooks(userId?: number) {
+  const { guildId, userId: me, base } = useGuildApi();
+  const uid = userId ?? me;
+  return useQuery({
+    queryKey: rk(guildId, uid, "books", "ranked"),
+    queryFn: () => api.get<RankedBook[]>(`${base}/books/ranked${uid === me ? "" : `?user_id=${uid}`}`),
+  });
+}
+
 export function useRankedMovies(userId?: number) {
   const { guildId, userId: me, base } = useGuildApi();
   const uid = userId ?? me;
@@ -303,16 +348,29 @@ export function useRankedTelevisionShows(userId?: number) {
   });
 }
 
-export function useRankedTelevisionEpisodes(showId: number, userId?: number) {
+export function useRankedTelevisionSeasons(showId: number, userId?: number) {
   const { guildId, userId: me, base } = useGuildApi();
   const uid = userId ?? me;
   return useQuery({
-    queryKey: rk(guildId, uid, "television", "shows", showId, "episodes", "ranked"),
+    queryKey: rk(guildId, uid, "television", "shows", showId, "seasons", "ranked"),
     queryFn: () =>
-      api.get<RankedTelevisionEpisode[]>(
-        `${base}/television/shows/${showId}/episodes/ranked${uid === me ? "" : `?user_id=${uid}`}`,
+      api.get<RankedTelevisionSeason[]>(
+        `${base}/television/shows/${showId}/seasons/ranked${uid === me ? "" : `?user_id=${uid}`}`,
       ),
     enabled: !!showId,
+  });
+}
+
+export function useRankedTelevisionEpisodes(seasonId: number, userId?: number) {
+  const { guildId, userId: me, base } = useGuildApi();
+  const uid = userId ?? me;
+  return useQuery({
+    queryKey: rk(guildId, uid, "television", "seasons", seasonId, "episodes", "ranked"),
+    queryFn: () =>
+      api.get<RankedTelevisionEpisode[]>(
+        `${base}/television/seasons/${seasonId}/episodes/ranked${uid === me ? "" : `?user_id=${uid}`}`,
+      ),
+    enabled: !!seasonId,
   });
 }
 
@@ -326,7 +384,7 @@ export function useInvalidate(section: string) {
   };
 }
 
-export function useEntryMutations(section: "artists" | "movies" | "games" | "television/shows") {
+export function useEntryMutations(section: "artists" | "books" | "movies" | "games" | "television/shows") {
   const { base } = useGuildApi();
   const invalidate = useInvalidate(section.split("/")[0]);
   const add = useMutation({
@@ -388,6 +446,27 @@ export function useUpdateAlbumEntry(artistId: number, albumId: number) {
   });
 }
 
+export function useBookEntry(bookId: number) {
+  const { guildId, userId, base } = useGuildApi();
+  return useQuery({
+    queryKey: rk(guildId, userId, "books", bookId, "entry"),
+    queryFn: () => api.get<BookEntry | null>(`${base}/books/${bookId}/entry`),
+    enabled: !!bookId,
+  });
+}
+export function useUpdateBookEntry(bookId: number) {
+  const { guildId, userId, base } = useGuildApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { reads?: number; notes?: string | null }) =>
+      api.put(`${base}/books/${bookId}/entry`, body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: rk(guildId, userId, "books", bookId, "entry") });
+      qc.invalidateQueries({ queryKey: rk(guildId, userId, "books") });
+    },
+  });
+}
+
 export function useGameEntry(gameId: number) {
   const { guildId, userId, base } = useGuildApi();
   return useQuery({
@@ -429,6 +508,26 @@ export function useUpdateTelevisionShowEntry(showId: number) {
   });
 }
 
+export function useTelevisionSeasonEntry(seasonId: number) {
+  const { guildId, userId, base } = useGuildApi();
+  return useQuery({
+    queryKey: rk(guildId, userId, "television", "seasons", seasonId, "entry"),
+    queryFn: () => api.get<TelevisionSeasonEntry | null>(`${base}/television/seasons/${seasonId}/entry`),
+    enabled: !!seasonId,
+  });
+}
+export function useUpdateTelevisionSeasonEntry(showId: number, seasonId: number) {
+  const { guildId, userId, base } = useGuildApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { notes?: string | null }) => api.put(`${base}/television/seasons/${seasonId}/entry`, body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: rk(guildId, userId, "television", "seasons", seasonId, "entry") });
+      qc.invalidateQueries({ queryKey: rk(guildId, userId, "television", "shows", showId, "seasons") });
+    },
+  });
+}
+
 export function useTelevisionEpisodeEntry(episodeId: number) {
   const { guildId, userId, base } = useGuildApi();
   return useQuery({
@@ -437,7 +536,7 @@ export function useTelevisionEpisodeEntry(episodeId: number) {
     enabled: !!episodeId,
   });
 }
-export function useUpdateTelevisionEpisodeEntry(showId: number, episodeId: number) {
+export function useUpdateTelevisionEpisodeEntry(seasonId: number, episodeId: number) {
   const { guildId, userId, base } = useGuildApi();
   const qc = useQueryClient();
   return useMutation({
@@ -445,14 +544,14 @@ export function useUpdateTelevisionEpisodeEntry(showId: number, episodeId: numbe
       api.put(`${base}/television/episodes/${episodeId}/entry`, body),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: rk(guildId, userId, "television", "episodes", episodeId, "entry") });
-      qc.invalidateQueries({ queryKey: rk(guildId, userId, "television", "shows", showId, "episodes") });
+      qc.invalidateQueries({ queryKey: rk(guildId, userId, "television", "seasons", seasonId, "episodes") });
     },
   });
 }
 
 // ── Comparisons (pairwise ranking) ────────────────────────────────────────────
 /** `path` is the comparisons endpoint's prefix, e.g. "artists", "movies",
- * "artists/12/albums", "television/shows/4/episodes". */
+ * "artists/12/albums", "television/shows/4/seasons", "television/seasons/7/episodes". */
 export function useComparisons(path: string) {
   const { guildId, userId, base } = useGuildApi();
   return useQuery({
@@ -516,6 +615,23 @@ export function useTmdbTvImport() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (body: TmdbTvImportIn) => api.post<TmdbTvImportOut>(`${base}/television/tmdb-import`, body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: gk(guildId, "television") });
+      qc.invalidateQueries({ queryKey: gk(guildId, "people") });
+    },
+  });
+}
+export function useTmdbTvSeasonLookup() {
+  const { base } = useGuildApi();
+  return useMutation({
+    mutationFn: (body: TmdbTvSeasonLookupIn) => api.post<TmdbTvSeasonLookup>(`${base}/television/tmdb-import/season-lookup`, body),
+  });
+}
+export function useTmdbTvSeasonImport() {
+  const { guildId, base } = useGuildApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: TmdbTvSeasonImportIn) => api.post<TmdbTvSeasonImportOut>(`${base}/television/tmdb-import/season`, body),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: gk(guildId, "television") });
       qc.invalidateQueries({ queryKey: gk(guildId, "people") });
@@ -628,5 +744,82 @@ export function useClearSuppressions() {
   return useMutation({
     mutationFn: () => api.delete(`${base}/movie-person-scan/suppressions`),
     onSuccess: () => qc.invalidateQueries({ queryKey: gk(guildId, "movie-person-scan", "suppressions") }),
+  });
+}
+
+// ── Television / game person scans ───────────────────────────────────────────────
+// One set of hooks for both: `path` is the router prefix ("television-person-scan"
+// / "game-person-scan"), which also namespaces the cache keys.
+export function usePersonScanJobs(path: string) {
+  const { guildId, base } = useGuildApi();
+  return useQuery({ queryKey: gk(guildId, path, "jobs"), queryFn: () => api.get<PersonScanJob[]>(`${base}/${path}/jobs`) });
+}
+export function usePersonScanJob(path: string, jobId: string | null) {
+  const { guildId, base } = useGuildApi();
+  return useQuery({
+    queryKey: gk(guildId, path, "jobs", jobId),
+    queryFn: () => api.get<PersonScanJob>(`${base}/${path}/jobs/${jobId}`),
+    enabled: !!jobId,
+    refetchInterval: (query) => (query.state.data && ["done", "cancelled", "error"].includes(query.state.data.status) ? false : 1000),
+  });
+}
+export function usePersonScanResults(path: string, jobId: string | null) {
+  const { guildId, base } = useGuildApi();
+  return useQuery({
+    queryKey: gk(guildId, path, "jobs", jobId, "results"),
+    queryFn: () => api.get<PersonScanResults>(`${base}/${path}/jobs/${jobId}/results`),
+    enabled: !!jobId,
+  });
+}
+export function useStartPersonScan(path: string) {
+  const { guildId, base } = useGuildApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { entity_ids?: number[] | null; force_refresh?: boolean }) =>
+      api.post<PersonScanJob>(`${base}/${path}/jobs`, body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: gk(guildId, path, "jobs") }),
+  });
+}
+export function useCancelPersonScan(path: string) {
+  const { guildId, base } = useGuildApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (jobId: string) => api.post(`${base}/${path}/jobs/${jobId}/cancel`, {}),
+    onSuccess: () => qc.invalidateQueries({ queryKey: gk(guildId, path, "jobs") }),
+  });
+}
+export function useDeletePersonScanJob(path: string) {
+  const { guildId, base } = useGuildApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (jobId: string) => api.delete(`${base}/${path}/jobs/${jobId}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: gk(guildId, path, "jobs") }),
+  });
+}
+/** `invalidate`: the catalog prefixes whose cached detail pages show the new links. */
+export function useApplyPersonScan(path: string, invalidate: string[]) {
+  const { guildId, base } = useGuildApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: PersonScanApplyIn) => api.post<PersonScanApplyResult>(`${base}/${path}/apply`, body),
+    onSuccess: () => {
+      for (const prefix of [...invalidate, "people"]) qc.invalidateQueries({ queryKey: gk(guildId, prefix) });
+      qc.invalidateQueries({ queryKey: gk(guildId, path, "suppressions") });
+    },
+  });
+}
+export function usePersonScanSuppressions(path: string) {
+  const { guildId, base } = useGuildApi();
+  return useQuery({
+    queryKey: gk(guildId, path, "suppressions"),
+    queryFn: () => api.get<PersonScanSuppressionList>(`${base}/${path}/suppressions`),
+  });
+}
+export function useClearPersonScanSuppressions(path: string) {
+  const { guildId, base } = useGuildApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.delete(`${base}/${path}/suppressions`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: gk(guildId, path, "suppressions") }),
   });
 }

@@ -6,9 +6,12 @@ caller).
 Television score formulas
 -------------------------
 Each show scores 1 / show position (in the viewing member's show ranking).
-Each episode scores 1 / position within its show (in the viewing member's
-per-show episode ranking). Combining the two gives a cross-show episode score:
-                                        episode_global_score = show_score * episode_score
+Each season scores 1 / position within its show (in the viewing member's
+per-show season ranking); a season they haven't ranked scores as if placed just
+below their ranked ones. Each episode scores 1 / position within its season (in
+the viewing member's per-season episode ranking). Combining the three gives a
+cross-show episode score:
+                        episode_global_score = show_score * season_score * episode_score
 
 Person score = mean over every item they are credited on, where an item scores
 ``show_score`` for a show-level credit and ``episode_global_score`` for an
@@ -30,7 +33,7 @@ from ..authz import Capability
 from ..database import get_database
 from ..database_models import (
     Genre, GuildMember, Person, TelevisionEpisode, TelevisionEpisodePerson,
-    TelevisionShow, TelevisionShowPerson, UserTelevisionEpisodeRank, UserTelevisionShowRank,
+    TelevisionShow, TelevisionShowPerson, UserTelevisionEpisodeRank, UserTelevisionSeasonRank, UserTelevisionShowRank,
 )
 from ..database_models.genre_parent import genre_parents
 from ..database_models.junctions import television_episode_genres_junction, television_show_genres_junction
@@ -67,10 +70,23 @@ class TvData:
         self.show_score: dict[int, float] = {s.id: 1.0 / pos for pos, s in enumerate(self.shows, start=1)}
         self.show_by_id = {s.id: s for s in self.shows}
 
+        season_pos: dict[int, int] = {}
+        seasons_ranked: dict[int, int] = defaultdict(int)  # show -> how many of its seasons are ranked
+        for r in db.scalars(
+            select(UserTelevisionSeasonRank)
+            .where(UserTelevisionSeasonRank.user_id == uid, UserTelevisionSeasonRank.guild_id == ctx.guild_id)
+            .order_by(UserTelevisionSeasonRank.show_id, UserTelevisionSeasonRank.rank, UserTelevisionSeasonRank.season_id)
+        ):
+            seasons_ranked[r.show_id] += 1
+            season_pos[r.season_id] = seasons_ranked[r.show_id]
+
+        def season_score(show_id: int, season_id: int) -> float:
+            return 1.0 / season_pos.get(season_id, seasons_ranked[show_id] + 1)
+
         ep_rank_rows = list(db.scalars(
             select(UserTelevisionEpisodeRank)
             .where(UserTelevisionEpisodeRank.user_id == uid, UserTelevisionEpisodeRank.guild_id == ctx.guild_id)
-            .order_by(UserTelevisionEpisodeRank.show_id, UserTelevisionEpisodeRank.rank, UserTelevisionEpisodeRank.episode_id)
+            .order_by(UserTelevisionEpisodeRank.season_id, UserTelevisionEpisodeRank.rank, UserTelevisionEpisodeRank.episode_id)
         ).all())
         watches_by_episode: dict[int, int] = {r.episode_id: r.watches for r in ep_rank_rows}
         episode_ids = [r.episode_id for r in ep_rank_rows]
@@ -83,16 +99,18 @@ class TvData:
         self.episode_score: dict[int, float] = {}
         self.episode_global_score: dict[int, float] = {}
         self.show_episodes: dict[int, list[TelevisionEpisode]] = defaultdict(list)
-        per_show_pos: dict[int, int] = defaultdict(int)
+        per_season_pos: dict[int, int] = defaultdict(int)
         for r in ep_rank_rows:
             ep = ep_by_id_all.get(r.episode_id)
             if ep is None or ep.show_id not in self.show_score:
                 continue
-            per_show_pos[ep.show_id] += 1
-            pos = per_show_pos[ep.show_id]
+            per_season_pos[ep.season_id] += 1
+            pos = per_season_pos[ep.season_id]
             self.episodes.append(ep)
             self.episode_score[ep.id] = 1.0 / pos
-            self.episode_global_score[ep.id] = self.show_score[ep.show_id] * (1.0 / pos)
+            self.episode_global_score[ep.id] = (
+                self.show_score[ep.show_id] * season_score(ep.show_id, ep.season_id) * (1.0 / pos)
+            )
             self.show_episodes[ep.show_id].append(ep)
 
         ep_by_id = {e.id: e for e in self.episodes}

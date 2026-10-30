@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { api } from "../api/client";
 import { useGuildApi, usePeople } from "../api/hooks";
 import { gk, rk } from "../api/keys";
-import type { CastRole, Person, TelevisionEpisode, TelevisionShow } from "../api/types";
+import type { CastRole, Person, TelevisionEpisode, TelevisionSeason, TelevisionShow } from "../api/types";
 import { CAST_ROLE_LABELS, TV_EPISODE_ROLES } from "../api/types";
 import { GenreChooser } from "../genre/GenreChooser";
 import { TELEVISION_GENRES } from "../genre/config";
@@ -22,10 +22,11 @@ function linkKey(l: PendingLink) { return `${l.personId}:${l.role}`; }
 
 export function TelevisionEpisodeForm(props: {
   show: TelevisionShow;
+  season: TelevisionSeason;
   initial?: TelevisionEpisode;
   onClose: (savedName?: string, savedId?: number) => void;
 }) {
-  const { show, initial, onClose } = props;
+  const { show, season, initial, onClose } = props;
   const editing = initial !== undefined;
   const qc = useQueryClient();
   const { guildId, userId, base } = useGuildApi();
@@ -34,14 +35,14 @@ export function TelevisionEpisodeForm(props: {
   const [genreOpen, setGenreOpen] = useState(false);
   const [creatingPerson, setCreatingPerson] = useState(false);
   const [personDupWarning, setPersonDupWarning] = useState<string | null>(null);
-  const [inheritFromShow, setInheritFromShow] = useState(true);
+  const [inheritFromParent, setInheritFromParent] = useState(true);
   const [addToList, setAddToList] = useState(true);
 
   const [f, setF] = useState({
     name:            initial?.name            ?? "",
     name_en:         initial?.name_en         ?? "",
     runtime_minutes: initial?.runtime_minutes ?? 0,
-    release_year:    initial?.release_year    ?? show.release_year,
+    release_year:    initial?.release_year    ?? season.release_year,
     notes:           initial?.notes           ?? "",
   });
 
@@ -64,23 +65,24 @@ export function TelevisionEpisodeForm(props: {
   }, [initial?.persons]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // New episodes: the "inherit" checkbox reflects — and lets you drop — what
-  // will actually be copied, so prefill the pickers from the show rather than
-  // letting the server graft links on behind the form's back.
+  // will actually be copied, so prefill the pickers from the season (people)
+  // and show (genres) rather than letting the server graft links on behind the
+  // form's back.
   const inheritedLinks = useMemo<PendingLink[]>(
     () =>
-      show.persons
+      season.persons
         .filter((p) => (TV_EPISODE_ROLES as readonly CastRole[]).includes(p.role))
         .map((p) => ({ personId: p.id, role: p.role })),
-    [show.persons],
+    [season.persons],
   );
 
   useEffect(() => {
     if (editing) return;
-    const links = inheritFromShow ? inheritedLinks : [];
+    const links = inheritFromParent ? inheritedLinks : [];
     setPendingLinks(links);
     setCastLinks(new Set(links.map(linkKey)));
-    setGenreIds(new Set(inheritFromShow ? show.genre_ids : []));
-  }, [editing, inheritFromShow, inheritedLinks, show.genre_ids]);
+    setGenreIds(new Set(inheritFromParent ? show.genre_ids : []));
+  }, [editing, inheritFromParent, inheritedLinks, show.genre_ids]);
 
   const [castSortSnap, setCastSortSnap] = useState(() => castLinks);
   useEffect(() => { setCastSortSnap(castLinks); }, [castSearch, addRole]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -120,12 +122,12 @@ export function TelevisionEpisodeForm(props: {
           release_year: f.release_year, notes: orNull(f.notes),
         });
       } else {
-        episode = await api.post<TelevisionEpisode>(`${base}/television/shows/${show.id}/episodes`, {
+        episode = await api.post<TelevisionEpisode>(`${base}/television/seasons/${season.id}/episodes`, {
           name: f.name, name_en: orNull(f.name_en), runtime_minutes: f.runtime_minutes,
           release_year: f.release_year, notes: orNull(f.notes),
-          // People & genres are sent explicitly below, pre-seeded from the show
-          // when "inherit" is ticked — so the server must not add its own.
-          inherit_from_show: false,
+          // People & genres are sent explicitly below, pre-seeded from the
+          // season/show when "inherit" is ticked — so the server must not add its own.
+          inherit_from_parent: false,
         });
       }
 
@@ -160,7 +162,7 @@ export function TelevisionEpisodeForm(props: {
     onSuccess: (saved) => {
       qc.invalidateQueries({ queryKey: gk(guildId, "television") });
       if (!editing && addToList) {
-        qc.invalidateQueries({ queryKey: rk(guildId, userId, "television", "shows", show.id, "episodes") });
+        qc.invalidateQueries({ queryKey: rk(guildId, userId, "television", "seasons", season.id, "episodes") });
       }
       onClose(saved.name, saved.id);
     },
@@ -201,16 +203,16 @@ export function TelevisionEpisodeForm(props: {
         />
       )}
       <form onSubmit={(e) => { e.preventDefault(); save.mutate(); }}>
-        <h2>{editing ? "Edit" : "New"} Episode <span style={{ opacity: 0.6, fontWeight: "normal" }}>— {show.name}</span></h2>
+        <h2>{editing ? "Edit" : "New"} Episode <span style={{ opacity: 0.6, fontWeight: "normal" }}>— {show.name} · {season.name}</span></h2>
 
         {!editing && (
           <label style={{ display: "flex", alignItems: "center", gap: "0.5rem", flexDirection: "row" }}>
             <input
               type="checkbox"
-              checked={inheritFromShow}
-              onChange={(e) => setInheritFromShow(e.target.checked)}
+              checked={inheritFromParent}
+              onChange={(e) => setInheritFromParent(e.target.checked)}
             />
-            <span>Inherit the show's people &amp; genres</span>
+            <span>Inherit the season's people &amp; the show's genres</span>
           </label>
         )}
 
@@ -252,9 +254,9 @@ export function TelevisionEpisodeForm(props: {
           )}
           {castOpen && (
             <>
-              {!editing && inheritFromShow && (
+              {!editing && inheritFromParent && (
                 <p style={{ opacity: 0.6, fontSize: "0.85em", marginTop: 0 }}>
-                  Starts from the show's people; adjust below if needed.
+                  Starts from the season's people; adjust below if needed.
                 </p>
               )}
               {personDupWarning && (

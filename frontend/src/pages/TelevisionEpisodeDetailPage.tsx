@@ -1,20 +1,19 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
 import { api } from "../api/client";
 import {
-  useGuildApi, useTelevisionEpisode, useTelevisionEpisodeEntry, useTelevisionGenres, useTelevisionShow,
-  useUpdateTelevisionEpisodeEntry, usePeople,
+  useGuildApi, useTelevisionEpisode, useTelevisionEpisodeEntry, useTelevisionGenres, useTelevisionSeason,
+  useTelevisionShow, useUpdateTelevisionEpisodeEntry,
 } from "../api/hooks";
 import { gk, rk } from "../api/keys";
-import type { CastRole, Genre, Person, TelevisionEpisode } from "../api/types";
-import { CAST_ROLE_LABELS, TV_EPISODE_ROLES } from "../api/types";
+import type { Genre, TelevisionEpisode } from "../api/types";
+import { TV_EPISODE_ROLES } from "../api/types";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { LinksSection } from "../components/LinksSection";
-import { PersonForm } from "../components/PersonForm";
-import { matchesPersonSearch, PersonPicker, type PersonSearchField } from "../components/PersonPicker";
 import { TelevisionEpisodeForm } from "../components/TelevisionEpisodeForm";
+import { TvPeopleSection } from "../components/TvPeopleSection";
 import { GenreChooser } from "../genre/GenreChooser";
 import { TELEVISION_GENRES } from "../genre/config";
 import { useCan } from "../guild/GuildProvider";
@@ -25,145 +24,6 @@ function fmtRuntime(minutes: number) {
   const m = minutes % 60;
   if (h > 0) return `${h}:${String(m).padStart(2, "0")}`;
   return `${m}m`;
-}
-
-type PendingLink = { personId: number; role: CastRole };
-function linkKey(l: PendingLink) { return `${l.personId}:${l.role}`; }
-
-// ── People section ──────────────────────────────────────────────────────────
-
-function EpisodePeopleSection({ episodeId, episode }: { episodeId: number; episode: TelevisionEpisode }) {
-  const qc = useQueryClient();
-  const { guildId, base } = useGuildApi();
-  const canEdit = useCan("catalog_edit");
-  const { data: allPeople = [], isLoading: peopleLoading } = usePeople();
-  const [editing, setEditing] = useState(false);
-  const [creatingPerson, setCreatingPerson] = useState(false);
-  const [dupWarning, setDupWarning] = useState<string | null>(null);
-  const [search, setSearch] = useState("");
-  const [searchField, setSearchField] = useState<PersonSearchField>("all");
-  const [addRole, setAddRole] = useState<CastRole>("director");
-
-  const castKeys = useMemo(() => new Set(episode.persons.map((p) => linkKey({ personId: p.id, role: p.role }))), [episode.persons]);
-
-  const filteredPeople = useMemo(() => {
-    return allPeople
-      .filter((p) => matchesPersonSearch(p, searchField, search))
-      .sort((a, b) => {
-        const aKey = linkKey({ personId: a.id, role: addRole });
-        const bKey = linkKey({ personId: b.id, role: addRole });
-        return (castKeys.has(aKey) ? 0 : 1) - (castKeys.has(bKey) ? 0 : 1);
-      });
-  }, [search, searchField, allPeople, castKeys, addRole]);
-
-  const invalidate = () => qc.invalidateQueries({ queryKey: gk(guildId, "television", "episodes", episodeId) });
-
-  const link = useMutation({
-    mutationFn: ({ pid, role }: { pid: number; role: CastRole }) =>
-      api.put(`${base}/television/episodes/${episodeId}/persons/${pid}/${role}`),
-    onSuccess: invalidate,
-  });
-  const unlink = useMutation({
-    mutationFn: ({ pid, role }: { pid: number; role: CastRole }) =>
-      api.delete(`${base}/television/episodes/${episodeId}/persons/${pid}/${role}`),
-    onSuccess: invalidate,
-  });
-
-  function toggleLink(person: Person, role: CastRole) {
-    const key = linkKey({ personId: person.id, role });
-    if (castKeys.has(key)) unlink.mutate({ pid: person.id, role });
-    else link.mutate({ pid: person.id, role });
-  }
-
-  const byRole: Partial<Record<CastRole, TelevisionEpisode["persons"]>> = {};
-  for (const p of episode.persons) (byRole[p.role] ??= []).push(p);
-
-  return (
-    <section style={{ marginBottom: "1.5rem" }}>
-      <header className="page-head" style={{ marginBottom: "0.5rem" }}>
-        <span className="inline">
-          <h2 style={{ margin: 0 }}>People</h2>
-          {(link.isPending || unlink.isPending) && <InlineBusy label="Saving…" />}
-        </span>
-        {canEdit && (
-          <button style={{ fontSize: 12 }} onClick={() => setEditing((o) => !o)}>
-            {editing ? "Done" : "Edit"}
-          </button>
-        )}
-      </header>
-
-      {editing && (
-        <>
-          {dupWarning && (
-            <div className="dup-warning">
-              <span>{dupWarning}</span>
-              <button className="icon" onClick={() => setDupWarning(null)}>✕</button>
-            </div>
-          )}
-          <div style={{ marginBottom: "0.75rem" }}>
-            <PersonPicker
-              roles={TV_EPISODE_ROLES}
-              roleLabels={CAST_ROLE_LABELS}
-              activeRole={addRole}
-              onRole={setAddRole}
-              searchField={searchField}
-              onSearchField={setSearchField}
-              search={search}
-              onSearch={setSearch}
-              onNewPerson={() => setCreatingPerson(true)}
-              people={filteredPeople}
-              isChecked={(p, role) => castKeys.has(linkKey({ personId: p.id, role }))}
-              onToggle={toggleLink}
-              loading={peopleLoading}
-              busy={link.isPending || unlink.isPending}
-            />
-          </div>
-        </>
-      )}
-
-      {episode.persons.length > 0 ? (
-        TV_EPISODE_ROLES.filter((r) => byRole[r]?.length).map((role) => (
-          <div key={role} style={{ marginBottom: "0.75rem" }}>
-            <div className="detail-label" style={{ marginBottom: "0.25rem" }}>{CAST_ROLE_LABELS[role]}</div>
-            <ul className="sortable plain-list">
-              {byRole[role]!.map((p) => (
-                <li key={`${p.id}:${p.role}`} className="sortable-item">
-                  <div className="row" style={{ gridTemplateColumns: "1fr" }}>
-                    <Link className="name" to={`/g/${guildId}/people/${p.id}`}>
-                      {p.name}{p.name_en && <span style={{ opacity: 0.6 }}> ({p.name_en})</span>}
-                    </Link>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          </div>
-        ))
-      ) : (
-        <p style={{ opacity: 0.5, margin: "0.25rem 0 0" }}>No people linked.</p>
-      )}
-
-      {creatingPerson && (
-        <div className="modal-backdrop" onClick={() => setCreatingPerson(false)}>
-          <div onClick={(e) => e.stopPropagation()}>
-            <PersonForm
-              onClose={(savedName, savedId) => {
-                setCreatingPerson(false);
-                if (savedId != null) {
-                  qc.invalidateQueries({ queryKey: gk(guildId, "people") });
-                  link.mutate({ pid: savedId, role: addRole });
-                }
-                if (savedName != null) {
-                  const nameLower = savedName.toLowerCase();
-                  const dups = allPeople.filter((p) => p.name.toLowerCase() === nameLower && p.id !== savedId);
-                  if (dups.length > 0) setDupWarning(`Warning: another person named "${savedName}" already exists.`);
-                }
-              }}
-            />
-          </div>
-        </div>
-      )}
-    </section>
-  );
 }
 
 // ── Genres section ───────────────────────────────────────────────────────────
@@ -255,12 +115,12 @@ function EpisodeGenresSection({ episodeId, episode }: { episodeId: number; episo
 
 // ── My list section ──────────────────────────────────────────────────────────
 
-function MyEpisodeListSection({ showId, episodeId }: { showId: number; episodeId: number }) {
+function MyEpisodeListSection({ seasonId, episodeId }: { seasonId: number; episodeId: number }) {
   const qc = useQueryClient();
   const { guildId, userId, base } = useGuildApi();
   const canRank = useCan("rank");
   const { data: entry, isLoading } = useTelevisionEpisodeEntry(episodeId);
-  const update = useUpdateTelevisionEpisodeEntry(showId, episodeId);
+  const update = useUpdateTelevisionEpisodeEntry(seasonId, episodeId);
   const [editing, setEditing] = useState(false);
   const [notes, setNotes] = useState("");
   const [confirmRemove, setConfirmRemove] = useState(false);
@@ -270,8 +130,9 @@ function MyEpisodeListSection({ showId, episodeId }: { showId: number; episodeId
   }, [entry]);
 
   const invalidate = () => {
-    qc.invalidateQueries({ queryKey: gk(guildId, "television", "shows", showId, "episodes") });
-    qc.invalidateQueries({ queryKey: rk(guildId, userId, "television", "shows", showId, "episodes") });
+    qc.invalidateQueries({ queryKey: gk(guildId, "television", "seasons", seasonId, "episodes") });
+    qc.invalidateQueries({ queryKey: gk(guildId, "television", "episodes", episodeId) });
+    qc.invalidateQueries({ queryKey: rk(guildId, userId, "television", "seasons", seasonId, "episodes") });
     qc.invalidateQueries({ queryKey: rk(guildId, userId, "television", "episodes", episodeId, "entry") });
   };
   const add = useMutation({
@@ -373,25 +234,24 @@ export function TelevisionEpisodeDetailPage() {
   const [editing, setEditing] = useState(false);
 
   const { data: episode, isLoading, isError } = useTelevisionEpisode(eid);
-  const { data: show, isLoading: showLoading } = useTelevisionShow(episode?.show_id ?? 0);
+  const { data: show } = useTelevisionShow(episode?.show_id ?? 0);
+  const { data: season, isLoading: seasonLoading } = useTelevisionSeason(episode?.season_id ?? 0);
 
   if (isLoading) return <section><LoadingState label="Loading episode…" /></section>;
   if (isError || !episode) return <section><p>Episode not found.</p></section>;
 
   return (
     <section>
-      {show ? (
-        <Link to={`/g/${guildId}/television/shows/${show.id}`} className="back-link">
-          ← {show.name}
-        </Link>
-      ) : (
-        <Link to={`/g/${guildId}/television`} className="back-link">← All shows</Link>
-      )}
+      <span className="back-link">
+        <Link to={`/g/${guildId}/television/shows/${episode.show_id}`}>← {show?.name ?? "Show"}</Link>
+        {" / "}
+        <Link to={`/g/${guildId}/television/seasons/${episode.season_id}`}>{season?.name ?? "Season"}</Link>
+      </span>
       <header className="page-head">
         <h1>
           {episode.name}{episode.name_en && <span style={{ opacity: 0.6, fontWeight: "normal" }}> ({episode.name_en})</span>}
         </h1>
-        {canEdit && show && <button onClick={() => setEditing(true)}>✎ Edit</button>}
+        {canEdit && show && season && <button onClick={() => setEditing(true)}>✎ Edit</button>}
       </header>
 
       <div className="artist-detail-dropdown" style={{ marginBottom: "1.5rem" }}>
@@ -407,16 +267,23 @@ export function TelevisionEpisodeDetailPage() {
         )}
       </div>
 
-      <EpisodePeopleSection episodeId={eid} episode={episode} />
+      <TvPeopleSection
+        path="television/episodes"
+        ownerId={eid}
+        persons={episode.persons}
+        roles={TV_EPISODE_ROLES}
+        defaultRole="director"
+      />
       <EpisodeGenresSection episodeId={eid} episode={episode} />
       <LinksSection path="television/episodes" section="television" ownerId={eid} />
-      {showLoading ? <LoadingState compact label="Loading show…" /> : show && <MyEpisodeListSection showId={show.id} episodeId={eid} />}
+      {seasonLoading ? <LoadingState compact label="Loading season…" /> : season && <MyEpisodeListSection seasonId={season.id} episodeId={eid} />}
 
-      {editing && show && (
+      {editing && show && season && (
         <div className="modal-backdrop" onClick={() => setEditing(false)}>
           <div onClick={(e) => e.stopPropagation()}>
             <TelevisionEpisodeForm
               show={show}
+              season={season}
               initial={episode}
               onClose={() => {
                 setEditing(false);

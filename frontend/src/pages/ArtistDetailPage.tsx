@@ -23,6 +23,12 @@ import { BusyButton, InlineBusy, LoadingState, Spinner } from "../components/Spi
 
 type AlbumView = "mine" | "catalog";
 
+const SOUNDTRACKS = [
+  { label: "Soundtrack for", field: "soundtrack_movies", route: "movies" },
+  { label: "Soundtrack for (TV)", field: "soundtrack_television_shows", route: "television/shows" },
+  { label: "Soundtrack for (Game)", field: "soundtrack_games", route: "games" },
+] as const;
+
 function fmtRuntime(seconds: number) {
   const h = Math.floor(seconds / 3600);
   const m = Math.floor((seconds % 3600) / 60);
@@ -316,8 +322,24 @@ export function ArtistDetailPage() {
             </span>
           </div>
         )}
+        {SOUNDTRACKS.filter((k) => a[k.field].length > 0).map((k) => (
+          <div key={k.field} className="album-detail-row">
+            <span className="detail-label">{k.label}</span>
+            <span>
+              {a[k.field].map((r, i) => (
+                <span key={r.id}>
+                  {i > 0 && ", "}
+                  <Link to={`/g/${guildId}/${k.route}/${r.id}`}>
+                    {r.name}{r.name_en && <span style={{ opacity: 0.6 }}> ({r.name_en})</span>}
+                  </Link>
+                </span>
+              ))}
+            </span>
+          </div>
+        ))}
         {a.notes && <div className="album-detail-row"><span className="detail-label">Notes</span><span>{a.notes}</span></div>}
-        {!a.alias && a.artists.length <= 1 && a.links.length === 0 && !a.notes && a.genre_ids.length === 0 && (
+        {!a.alias && a.artists.length <= 1 && a.links.length === 0 && !a.notes && a.genre_ids.length === 0
+          && SOUNDTRACKS.every((k) => a[k.field].length === 0) && (
           <span style={{ opacity: 0.5 }}>No extra info.</span>
         )}
       </div>

@@ -1,5 +1,7 @@
 import { useGuildApi } from "../api/hooks";
 import {
+  useBookGenreCategories,
+  useBookGenres,
   useGameGenreCategories,
   useGameGenres,
   useGamePlatformCategories,
@@ -43,7 +45,7 @@ export interface GenreDomain {
   useCategories: () => { data?: GenreCategory[]; isLoading: boolean };
   /** Which shared-genre boolean flag this domain corresponds to; unset for
    * taxonomies (like game platforms) that aren't split by media type. */
-  mediaTypeFlag?: "is_music" | "is_movie" | "is_game" | "is_television";
+  mediaTypeFlag?: "is_music" | "is_movie" | "is_game" | "is_television" | "is_book";
 }
 
 export const MUSIC_GENRES: GenreDomain = {
@@ -96,6 +98,19 @@ export const TELEVISION_GENRES: GenreDomain = {
   useAll: useTelevisionGenres,
   useCategories: useTelevisionGenreCategories,
   mediaTypeFlag: "is_television",
+};
+
+export const BOOK_GENRES: GenreDomain = {
+  key: "book-genres",
+  useApiBase: () => `${useGuildApi().base}/book-genres`,
+  useCategoryApiBase: () => `${useGuildApi().base}/book-genres/categories`,
+  routeBase: "/books/genres",
+  heading: "Book Genre",
+  noun: "genres",
+  synonymPlaceholder: "SF, Science Fiction",
+  useAll: useBookGenres,
+  useCategories: useBookGenreCategories,
+  mediaTypeFlag: "is_book",
 };
 
 /** Platforms are a hierarchical taxonomy, so they reuse the genre UI wholesale. */

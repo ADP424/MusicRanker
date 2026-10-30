@@ -172,13 +172,28 @@ export function TelevisionShowsPage() {
             </span>
           </div>
         )}
+        {s.source_books.length > 0 && (
+          <div className="album-detail-row">
+            <span className="detail-label">Based on</span>
+            <span>
+              {s.source_books.map((b, i) => (
+                <span key={b.id}>
+                  {i > 0 && ", "}
+                  <Link to={`/g/${guildId}/books/${b.id}`}>
+                    {b.name}{b.name_en && <span style={{ opacity: 0.6 }}> ({b.name_en})</span>}
+                  </Link>
+                </span>
+              ))}
+            </span>
+          </div>
+        )}
         {s.notes && (
           <div className="album-detail-row">
             <span className="detail-label">Notes</span>
             <span>{s.notes}</span>
           </div>
         )}
-        {s.persons.length === 0 && !s.notes && s.genre_ids.length === 0 && s.soundtrack_albums.length === 0 && (
+        {s.persons.length === 0 && !s.notes && s.genre_ids.length === 0 && s.soundtrack_albums.length === 0 && s.source_books.length === 0 && (
           <span style={{ opacity: 0.5 }}>No extra info.</span>
         )}
       </div>
@@ -249,7 +264,7 @@ export function TelevisionShowsPage() {
               </Link>
             </span>
             <span className="meta">
-              {s.release_year} · {s.episode_count} episode{s.episode_count !== 1 ? "s" : ""}
+              {s.release_year} · {s.season_count} season{s.season_count !== 1 ? "s" : ""} · {s.episode_count} episode{s.episode_count !== 1 ? "s" : ""}
             </span>
             <span />
             <button className="icon" title="Show details" onClick={() => toggleExpand(s.id)}>
@@ -283,7 +298,7 @@ export function TelevisionShowsPage() {
                 </Link>
               </span>
               <span className="meta">
-                {s.release_year} · {s.episode_count} episode{s.episode_count !== 1 ? "s" : ""}
+                {s.release_year} · {s.season_count} season{s.season_count !== 1 ? "s" : ""} · {s.episode_count} episode{s.episode_count !== 1 ? "s" : ""}
               </span>
               {s.in_my_list
                 ? <span className="meta">in your list</span>

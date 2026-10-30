@@ -468,6 +468,21 @@ export function GameDetailPage() {
             </span>
           </div>
         )}
+        {(game.source_books ?? []).length > 0 && (
+          <div className="detail-tags" style={{ marginTop: "0.5rem" }}>
+            <span className="detail-label">Based on</span>
+            <span>
+              {game.source_books.map((b, i) => (
+                <span key={b.id}>
+                  {i > 0 && ", "}
+                  <Link to={`/g/${guildId}/books/${b.id}`}>
+                    {b.name}{b.name_en && <span style={{ opacity: 0.6 }}> ({b.name_en})</span>}
+                  </Link>
+                </span>
+              ))}
+            </span>
+          </div>
+        )}
         {game.notes && (
           <div className="detail-tags" style={{ marginTop: "0.5rem" }}>
             <span className="detail-label">Notes</span>

@@ -6,7 +6,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base
 from .categories import (
-    game_genre_category_members, genre_category_members,
+    book_genre_category_members, game_genre_category_members, genre_category_members,
     movie_genre_category_members, television_genre_category_members,
 )
 from .genre_parent import genre_parents
@@ -17,7 +17,7 @@ class Genre(GuildScoped, Audited, NormalizedNames, Base):
     __tablename__ = "genres"
     __table_args__ = (
         guild_unique("genres"),
-        CheckConstraint("is_music OR is_movie OR is_game OR is_television", name="chk_genre_has_media_type"),
+        CheckConstraint("is_music OR is_movie OR is_game OR is_television OR is_book", name="chk_genre_has_media_type"),
         Index("idx_genres_guild_norm", "guild_id", "name_norm"),
     )
 
@@ -30,6 +30,7 @@ class Genre(GuildScoped, Audited, NormalizedNames, Base):
     is_movie: Mapped[bool] = mapped_column(server_default="false")
     is_game: Mapped[bool] = mapped_column(server_default="false")
     is_television: Mapped[bool] = mapped_column(server_default="false")
+    is_book: Mapped[bool] = mapped_column(server_default="false")
 
     music_categories = relationship("GenreCategory", secondary=genre_category_members, back_populates="genres")
     movie_categories = relationship("MovieGenreCategory", secondary=movie_genre_category_members,
@@ -37,6 +38,8 @@ class Genre(GuildScoped, Audited, NormalizedNames, Base):
     game_categories = relationship("GameGenreCategory", secondary=game_genre_category_members, back_populates="genres")
     television_categories = relationship("TelevisionGenreCategory", secondary=television_genre_category_members,
                                          back_populates="genres")
+    book_categories = relationship("BookGenreCategory", secondary=book_genre_category_members,
+                                   back_populates="genres")
 
     parents = relationship(
         "Genre", secondary=genre_parents,

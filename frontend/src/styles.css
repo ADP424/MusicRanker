@@ -285,6 +285,12 @@ button.danger:hover { background: #a22; }
 /* Catalog rows (no drag handle/position): name | meta | add-to-list | expand | edit | delete */
 .row.catalog-row { grid-template-columns: 1fr auto auto auto auto auto; }
 
+/* Season rows: handle | pos | name | meta | expand | remove-from-list | edit | tmdb | delete */
+.row.season-row { grid-template-columns: 1.5rem 3rem 1fr auto auto auto auto auto auto; }
+
+/* TV catalog rows (seasons/episodes): name | meta | add-to-list | expand | edit | tmdb | delete */
+.row.tv-catalog-row { grid-template-columns: 1fr auto auto auto auto auto auto; }
+
 /* Stats page */
 .stats-page h1 { margin-bottom: 0.5rem; }
 .stats-page { max-width: 90rem; }

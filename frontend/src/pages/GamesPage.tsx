@@ -196,13 +196,28 @@ export function GamesPage() {
             </span>
           </div>
         )}
+        {g.source_books.length > 0 && (
+          <div className="album-detail-row">
+            <span className="detail-label">Based on</span>
+            <span>
+              {g.source_books.map((b, i) => (
+                <span key={b.id}>
+                  {i > 0 && ", "}
+                  <Link to={`/g/${guildId}/books/${b.id}`}>
+                    {b.name}{b.name_en && <span style={{ opacity: 0.6 }}> ({b.name_en})</span>}
+                  </Link>
+                </span>
+              ))}
+            </span>
+          </div>
+        )}
         {g.notes && (
           <div className="album-detail-row">
             <span className="detail-label">Notes</span>
             <span>{g.notes}</span>
           </div>
         )}
-        {g.persons.length === 0 && !g.notes && g.genre_ids.length === 0 && g.platform_ids.length === 0 && g.soundtrack_albums.length === 0 && (
+        {g.persons.length === 0 && !g.notes && g.genre_ids.length === 0 && g.platform_ids.length === 0 && g.soundtrack_albums.length === 0 && g.source_books.length === 0 && (
           <span style={{ opacity: 0.5 }}>No extra info.</span>
         )}
       </div>

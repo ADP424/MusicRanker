@@ -19,9 +19,10 @@ class CastRole(str, enum.Enum):
 cast_role_type = Enum(CastRole, name="cast_role")
 
 #: A show is authored, not directed: `creator` stands in for `director` at show
-#: level, while each episode keeps its own director.
+#: level, while each season and episode keeps its own director.
 MOVIE_ROLES = frozenset(CastRole) - {CastRole.creator}
 TELEVISION_SHOW_ROLES = frozenset(CastRole) - {CastRole.director}
+TELEVISION_SEASON_ROLES = frozenset(CastRole) - {CastRole.creator}
 TELEVISION_EPISODE_ROLES = frozenset(CastRole) - {CastRole.creator}
 
 #: Roles where a person holding two of them on the same entry is noise rather

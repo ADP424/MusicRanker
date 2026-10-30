@@ -14,7 +14,7 @@ _engine = None
 SessionLocal: sessionmaker[Session] | None = None
 
 _ENUMS = (
-    "nationality", "cast_role", "band_role", "game_role",
+    "nationality", "cast_role", "band_role", "book_role", "game_role",
     "guild_role", "invitation_status", "job_lane", "job_status",
 )
 

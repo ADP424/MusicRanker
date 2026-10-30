@@ -36,6 +36,10 @@ class TelevisionGenreOut(GenreOutBase, MediaTypesOutMixin):
     pass
 
 
+class BookGenreOut(GenreOutBase, MediaTypesOutMixin):
+    pass
+
+
 class GenreCategoryIn(CategoryInBase):
     pass
 
@@ -84,8 +88,21 @@ class TelevisionGenreCategoryOut(CategoryOutBase):
     pass
 
 
+class BookGenreCategoryIn(CategoryInBase):
+    pass
+
+
+class BookGenreCategoryPatch(CategoryPatchBase):
+    pass
+
+
+class BookGenreCategoryOut(CategoryOutBase):
+    pass
+
+
 class GenreMediaTypesPatch(BaseModel):
     is_music: bool | None = None
     is_movie: bool | None = None
     is_game: bool | None = None
     is_television: bool | None = None
+    is_book: bool | None = None

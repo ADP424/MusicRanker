@@ -6,18 +6,20 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..database_models import (
-    Album, AlbumArtist, Artist, ArtistPerson, Game, GamePerson, GamePlatform, Genre,
+    Album, AlbumArtist, Artist, ArtistPerson, Book, BookPerson, Game, GamePerson,
+    GamePlatform, Genre,
     Movie, MoviePerson, Person, TelevisionEpisode, TelevisionEpisodePerson,
-    TelevisionShow, TelevisionShowPerson,
+    TelevisionSeason, TelevisionSeasonPerson, TelevisionShow, TelevisionShowPerson,
 )
 from ..database_models.job import Job
 from ..database_models.ranking import (
-    UserAlbumRank, UserArtistRank, UserGameRank, UserMovieRank,
-    UserTelevisionEpisodeRank, UserTelevisionShowRank,
+    UserAlbumRank, UserArtistRank, UserBookRank, UserGameRank, UserMovieRank,
+    UserTelevisionEpisodeRank, UserTelevisionSeasonRank, UserTelevisionShowRank,
 )
 from ..guild_junction_helpers import link_guild_scoped
 from ..jobs import JobContext, handler
 from ..normalize import norm
+from ..television_hierarchy import next_episode_rank, next_season_rank
 from .spec import MergeAction, Decision, SECTIONS
 
 Cancelled = type("Cancelled", (RuntimeError,), {})
@@ -92,7 +94,8 @@ def run_merge(db: Session, job: Job, ctx: JobContext) -> dict:
 
     # ── 1. Leaves ────────────────────────────────────────────────────────────
     resolve_simple("genres", Genre,
-                   ("name", "name_en", "synonyms", "notes", "is_music", "is_movie", "is_game", "is_television"))
+                   ("name", "name_en", "synonyms", "notes",
+                    "is_music", "is_movie", "is_game", "is_television", "is_book"))
     resolve_simple("platforms", GamePlatform, ("name", "synonyms", "notes"))
     resolve_simple("people", Person, ("name", "name_en", "birth_nationality", "core_nationality", "notes"))
     resolve_simple("artists", Artist, ("name", "name_en", "birth_nationality", "core_nationality", "notes"))
@@ -113,7 +116,7 @@ def run_merge(db: Session, job: Job, ctx: JobContext) -> dict:
     for link in db.scalars(select(ArtistPerson).join(Artist).where(Artist.guild_id == src_guild)).all():
         a, p = idmap.get("artists", link.artist_id), idmap.get("people", link.person_id)
         if a and p and not db.get(ArtistPerson, (a, p, link.role)):
-            db.add(ArtistPerson(artist_id=a, person_id=p, role=link.role))
+            db.add(ArtistPerson(artist_id=a, person_id=p, role=link.role, guild_id=tgt_guild))
 
     # ── 2. Media ─────────────────────────────────────────────────────────────
     def attach(tgt, src, *, genres=True, persons: tuple | None = None):
@@ -161,6 +164,9 @@ def run_merge(db: Session, job: Job, ctx: JobContext) -> dict:
                       if not db.get(AlbumArtist, (t.id, aid))
                   ])
 
+    resolve_media("books", Book, ("name", "name_en", "word_count", "release_year", "alias", "notes"),
+                  persons=(BookPerson, "book_id"))
+
     resolve_media("movies", Movie, ("name", "name_en", "runtime_minutes", "release_year", "notes"),
                   persons=(MoviePerson, "movie_id"))
     resolve_media("games", Game, ("name", "name_en", "release_year", "notes"),
@@ -171,26 +177,45 @@ def run_merge(db: Session, job: Job, ctx: JobContext) -> dict:
                       if pid not in {p.id for p in t.platforms}
                   ])
 
-    def copy_episodes(src_show: TelevisionShow, tgt_show: TelevisionShow):
+    def copy_seasons(src_show: TelevisionShow, tgt_show: TelevisionShow):
         """Merging a show maps it onto the target show and creates only the
-        episodes the target is missing (matched on normalised title). Duplicating
-        copies the whole run."""
-        existing = {norm(e.name): e for e in tgt_show.episodes}
-        for rank, se in enumerate(src_show.episodes, 1):
-            te = existing.get(norm(se.name))
-            if te is None:
-                te = TelevisionEpisode(
+        seasons and episodes the target is missing (seasons matched on TMDB
+        season number, else normalised name; episodes on normalised title within
+        the season). Duplicating copies the whole run."""
+        tgt_seasons = list(tgt_show.seasons)
+        for ss in src_show.seasons:
+            ts = next((t for t in tgt_seasons if ss.season_number is not None
+                       and t.season_number == ss.season_number), None)
+            if ts is None:
+                ts = next((t for t in tgt_seasons if norm(t.name) == norm(ss.name)), None)
+            if ts is None:
+                ts = TelevisionSeason(
                     guild_id=tgt_guild, show_id=tgt_show.id, created_by_user_id=user_id,
-                    name=se.name, name_en=se.name_en, runtime_minutes=se.runtime_minutes,
-                    release_year=se.release_year, notes=se.notes, episode_rank=Decimal(rank),
+                    name=ss.name, name_en=ss.name_en, season_number=ss.season_number,
+                    release_year=ss.release_year, notes=ss.notes, season_rank=next_season_rank(db, tgt_show.id),
                 )
-                db.add(te)
+                db.add(ts)
                 db.flush()
-            idmap.set("episodes", se.id, te.id)
-            attach(te, se, persons=(TelevisionEpisodePerson, "episode_id"))
+                tgt_seasons.append(ts)
+            idmap.set("seasons", ss.id, ts.id)
+            attach(ts, ss, genres=False, persons=(TelevisionSeasonPerson, "season_id"))
+
+            existing = {norm(e.name): e for e in ts.episodes}
+            for se in ss.episodes:
+                te = existing.get(norm(se.name))
+                if te is None:
+                    te = TelevisionEpisode(
+                        guild_id=tgt_guild, show_id=tgt_show.id, season_id=ts.id, created_by_user_id=user_id,
+                        name=se.name, name_en=se.name_en, runtime_minutes=se.runtime_minutes,
+                        release_year=se.release_year, notes=se.notes, episode_rank=next_episode_rank(db, ts.id),
+                    )
+                    db.add(te)
+                    db.flush()
+                idmap.set("episodes", se.id, te.id)
+                attach(te, se, persons=(TelevisionEpisodePerson, "episode_id"))
 
     resolve_media("television_shows", TelevisionShow, ("name", "name_en", "release_year", "notes"),
-                  persons=(TelevisionShowPerson, "show_id"), after=copy_episodes)
+                  persons=(TelevisionShowPerson, "show_id"), after=copy_seasons)
 
     # Soundtrack cross-links, once every media id exists.
     for src in db.scalars(select(Album).where(Album.guild_id == src_guild)).all():
@@ -206,11 +231,26 @@ def run_merge(db: Session, job: Job, ctx: JobContext) -> dict:
                 if mid not in have:
                     link_guild_scoped(db, tgt, getattr(Album, rel), db.get(model, mid), guild_id=tgt_guild)
 
+    # Adaptation cross-links, likewise.
+    for src in db.scalars(select(Book).where(Book.guild_id == src_guild)).all():
+        tid = idmap.get("books", src.id)
+        if tid is None:
+            continue
+        tgt = db.get(Book, tid)
+        for section, rel, model in (("movies", "adaptation_movies", Movie),
+                                    ("games", "adaptation_games", Game),
+                                    ("television_shows", "adaptation_television_shows", TelevisionShow)):
+            have = {m.id for m in getattr(tgt, rel)}
+            for mid in idmap.alive(section, [m.id for m in getattr(src, rel)]):
+                if mid not in have:
+                    link_guild_scoped(db, tgt, getattr(Book, rel), db.get(model, mid), guild_id=tgt_guild)
+
     # ── 3. D7: bring the merging user's ranking across ───────────────────────
     if copy_ranking:
         ctx.progress(phase="ranking", processed=0, total=0)
         plan = [
             (UserArtistRank, "artists", "artist_id", ()),
+            (UserBookRank, "books", "book_id", ("reads",)),
             (UserMovieRank, "movies", "movie_id", ("watches",)),
             (UserGameRank, "games", "game_id", ("hours_played",)),
             (UserTelevisionShowRank, "television_shows", "show_id", ()),
@@ -246,16 +286,32 @@ def run_merge(db: Session, job: Job, ctx: JobContext) -> dict:
             db.flush()
 
         for r in db.scalars(
+            select(UserTelevisionSeasonRank)
+            .where(UserTelevisionSeasonRank.user_id == user_id, UserTelevisionSeasonRank.guild_id == src_guild)
+            .order_by(UserTelevisionSeasonRank.rank)
+        ).all():
+            seid, sid = idmap.get("seasons", r.season_id), idmap.get("television_shows", r.show_id)
+            if not (seid and sid) or db.get(UserTelevisionSeasonRank, {"user_id": user_id, "season_id": seid}):
+                continue
+            db.add(UserTelevisionSeasonRank(
+                user_id=user_id, guild_id=tgt_guild, season_id=seid, show_id=sid, notes=r.notes,
+                rank=_next_rank(db, UserTelevisionSeasonRank, user_id=user_id, guild_id=tgt_guild, show_id=sid),
+            ))
+            db.flush()
+
+        for r in db.scalars(
             select(UserTelevisionEpisodeRank)
             .where(UserTelevisionEpisodeRank.user_id == user_id, UserTelevisionEpisodeRank.guild_id == src_guild)
             .order_by(UserTelevisionEpisodeRank.rank)
         ).all():
             eid, sid = idmap.get("episodes", r.episode_id), idmap.get("television_shows", r.show_id)
-            if not (eid and sid) or db.get(UserTelevisionEpisodeRank, {"user_id": user_id, "episode_id": eid}):
+            seid = idmap.get("seasons", r.season_id)
+            if not (eid and sid and seid) or db.get(UserTelevisionEpisodeRank, {"user_id": user_id, "episode_id": eid}):
                 continue
             db.add(UserTelevisionEpisodeRank(
-                user_id=user_id, guild_id=tgt_guild, episode_id=eid, show_id=sid, watches=r.watches, notes=r.notes,
-                rank=_next_rank(db, UserTelevisionEpisodeRank, user_id=user_id, guild_id=tgt_guild, show_id=sid),
+                user_id=user_id, guild_id=tgt_guild, episode_id=eid, show_id=sid, season_id=seid,
+                watches=r.watches, notes=r.notes,
+                rank=_next_rank(db, UserTelevisionEpisodeRank, user_id=user_id, guild_id=tgt_guild, season_id=seid),
             ))
             db.flush()
 

@@ -10,11 +10,12 @@ import { BusyButton, InlineBusy } from "../components/Spinner";
 import { GenreChooser } from "./GenreChooser";
 import type { GenreDomain, GenreLike } from "./config";
 
-const MEDIA_TYPE_LABELS: Record<"is_music" | "is_movie" | "is_game" | "is_television", string> = {
+const MEDIA_TYPE_LABELS: Record<"is_music" | "is_movie" | "is_game" | "is_television" | "is_book", string> = {
   is_music: "Music",
   is_movie: "Movie",
   is_game: "Game",
   is_television: "Television",
+  is_book: "Book",
 };
 
 export function GenreForm(props: {
@@ -64,6 +65,7 @@ export function GenreForm(props: {
     is_movie: initialGenre?.is_movie ?? domain.mediaTypeFlag === "is_movie",
     is_game: initialGenre?.is_game ?? domain.mediaTypeFlag === "is_game",
     is_television: initialGenre?.is_television ?? domain.mediaTypeFlag === "is_television",
+    is_book: initialGenre?.is_book ?? domain.mediaTypeFlag === "is_book",
   });
   const [mediaTypes, setMediaTypes] = useState(defaultMediaTypes);
   useEffect(() => {

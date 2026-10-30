@@ -64,6 +64,7 @@ def _out(g: Game, mine: set[int]) -> GameOut:
     out.genre_ids = [x.id for x in g.genres]
     out.platform_ids = [x.id for x in g.platforms]
     out.soundtrack_albums = [NamedRef(id=a.id, name=a.name, name_en=a.name_en) for a in g.soundtrack_albums]
+    out.source_books = [NamedRef(id=b.id, name=b.name, name_en=b.name_en) for b in g.source_books]
     out.in_my_list = g.id in mine
     return out
 

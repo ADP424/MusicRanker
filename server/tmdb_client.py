@@ -1,6 +1,6 @@
 """TMDB HTTP access: shared rate limiter + an on-disk sidecar cache.
 
-One sidecar SQLite file holds three things:
+One sidecar SQLite file holds four things:
 
   http_cache       raw TMDB JSON, keyed by path+params, with a TTL and the
                    response ETag for conditional revalidation
@@ -8,6 +8,9 @@ One sidecar SQLite file holds three things:
                    map, which is how we avoid adding a tmdb_id column to Movie
   scan_rejections  (person_id, movie_id, slot) triples the user explicitly
                    rejected, so the scanner stops resurfacing them
+  scoped_scan_rejections
+                   the same for the television scan, keyed by entity kind
+                   (see scan_common.ScopedRejections)
 
 Unlike the standalone script there is NO in-memory L1 cache: this process is
 long-lived and credits payloads are 30-100 KB each, so we read through to
@@ -29,6 +32,7 @@ import requests
 from dotenv import load_dotenv
 
 from .lanes import TMDB_LANE
+from .scan_common import SCOPED_REJECTIONS_DDL, ScopedRejections
 
 load_dotenv()
 
@@ -49,7 +53,7 @@ TTL_NEGATIVE = 7 * 24 * 3600  # "TMDB has no such movie"
 # ──────────────────────────────────────────────────────────────
 #  Sidecar store
 # ──────────────────────────────────────────────────────────────
-class Sidecar:
+class Sidecar(ScopedRejections):
     _DDL = """
     CREATE TABLE IF NOT EXISTS http_cache (
         key        TEXT PRIMARY KEY,
@@ -69,7 +73,7 @@ class Sidecar:
         created_at REAL    NOT NULL,
         PRIMARY KEY (person_id, movie_id, slot)
     );
-    """
+    """ + SCOPED_REJECTIONS_DDL
 
     def __init__(self, path: Path):
         path.parent.mkdir(parents=True, exist_ok=True)

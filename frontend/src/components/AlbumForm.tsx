@@ -76,8 +76,8 @@ export function AlbumForm(props: {
         });
         for (const id of genreIds) await api.put(`${base}/albums/${album.id}/genres/${id}`);
         await commitLinks(base, "albums", album.id, links, []);
-        if (addToList && canRank && artistIds.has(artistId)) {
-          await api.put(`${base}/artists/${artistId}/albums/${album.id}/entry`, {});
+        if (addToList && canRank) {
+          for (const id of artistIds) await api.put(`${base}/artists/${id}/albums/${album.id}/entry`, {});
         }
       }
       return album;
@@ -85,7 +85,9 @@ export function AlbumForm(props: {
     onSuccess: (album) => {
       qc.invalidateQueries({ queryKey: gk(guildId, "artists", artistId, "albums") });
       qc.invalidateQueries({ queryKey: gk(guildId, "artists") });
-      if (!editing && addToList) qc.invalidateQueries({ queryKey: rk(guildId, userId, "artists", artistId, "albums") });
+      // New entries (on create) or carried-over ranks (on linking a co-artist) can land in
+      // any credited artist's list, not just this one's.
+      qc.invalidateQueries({ queryKey: rk(guildId, userId, "artists") });
       onClose(album.name, album.id);
     },
   });

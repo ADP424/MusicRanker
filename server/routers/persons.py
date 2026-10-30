@@ -9,7 +9,10 @@ from sqlalchemy.orm import Session as DbSession
 
 from ..authz import Capability
 from ..database import get_database
-from ..database_models import Artist, Movie, MoviePerson, Person
+from ..database_models import (
+    Album, AlbumArtist, Artist, ArtistPerson, Book, BookPerson, Game, GamePerson, Movie,
+    MoviePerson, Person, TelevisionEpisode, TelevisionEpisodePerson, TelevisionShow, TelevisionShowPerson,
+)
 from ..deps import GuildContext, guild_ctx
 
 router = APIRouter(prefix="/guilds/{guild_id}/persons", tags=["persons"])
@@ -43,6 +46,7 @@ class PersonOut(BaseModel):
     core_nationality: str
     notes: str | None
     artist_names: list[str] = []
+    book_names: list[str] = []
     movie_names: list[str] = []
     game_names: list[str] = []
     television_names: list[str] = []
@@ -51,6 +55,12 @@ class PersonOut(BaseModel):
 class PersonArtistDetail(BaseModel):
     id: int
     name: str
+    role: str
+
+
+class PersonBookRoleDetail(BaseModel):
+    book_id: int
+    book_name: str
     role: str
 
 
@@ -72,6 +82,14 @@ class PersonShowRoleDetail(BaseModel):
     role: str
 
 
+class PersonSeasonRoleDetail(BaseModel):
+    show_id: int
+    show_name: str
+    season_id: int
+    season_name: str
+    role: str
+
+
 class PersonEpisodeRoleDetail(BaseModel):
     show_id: int
     show_name: str
@@ -82,45 +100,56 @@ class PersonEpisodeRoleDetail(BaseModel):
 
 class PersonDetailOut(PersonOut):
     artists: list[PersonArtistDetail] = []
+    book_roles: list[PersonBookRoleDetail] = []
     movie_roles: list[PersonMovieRoleDetail] = []
     game_roles: list[PersonGameRoleDetail] = []
     television_roles: list[PersonShowRoleDetail] = []
+    television_season_roles: list[PersonSeasonRoleDetail] = []
     television_episode_roles: list[PersonEpisodeRoleDetail] = []
 
 
 # ── People graph ─────────────────────────────────────────────────────────────
-# A bipartite graph: people on one side, movies/artists (the "hubs" they share)
-# on the other. Guild-scoped, so unlike the old cross-catalog version this
-# never needs pagination — a guild's catalog is the natural size bound.
+# A bipartite graph: people on one side, the entries they're credited on (the
+# "hubs" — artists, books, movies, games, TV shows, TV episodes) on the other,
+# plus albums hanging off artists. Every
+# hub with at least one credited person is included. Guild-scoped, so it never
+# needs pagination — a guild's catalog is the natural size bound.
+HubKind = Literal["artist", "album", "book", "movie", "game", "show", "episode"]
+
+
 class GraphPerson(BaseModel):
     id: int
     name: str
     name_en: str | None
-    artist_ids: list[int] = []
-    movie_roles: list[str] = []
+    roles: dict[HubKind, list[str]] = {}  # distinct roles per hub kind
 
 
-class GraphMovie(BaseModel):
+class GraphHub(BaseModel):
+    kind: HubKind
     id: int
     name: str
-
-
-class GraphArtist(BaseModel):
-    id: int
-    name: str
+    show_id: int | None = None  # episodes only
+    show_name: str | None = None  # episodes only
 
 
 class GraphEdge(BaseModel):
     person_id: int
-    target_type: Literal["movie", "artist"]
+    kind: HubKind
     target_id: int
+    roles: list[str]
+
+
+class GraphAlbumArtist(BaseModel):
+    # Hub-to-hub link: albums attach to artists, not people (see person_graph).
+    album_id: int
+    artist_id: int
 
 
 class PersonGraphOut(BaseModel):
     persons: list[GraphPerson]
-    movies: list[GraphMovie]
-    artists: list[GraphArtist]
-    edges: list[GraphEdge]
+    hubs: list[GraphHub]
+    edges: list[GraphEdge]  # person → hub (never album)
+    album_artists: list[GraphAlbumArtist]
 
 
 def _person(db: DbSession, ctx: GuildContext, pid: int) -> Person:
@@ -136,8 +165,7 @@ def _tv_names(p: Person) -> list[str]:
         if link.show_id not in seen:
             seen.add(link.show_id)
             names.append(link.show.name)
-    for link in p.television_episode_links:
-        show = link.episode.show
+    for show in [l.season.show for l in p.television_season_links] + [l.episode.show for l in p.television_episode_links]:
         if show.id not in seen:
             seen.add(show.id)
             names.append(show.name)
@@ -149,6 +177,7 @@ def _out(p: Person) -> PersonOut:
         id=p.id, name=p.name, name_en=p.name_en,
         birth_nationality=p.birth_nationality, core_nationality=p.core_nationality, notes=p.notes,
         artist_names=[l.artist.name for l in p.artist_links],
+        book_names=[l.book.name for l in p.book_links],
         movie_names=[l.movie.name for l in p.movie_links],
         game_names=[l.game.name for l in p.game_links],
         television_names=_tv_names(p),
@@ -171,49 +200,79 @@ def create_person(body: PersonIn, ctx: GuildContext = Depends(CREATE), db: DbSes
 
 @router.get("/graph", response_model=PersonGraphOut)
 def person_graph(ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
-    people = db.scalars(select(Person).where(Person.guild_id == ctx.guild_id)).all()
-    movie_links = db.scalars(select(MoviePerson).where(MoviePerson.guild_id == ctx.guild_id)).all()
-    artists = db.scalars(select(Artist).where(Artist.guild_id == ctx.guild_id)).all()
+    gid = ctx.guild_id
+    people = db.scalars(select(Person).where(Person.guild_id == gid)).all()
 
-    movie_ids_by_person: dict[int, set[int]] = {}
-    roles_by_person: dict[int, list[str]] = {}
-    for link in movie_links:
-        movie_ids_by_person.setdefault(link.person_id, set()).add(link.movie_id)
-        roles_by_person.setdefault(link.person_id, []).append(
-            link.role.value if hasattr(link.role, "value") else link.role
-        )
-
-    artist_ids_by_person: dict[int, set[int]] = {}
-    for artist in artists:
-        for link in artist.person_links:
-            artist_ids_by_person.setdefault(link.person_id, set()).add(artist.id)
-
-    persons_out = [
-        GraphPerson(
-            id=p.id, name=p.name, name_en=p.name_en,
-            artist_ids=sorted(artist_ids_by_person.get(p.id, set())),
-            movie_roles=roles_by_person.get(p.id, []),
-        )
-        for p in people
+    # (kind, link table, link's hub-id column, hub table) — one row per vertical.
+    # Each query yields (person_id, hub_id, role, hub_name) for every credit.
+    sources = [
+        ("artist", ArtistPerson, ArtistPerson.artist_id, Artist),
+        ("book", BookPerson, BookPerson.book_id, Book),
+        ("movie", MoviePerson, MoviePerson.movie_id, Movie),
+        ("game", GamePerson, GamePerson.game_id, Game),
+        ("show", TelevisionShowPerson, TelevisionShowPerson.show_id, TelevisionShow),
+        ("episode", TelevisionEpisodePerson, TelevisionEpisodePerson.episode_id, TelevisionEpisode),
     ]
 
-    movie_ids = {mid for ids in movie_ids_by_person.values() for mid in ids}
-    movies_out = [
-        GraphMovie(id=m.id, name=m.name)
-        for m in (db.scalars(select(Movie).where(Movie.id.in_(movie_ids))).all() if movie_ids else [])
-    ]
-    used_artist_ids = {aid for ids in artist_ids_by_person.values() for aid in ids}
-    artists_out = [GraphArtist(id=a.id, name=a.name) for a in artists if a.id in used_artist_ids]
+    hubs: dict[tuple[str, int], GraphHub] = {}
+    edge_roles: dict[tuple[int, str, int], list[str]] = {}
+    person_roles: dict[int, dict[str, list[str]]] = {}
 
-    edges: list[GraphEdge] = []
-    for pid, mids in movie_ids_by_person.items():
-        for mid in mids:
-            edges.append(GraphEdge(person_id=pid, target_type="movie", target_id=mid))
-    for pid, aids in artist_ids_by_person.items():
-        for aid in aids:
-            edges.append(GraphEdge(person_id=pid, target_type="artist", target_id=aid))
+    for kind, link, hub_col, hub in sources:
+        rows = db.execute(
+            select(link.person_id, hub_col, link.role, hub.name)
+            .join(hub, (hub.id == hub_col) & (hub.guild_id == link.guild_id))
+            .where(link.guild_id == gid)
+        ).all()
+        for pid, hid, role, name in rows:
+            role = role.value if hasattr(role, "value") else role
+            hubs.setdefault((kind, hid), GraphHub(kind=kind, id=hid, name=name))
+            roles = edge_roles.setdefault((pid, kind, hid), [])
+            if role not in roles:
+                roles.append(role)
+            kind_roles = person_roles.setdefault(pid, {}).setdefault(kind, [])
+            if role not in kind_roles:
+                kind_roles.append(role)
 
-    return PersonGraphOut(persons=persons_out, movies=movies_out, artists=artists_out, edges=edges)
+    # Albums have no person credits of their own, so they hang off artists rather
+    # than people: every album credited to an artist that's on the graph (i.e.
+    # has at least one person) is included, linked to each such artist. A
+    # collaboration album is then what connects members of different artists.
+    album_artists: list[GraphAlbumArtist] = []
+    for album_id, artist_id, name in db.execute(
+        select(AlbumArtist.album_id, AlbumArtist.artist_id, Album.name)
+        .join(Album, (Album.id == AlbumArtist.album_id) & (Album.guild_id == AlbumArtist.guild_id))
+        .where(AlbumArtist.guild_id == gid)
+    ).all():
+        if ("artist", artist_id) not in hubs:
+            continue
+        hubs.setdefault(("album", album_id), GraphHub(kind="album", id=album_id, name=name))
+        album_artists.append(GraphAlbumArtist(album_id=album_id, artist_id=artist_id))
+
+    # Episodes are labelled with their show, so fill that in for the ones in use.
+    episode_ids = [hid for (kind, hid) in hubs if kind == "episode"]
+    if episode_ids:
+        for eid, sid, sname in db.execute(
+            select(TelevisionEpisode.id, TelevisionShow.id, TelevisionShow.name)
+            .join(TelevisionShow, (TelevisionShow.id == TelevisionEpisode.show_id)
+                  & (TelevisionShow.guild_id == TelevisionEpisode.guild_id))
+            .where(TelevisionEpisode.id.in_(episode_ids))
+        ).all():
+            h = hubs[("episode", eid)]
+            h.show_id, h.show_name = sid, sname
+
+    return PersonGraphOut(
+        persons=[
+            GraphPerson(id=p.id, name=p.name, name_en=p.name_en, roles=person_roles.get(p.id, {}))
+            for p in people
+        ],
+        hubs=list(hubs.values()),
+        edges=[
+            GraphEdge(person_id=pid, kind=kind, target_id=hid, roles=roles)
+            for (pid, kind, hid), roles in edge_roles.items()
+        ],
+        album_artists=album_artists,
+    )
 
 
 @router.get("/{pid}", response_model=PersonOut)
@@ -231,6 +290,11 @@ def get_person_detail(pid: int, ctx: GuildContext = Depends(VIEW), db: DbSession
             PersonArtistDetail(id=l.artist.id, name=l.artist.name, role=l.role.value if hasattr(l.role, "value") else l.role)
             for l in p.artist_links
         ],
+        book_roles=[
+            PersonBookRoleDetail(book_id=l.book.id, book_name=l.book.name,
+                                 role=l.role.value if hasattr(l.role, "value") else l.role)
+            for l in p.book_links
+        ],
         movie_roles=[
             PersonMovieRoleDetail(movie_id=l.movie.id, movie_name=l.movie.name,
                                   role=l.role.value if hasattr(l.role, "value") else l.role)
@@ -245,6 +309,12 @@ def get_person_detail(pid: int, ctx: GuildContext = Depends(VIEW), db: DbSession
             PersonShowRoleDetail(show_id=l.show.id, show_name=l.show.name,
                                  role=l.role.value if hasattr(l.role, "value") else l.role)
             for l in p.television_links
+        ],
+        television_season_roles=[
+            PersonSeasonRoleDetail(show_id=l.season.show.id, show_name=l.season.show.name,
+                                   season_id=l.season.id, season_name=l.season.name,
+                                   role=l.role.value if hasattr(l.role, "value") else l.role)
+            for l in p.television_season_links
         ],
         television_episode_roles=[
             PersonEpisodeRoleDetail(show_id=l.episode.show.id, show_name=l.episode.show.name,

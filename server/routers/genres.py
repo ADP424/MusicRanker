@@ -44,7 +44,7 @@ def update_media_types(gid: int, body: GenreMediaTypesPatch,
                        ctx: GuildContext = Depends(guild_ctx(Capability.CATALOG_EDIT)),
                        db: Session = Depends(get_database)):
     """Cross-domain: toggle which media types a genre applies to. Not scoped
-    to this router's own ``is_music`` flag — this is the one place all four
+    to this router's own ``is_music`` flag — this is the one place all five
     flags are editable together. Still guild-scoped: `make_genre_router`'s own
     routes only check the domain flag, but every write here must also confirm
     the genre belongs to the caller's guild."""
@@ -58,7 +58,8 @@ def update_media_types(gid: int, body: GenreMediaTypesPatch,
     is_movie = updates.get("is_movie", genre.is_movie)
     is_game = updates.get("is_game", genre.is_game)
     is_television = updates.get("is_television", genre.is_television)
-    if not (is_music or is_movie or is_game or is_television):
+    is_book = updates.get("is_book", genre.is_book)
+    if not (is_music or is_movie or is_game or is_television or is_book):
         raise HTTPException(422, "Genre must apply to at least one media type")
     genre.updated_by_user_id = ctx.user_id
     db.flush()

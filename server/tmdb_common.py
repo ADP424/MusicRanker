@@ -37,6 +37,8 @@ from .database_models import (
     Person,
     TelevisionEpisode,
     TelevisionEpisodePerson,
+    TelevisionSeason,
+    TelevisionSeasonPerson,
     TelevisionShowPerson,
 )
 from .tmdb_client import TTL_SEARCH, WORKERS, TmdbClient, get_sidecar
@@ -359,8 +361,8 @@ def _titles(name: str | None, name_en: str | None, year: int | None) -> Iterator
 
 def local_screen_entries(person: Person) -> Iterator[tuple[str, str]]:
     """Every movie and show this person is already credited on. TMDB's TV
-    credits are keyed on the *show*, so an episode credit corroborates its
-    show's title just as well as a show-level credit does."""
+    credits are keyed on the *show*, so a season or episode credit corroborates
+    its show's title just as well as a show-level credit does."""
     for link in person.movie_links:
         m = link.movie
         if m is not None:
@@ -369,6 +371,10 @@ def local_screen_entries(person: Person) -> Iterator[tuple[str, str]]:
         s = link.show
         if s is not None:
             yield from _titles(s.name, s.name_en, s.release_year)
+    for link in person.television_season_links:
+        se = link.season
+        if se is not None and se.show is not None:
+            yield from _titles(se.show.name, se.show.name_en, se.show.release_year)
     for link in person.television_episode_links:
         ep = link.episode
         if ep is not None and ep.show is not None:
@@ -377,7 +383,10 @@ def local_screen_entries(person: Person) -> Iterator[tuple[str, str]]:
 
 def has_screen_entries(person: Person) -> bool:
     """Whether this person has anything a TMDB filmography could corroborate."""
-    return bool(person.movie_links or person.television_links or person.television_episode_links)
+    return bool(
+        person.movie_links or person.television_links or person.television_season_links
+        or person.television_episode_links
+    )
 
 
 def filmography_overlaps(person: Person, film_keys: set[tuple[str, str | None]]) -> bool:
@@ -394,6 +403,9 @@ def person_load_options() -> list:
     return [
         selectinload(Person.movie_links).joinedload(MoviePerson.movie),
         selectinload(Person.television_links).joinedload(TelevisionShowPerson.show),
+        selectinload(Person.television_season_links)
+        .joinedload(TelevisionSeasonPerson.season)
+        .joinedload(TelevisionSeason.show),
         selectinload(Person.television_episode_links)
         .joinedload(TelevisionEpisodePerson.episode)
         .joinedload(TelevisionEpisode.show),

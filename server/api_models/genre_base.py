@@ -30,13 +30,14 @@ class GenreOutBase(ORMSchema):
 
 class MediaTypesInMixin(BaseModel):
     """Extra fields for domains backed by the shared Genre model (which has
-    is_music/is_movie/is_game/is_television columns) — not used by taxonomies
+    is_music/is_movie/is_game/is_television/is_book columns) — not used by taxonomies
     like GamePlatform that don't have a media-type split."""
 
     is_music: bool = False
     is_movie: bool = False
     is_game: bool = False
     is_television: bool = False
+    is_book: bool = False
 
 
 class MediaTypesOutMixin(BaseModel):
@@ -44,6 +45,7 @@ class MediaTypesOutMixin(BaseModel):
     is_movie: bool
     is_game: bool
     is_television: bool
+    is_book: bool
 
 
 class CategoryInBase(BaseModel):

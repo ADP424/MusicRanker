@@ -1,63 +1,26 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useMemo, useState } from "react";
-import { api } from "../api/client";
 import { useGuildApi, useTmdbTvImport, useTmdbTvLookup } from "../api/hooks";
 import { rk } from "../api/keys";
-import type {
-  CastRole, TmdbTvEpisode, TmdbTvImportEpisodeIn, TmdbTvImportPersonIn, TmdbTvLookup, TmdbTvPerson,
-} from "../api/types";
+import type { CastRole, TmdbTvImportPersonIn, TmdbTvImportSeasonIn, TmdbTvLookup } from "../api/types";
 import { useCan } from "../guild/GuildProvider";
 import { BusyButton } from "./Spinner";
 import { TelevisionGenreChooser } from "./TelevisionGenreChooser";
-import { TmdbPersonRow, tmdbCreditDescription, type TmdbRowPerson } from "./TmdbPersonRow";
+import { TmdbPersonRow } from "./TmdbPersonRow";
+import { ACTOR_ROLES, autoCrewLabel, personIn, seedResolutions, toRow } from "./tmdbTvShared";
 
 const epKey = (s: number, e: number) => `s${s}e${e}`;
-const ACTOR_ROLES: CastRole[] = ["lead_actor", "actor", "cameo_actor"];
-
-function toRow(p: TmdbTvPerson): TmdbRowPerson {
-  return {
-    tmdb_id: p.tmdb_id,
-    name: p.name,
-    description: tmdbCreditDescription(p),
-    suggested_role: p.suggested_role,
-    suggestion_reason: p.suggestion_reason,
-    top_credits: p.top_credits,
-    nationality_guess: p.nationality_guess,
-    roleLocked: p.credit_type === "crew",
-    matches: p.db_matches.map((m) => ({
-      person_id: m.person_id,
-      person_name: m.person_name,
-      has_entries: m.has_screen_entries,
-      filmography_overlap: m.filmography_overlap,
-      artist_summary: m.artist_summary,
-      game_summary: m.game_summary,
-    })),
-  };
-}
-
-function seedResolutions(people: TmdbTvPerson[], into: Record<number, number | null>) {
-  for (const p of people) {
-    if (p.tmdb_id in into) continue;
-    const v = p.db_matches.find((m) => m.filmography_overlap);
-    if (v) into[p.tmdb_id] = v.person_id;
-  }
-}
-
-/** The show step attaches each episode's director/composer automatically, so
- *  these rows only need an include checkbox — the cast of an episode is chosen
- *  in that episode's own import. */
-function autoCrewLabel(e: TmdbTvEpisode): string {
-  const by = (role: CastRole) => e.people.filter((p) => p.suggested_role === role).map((p) => p.name);
-  const bits: string[] = [];
-  const dirs = by("director");
-  const comps = by("composer");
-  if (dirs.length) bits.push(`Dir: ${dirs.join(", ")}`);
-  if (comps.length) bits.push(`Comp: ${comps.join(", ")}`);
-  return bits.join(" · ") || "no director/composer credited";
-}
 
 type PeopleState = { checked: Set<string>; roles: Record<string, CastRole> };
 
+/**
+ * Whole-show TMDB import: creates the show, its seasons and their episodes.
+ *
+ * Show-level credits are only the creators plus whoever is credited on every
+ * single episode; each season and episode then has its own TMDB import on its
+ * page for the people specific to it. "Populate down" copies the show's
+ * people onto every season and episode in one go instead.
+ */
 export function TmdbTelevisionImportDialog({
   onClose,
   onSuccess,
@@ -69,9 +32,6 @@ export function TmdbTelevisionImportDialog({
   const [year, setYear] = useState("");
   const [includeEpisodes, setIncludeEpisodes] = useState(true);
   const [includeSpecials, setIncludeSpecials] = useState(false);
-  // Percent in the UI, share on the wire. Crew credited on fewer than this
-  // many of the show's episodes are left to the per-episode step.
-  const [crewThreshold, setCrewThreshold] = useState("50");
 
   const [lookup, setLookup] = useState<TmdbTvLookup | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -84,10 +44,13 @@ export function TmdbTelevisionImportDialog({
   const [resolutions, setResolutions] = useState<Record<number, number | null>>({});
   const [selectedGenres, setSelectedGenres] = useState<Set<number>>(new Set());
   const [includedEpisodes, setIncludedEpisodes] = useState<Set<string>>(new Set());
+  const [populateDown, setPopulateDown] = useState(false);
   const [addToList, setAddToList] = useState(true);
+  // season numbers whose season + episodes go into my list too
+  const [listedSeasons, setListedSeasons] = useState<Set<number>>(new Set());
 
   const qc = useQueryClient();
-  const { guildId, userId, base } = useGuildApi();
+  const { guildId, userId } = useGuildApi();
   const canRank = useCan("rank");
   const lookupMut = useTmdbTvLookup();
   const importMut = useTmdbTvImport();
@@ -96,14 +59,12 @@ export function TmdbTelevisionImportDialog({
 
   const handleSearch = useCallback(() => {
     setError(null);
-    const pct = Math.min(100, Math.max(0, parseFloat(crewThreshold || "50")));
     lookupMut.mutate(
       {
         title: title.trim(),
         year: year ? parseInt(year, 10) : undefined,
         include_episodes: includeEpisodes,
         include_specials: includeSpecials,
-        crew_episode_threshold: pct / 100,
       },
       {
         onSuccess(data) {
@@ -119,6 +80,7 @@ export function TmdbTelevisionImportDialog({
           setIncludedEpisodes(
             new Set(data.seasons.flatMap((s) => s.episodes.map((e) => epKey(e.season_number, e.episode_number)))),
           );
+          setListedSeasons(new Set(data.seasons.map((s) => s.season_number)));
 
           const res: Record<number, number | null> = {};
           seedResolutions(data.people, res);
@@ -132,7 +94,7 @@ export function TmdbTelevisionImportDialog({
         onError: (e) => setError(e.message),
       },
     );
-  }, [title, year, includeEpisodes, includeSpecials, crewThreshold, lookupMut]);
+  }, [title, year, includeEpisodes, includeSpecials, lookupMut]);
 
   const togglePerson = (key: string) =>
     setPeople((prev) => {
@@ -165,6 +127,13 @@ export function TmdbTelevisionImportDialog({
       return next;
     });
 
+  const toggleListed = (seasonNumber: number) =>
+    setListedSeasons((prev) => {
+      const next = new Set(prev);
+      next.has(seasonNumber) ? next.delete(seasonNumber) : next.add(seasonNumber);
+      return next;
+    });
+
   function toggleSeason(seasonNumber: number, on: boolean) {
     const season = lookup?.seasons.find((s) => s.season_number === seasonNumber);
     if (!season) return;
@@ -178,70 +147,62 @@ export function TmdbTelevisionImportDialog({
     });
   }
 
-  function autoPeopleIn(e: TmdbTvEpisode): TmdbTvImportPersonIn[] {
-    return e.people.map((p) => ({
-      tmdb_id: p.tmdb_id,
-      name: p.name,
-      role: p.suggested_role, // director/composer — always automatic
-      nationality: p.nationality_guess,
-      existing_person_id: resolutions[p.tmdb_id] ?? null,
-    }));
-  }
-
   const showPeopleCount = useMemo(
     () => (lookup?.people ?? []).filter((_, i) => people.checked.has(`show:${i}`)).length,
     [lookup, people],
   );
   const episodeCount = includedEpisodes.size;
 
-  const handleImport = useCallback(() => {
-    if (!lookup) return;
-    const episodes: TmdbTvImportEpisodeIn[] = [];
+  // A season with episodes on TMDB is imported iff at least one of them is
+  // ticked; without "fetch episodes" every season is imported, empty.
+  const seasonsIn = useMemo((): TmdbTvImportSeasonIn[] => {
+    if (!lookup) return [];
+    const out: TmdbTvImportSeasonIn[] = [];
     for (const season of lookup.seasons) {
-      for (const e of season.episodes) {
-        const scope = epKey(e.season_number, e.episode_number);
-        if (!includedEpisodes.has(scope)) continue;
-        episodes.push({
+      const episodes = season.episodes.filter((e) => includedEpisodes.has(epKey(e.season_number, e.episode_number)));
+      if (season.episodes.length > 0 && episodes.length === 0) continue;
+      out.push({
+        name: season.name,
+        name_en: null,
+        season_number: season.season_number,
+        release_year: season.release_year,
+        notes: null,
+        people: [],
+        episodes: episodes.map((e) => ({
           name: e.name,
           name_en: null,
           runtime_minutes: e.runtime,
           release_year: e.release_year,
           notes: null,
-          people: autoPeopleIn(e),
-          inherit_show_people: false, // cast is chosen per episode
-          genre_ids: null,            // inherit the show's genres
-        });
-      }
+          people: e.people.map((p) => personIn(p, p.suggested_role, resolutions)), // director/composer
+          inherit_parent_people: false,
+          genre_ids: null, // inherit the show's genres
+        })),
+        add_to_list: canRank && listedSeasons.has(season.season_number),
+      });
     }
-    const peopleIn = (list: TmdbTvPerson[]): TmdbTvImportPersonIn[] =>
-      list
-        .map((p, i): TmdbTvImportPersonIn | null => {
-          const k = `show:${i}`;
-          if (!people.checked.has(k)) return null;
-          return {
-            tmdb_id: p.tmdb_id,
-            name: p.name,
-            role: people.roles[k] ?? p.suggested_role,
-            nationality: p.nationality_guess,
-            existing_person_id: resolutions[p.tmdb_id] ?? null,
-          };
-        })
-        .filter((x): x is TmdbTvImportPersonIn => x !== null);
+    return out;
+  }, [lookup, includedEpisodes, resolutions, canRank, listedSeasons]);
 
+  const handleImport = useCallback(() => {
+    if (!lookup) return;
     importMut.mutate(
       {
         name: lookup.name,
         name_en: null,
         release_year: lookup.release_year,
         notes: null,
-        people: peopleIn(lookup.people),
+        people: lookup.people
+          .map((p, i) => (people.checked.has(`show:${i}`) ? personIn(p, people.roles[`show:${i}`] ?? p.suggested_role, resolutions) : null))
+          .filter((x): x is TmdbTvImportPersonIn => x !== null),
         genre_ids: [...selectedGenres],
-        episodes,
+        seasons: seasonsIn,
+        populate_down: populateDown,
+        add_to_list: canRank && addToList,
       },
       {
-        async onSuccess(result) {
-          if (addToList && canRank) {
-            await api.put(`${base}/television/shows/${result.show_id}/entry`, {});
+        onSuccess(result) {
+          if (canRank && (addToList || seasonsIn.some((s) => s.add_to_list))) {
             qc.invalidateQueries({ queryKey: rk(guildId, userId, "television") });
           }
           onSuccess?.(result.show_id);
@@ -251,8 +212,8 @@ export function TmdbTelevisionImportDialog({
       },
     );
   }, [
-    lookup, includedEpisodes, people, resolutions, selectedGenres, importMut, onClose, onSuccess,
-    addToList, canRank, base, qc, guildId, userId,
+    lookup, people, resolutions, selectedGenres, seasonsIn, populateDown, importMut, onClose, onSuccess,
+    addToList, canRank, qc, guildId, userId,
   ]);
 
   const unmappedGenres = useMemo(
@@ -261,6 +222,7 @@ export function TmdbTelevisionImportDialog({
   );
 
   const importing = importMut.isPending || importMut.isSuccess;
+  const seasonCount = seasonsIn.length;
 
   return (
     <div className="modal tmdb-import-panel">
@@ -277,18 +239,13 @@ export function TmdbTelevisionImportDialog({
             Year
             <input value={year} onChange={(e) => setYear(e.target.value)} placeholder="optional" type="number" min={1928} max={2099} />
           </label>
-          <label>
-            Crew episode threshold (%)
-            <input value={crewThreshold} onChange={(e) => setCrewThreshold(e.target.value)} type="number" min={0} max={100} />
-          </label>
           <p className="meta">
-            TMDB's show credits are an aggregate of every episode. Cast and crew credited on
-            fewer than this share of episodes are left to the per-episode step;
-            creators and composers are always offered at show level.
+            Only the show's creators and people credited on <strong>every single episode</strong> are
+            offered at show level. Each season and episode has its own TMDB import for the rest.
           </p>
           <label className={`chip${includeEpisodes ? " chip-active" : ""}`} style={{ cursor: "pointer" }}>
             <input type="checkbox" checked={includeEpisodes} onChange={(e) => setIncludeEpisodes(e.target.checked)} />
-            Fetch episodes
+            Import episodes
           </label>
           <label className={`chip${includeSpecials ? " chip-active" : ""}`} style={{ cursor: "pointer" }}>
             <input type="checkbox" checked={includeSpecials} onChange={(e) => setIncludeSpecials(e.target.checked)} />
@@ -322,11 +279,12 @@ export function TmdbTelevisionImportDialog({
               <button type="button" onClick={() => bulkScope("show", lookup.people.length, false)}>Uncheck All</button>
             </div>
             <p className="meta">
-              The show's own cast, plus creators, composers, and crew on ≥{" "}
-              {(lookup.crew_episode_threshold * 100).toFixed(0)}% of episodes. A show is
-              credited with a <strong>Creator</strong>, not a Director — per-episode
-              directors live on their episodes.
+              The creators, plus everyone credited on all {lookup.episodes_counted} aired episodes of the
+              included seasons. A show is credited with a <strong>Creator</strong>, not a Director — someone
+              who directed every episode is offered as Creator here and keeps Director on the seasons and
+              episodes below.
             </p>
+            {lookup.people.length === 0 && <p className="meta">Nobody is credited on every episode.</p>}
             <div className="tip-people-list">
               {lookup.people.map((p, i) => {
                 const k = `show:${i}`;
@@ -346,6 +304,14 @@ export function TmdbTelevisionImportDialog({
                 );
               })}
             </div>
+            <label className={`chip${populateDown ? " chip-active" : ""}`} style={{ cursor: "pointer" }}>
+              <input type="checkbox" checked={populateDown} onChange={(e) => setPopulateDown(e.target.checked)} />
+              Populate down: also attach these people to every imported season and episode
+            </label>
+            <p className="meta">
+              Saves running the TMDB import on each season and episode when the show-wide people are all you
+              need there. Creators stay on the show only.
+            </p>
           </section>
 
           <section className="tip-section">
@@ -358,27 +324,47 @@ export function TmdbTelevisionImportDialog({
           {lookup.seasons.length > 0 && (
             <section className="tip-section">
               <div className="tip-section-head">
-                <h3>Episodes ({allEpisodes.length} found, {episodeCount} selected)</h3>
-                <button
-                  type="button"
-                  onClick={() => setIncludedEpisodes(new Set(allEpisodes.map((e) => epKey(e.season_number, e.episode_number))))}
-                >Check All</button>
-                <button type="button" onClick={() => setIncludedEpisodes(new Set())}>Uncheck All</button>
+                <h3>
+                  Seasons &amp; Episodes ({lookup.seasons.length} season{lookup.seasons.length !== 1 ? "s" : ""}
+                  {includeEpisodes && `, ${allEpisodes.length} episodes found, ${episodeCount} selected`})
+                </h3>
+                {includeEpisodes && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => setIncludedEpisodes(new Set(allEpisodes.map((e) => epKey(e.season_number, e.episode_number))))}
+                    >Check All</button>
+                    <button type="button" onClick={() => setIncludedEpisodes(new Set())}>Uncheck All</button>
+                  </>
+                )}
               </div>
               <p className="meta">
-                Episodes are created with their title, runtime and air year, plus their
-                director and composer (always automatic). Their cast is imported
-                per-episode — every episode gets an Import button on the show page.
+                Each season is created with its episodes (title, runtime, air year), and each episode gets its
+                own director and composer automatically. A season with no episodes ticked is skipped.
               </p>
               {lookup.seasons.map((season) => (
                 <div key={season.season_number} className="tip-season">
                   <div className="tip-section-head">
                     <h4 style={{ margin: 0 }}>
                       {season.name}{" "}
-                      <span className="meta">({season.episodes.length} episode{season.episodes.length !== 1 ? "s" : ""})</span>
+                      <span className="meta">({season.release_year} · {season.episode_count} episode{season.episode_count !== 1 ? "s" : ""})</span>
                     </h4>
-                    <button type="button" onClick={() => toggleSeason(season.season_number, true)}>All</button>
-                    <button type="button" onClick={() => toggleSeason(season.season_number, false)}>None</button>
+                    {season.episodes.length > 0 && (
+                      <>
+                        <button type="button" onClick={() => toggleSeason(season.season_number, true)}>All</button>
+                        <button type="button" onClick={() => toggleSeason(season.season_number, false)}>None</button>
+                      </>
+                    )}
+                    {canRank && (
+                      <label className="checkbox-label">
+                        <input
+                          type="checkbox"
+                          checked={listedSeasons.has(season.season_number)}
+                          onChange={() => toggleListed(season.season_number)}
+                        />
+                        Add season{season.episodes.length > 0 ? " + its episodes" : ""} to my list
+                      </label>
+                    )}
                   </div>
                   {season.episodes.map((e) => {
                     const scope = epKey(e.season_number, e.episode_number);
@@ -393,7 +379,7 @@ export function TmdbTelevisionImportDialog({
                             <strong className="tip-name">S{e.season_number}E{e.episode_number} — {e.name}</strong>
                             <span className="tip-desc">{e.release_year} · {e.runtime} min</span>
                           </div>
-                          <div className="tip-credits">{autoCrewLabel(e)}</div>
+                          <div className="tip-credits">{autoCrewLabel(e.people)}</div>
                         </div>
                       </div>
                     );
@@ -407,12 +393,13 @@ export function TmdbTelevisionImportDialog({
             {canRank && (
               <label className="checkbox-label tip-add-to-list">
                 <input type="checkbox" checked={addToList} onChange={(e) => setAddToList(e.target.checked)} />
-                Add to my list
+                Add show to my list
               </label>
             )}
             <button type="button" onClick={onClose} disabled={importing}>Cancel</button>
             <BusyButton type="button" className="tip-primary" busy={importing} busyLabel="Importing…" onClick={handleImport}>
-              Import show + {episodeCount} episode{episodeCount !== 1 ? "s" : ""} + {showPeopleCount} show credits
+              Import show + {seasonCount} season{seasonCount !== 1 ? "s" : ""} + {episodeCount} episode{episodeCount !== 1 ? "s" : ""}
+              {" "}+ {showPeopleCount} show credit{showPeopleCount !== 1 ? "s" : ""}
             </BusyButton>
           </footer>
         </>

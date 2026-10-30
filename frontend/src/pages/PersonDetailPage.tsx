@@ -6,7 +6,7 @@ import { gk } from "../api/keys";
 import { useGuildApi, usePersonDetail } from "../api/hooks";
 import { PersonForm } from "../components/PersonForm";
 import { LoadingState } from "../components/Spinner";
-import { BAND_ROLE_LABELS, CAST_ROLE_LABELS, GAME_ROLE_LABELS } from "../api/types";
+import { BAND_ROLE_LABELS, BOOK_ROLE_LABELS, CAST_ROLE_LABELS, GAME_ROLE_LABELS } from "../api/types";
 import { useCan } from "../guild/GuildProvider";
 
 export function PersonDetailPage() {
@@ -66,6 +66,22 @@ export function PersonDetailPage() {
         </>
       )}
 
+      {(data.book_roles ?? []).length > 0 && (
+        <>
+          <h2 style={{ marginTop: "1.5rem" }}>Book Roles</h2>
+          <ul className="sortable plain-list">
+            {data.book_roles.map((r) => (
+              <li key={`${r.book_id}:${r.role}`} className="sortable-item">
+                <div className="row" style={{ gridTemplateColumns: "1fr auto" }}>
+                  <Link className="name" to={`/g/${guildId}/books/${r.book_id}`}>{r.book_name}</Link>
+                  <span className="meta">{BOOK_ROLE_LABELS[r.role] ?? r.role}</span>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+
       {data.movie_roles.length > 0 && (
         <>
           <h2 style={{ marginTop: "1.5rem" }}>Movie Roles</h2>
@@ -114,6 +130,24 @@ export function PersonDetailPage() {
         </>
       )}
 
+      {data.television_season_roles.length > 0 && (
+        <>
+          <h2 style={{ marginTop: "1.5rem" }}>Television Season Roles</h2>
+          <ul className="sortable plain-list">
+            {data.television_season_roles.map((r, i) => (
+              <li key={i} className="sortable-item">
+                <div className="row" style={{ gridTemplateColumns: "1fr auto" }}>
+                  <Link className="name" to={`/g/${guildId}/television/seasons/${r.season_id}`}>
+                    {r.show_name} — {r.season_name}
+                  </Link>
+                  <span className="meta">{CAST_ROLE_LABELS[r.role] ?? r.role}</span>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+
       {data.television_episode_roles.length > 0 && (
         <>
           <h2 style={{ marginTop: "1.5rem" }}>Television Episode Roles</h2>
@@ -132,9 +166,11 @@ export function PersonDetailPage() {
         </>
       )}
 
-      {data.artists.length === 0 && data.movie_roles.length === 0 && data.game_roles.length === 0 &&
-        data.television_roles.length === 0 && data.television_episode_roles.length === 0 && (
-        <p style={{ opacity: 0.5 }}>No linked artists, movie roles, game roles, or television roles yet.</p>
+      {data.artists.length === 0 && (data.book_roles ?? []).length === 0 && data.movie_roles.length === 0 &&
+        data.game_roles.length === 0 &&
+        data.television_roles.length === 0 && data.television_season_roles.length === 0 &&
+        data.television_episode_roles.length === 0 && (
+        <p style={{ opacity: 0.5 }}>No linked artists, book roles, movie roles, game roles, or television roles yet.</p>
       )}
 
       {editing && (

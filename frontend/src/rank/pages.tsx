@@ -1,8 +1,9 @@
 import { useMemo } from "react";
 import { NavLink, useParams } from "react-router-dom";
 import {
-  useArtistCatalog, useComparisonMutations, useComparisons, useGuildApi, useRankedMovies,
-  useRankedGames, useRankedTelevisionShows, useReorder, useTelevisionShow, useArtist,
+  useArtistCatalog, useComparisonMutations, useComparisons, useGuildApi, useRankedBooks, useRankedMovies,
+  useRankedGames, useRankedTelevisionEpisodes, useRankedTelevisionSeasons, useRankedTelevisionShows, useReorder,
+  useTelevisionSeason, useTelevisionShow, useArtist,
 } from "../api/hooks";
 import { api } from "../api/client";
 import { useQuery } from "@tanstack/react-query";
@@ -110,6 +111,45 @@ export function ArtistAlbumsRankPage() {
       onClearAnswers={answers.onClearAnswers}
       onApply={(ids) => reorder.mutateAsync(ids)}
       tabs={tabs}
+    />
+  );
+}
+
+// ── Books ──────────────────────────────────────────────────────────────────────
+
+export function BooksRankPage() {
+  const { data: ranked = [], isLoading } = useRankedBooks();
+  const answers = useAnswers("books");
+  const reorder = useReorder("books", "books");
+
+  const items: RankItem[] = useMemo(
+    () =>
+      ranked.map((r) => {
+        const authors = r.book.persons.filter((p) => p.role === "author").map((p) => p.name);
+        const words = r.book.word_count != null ? ` · ${r.book.word_count.toLocaleString()} words` : "";
+        return {
+          id: r.book.id,
+          label: r.book.name,
+          sublabel: r.book.name_en,
+          meta: `${r.book.release_year}${words}${authors.length ? ` · ${authors.join(", ")}` : ""}`,
+        };
+      }),
+    [ranked],
+  );
+
+  return (
+    <PairwiseRankPage
+      title="Rank Books"
+      scopeKey="books"
+      noun="book"
+      nounPlural="books"
+      items={items}
+      isLoading={isLoading || answers.isLoading}
+      comparisons={answers.comparisons}
+      onAnswer={answers.onAnswer}
+      onDeleteAnswer={answers.onDeleteAnswer}
+      onClearAnswers={answers.onClearAnswers}
+      onApply={(ids) => reorder.mutateAsync(ids)}
     />
   );
 }
@@ -222,27 +262,27 @@ export function TelevisionShowsRankPage() {
   );
 }
 
-// ── Episodes (scoped to one show) ──────────────────────────────────────────────
+// ── Seasons (scoped to one show) ───────────────────────────────────────────────
 
-export function TelevisionEpisodesRankPage() {
+export function TelevisionSeasonsRankPage() {
   const { id } = useParams<{ id: string }>();
   const sid = Number(id);
   const { guildId } = useGuildApi();
 
   const { data: show, isLoading: showLoading } = useTelevisionShow(sid);
-  const answers = useAnswers(`television/shows/${sid}/episodes`);
-  const reorder = useReorder(`television/shows/${sid}/episodes`, "television");
-  const { data: episodesRanked = [], isLoading } = useEpisodesForRank(sid);
+  const { data: ranked = [], isLoading } = useRankedTelevisionSeasons(sid);
+  const answers = useAnswers(`television/shows/${sid}/seasons`);
+  const reorder = useReorder(`television/shows/${sid}/seasons`, "television");
 
   const items: RankItem[] = useMemo(
     () =>
-      episodesRanked.map((e) => ({
-        id: e.id,
-        label: e.name,
-        sublabel: e.name_en,
-        meta: `${e.release_year} · ${mins(e.runtime_minutes)}`,
+      ranked.map((r) => ({
+        id: r.season.id,
+        label: r.season.name,
+        sublabel: r.season.name_en,
+        meta: `${r.season.release_year} · ${r.season.episode_count} episode${r.season.episode_count === 1 ? "" : "s"}`,
       })),
-    [episodesRanked],
+    [ranked],
   );
 
   const tabs = (
@@ -250,16 +290,16 @@ export function TelevisionEpisodesRankPage() {
       <NavLink to={`/g/${guildId}/television/shows/${sid}`} end>
         Overview
       </NavLink>
-      <NavLink to={`/g/${guildId}/television/shows/${sid}/rank`}>Rank Episodes</NavLink>
+      <NavLink to={`/g/${guildId}/television/shows/${sid}/rank`}>Rank Seasons</NavLink>
     </div>
   );
 
   return (
     <PairwiseRankPage
-      title={show ? `Rank ${show.name} Episodes` : "Rank Episodes"}
-      scopeKey={`tv-episodes:${sid}`}
-      noun="episode"
-      nounPlural="episodes"
+      title={show ? `Rank ${show.name} Seasons` : "Rank Seasons"}
+      scopeKey={`tv-seasons:${sid}`}
+      noun="season"
+      nounPlural="seasons"
       items={items}
       isLoading={showLoading || isLoading || answers.isLoading}
       comparisons={answers.comparisons}
@@ -272,13 +312,53 @@ export function TelevisionEpisodesRankPage() {
   );
 }
 
-function useEpisodesForRank(sid: number) {
-  const { guildId, base } = useGuildApi();
-  return useQuery({
-    queryKey: ["g", guildId, "television", "shows", sid, "episodes"],
-    queryFn: () => api.get<{ id: number; name: string; name_en: string | null; release_year: number; runtime_minutes: number }[]>(
-      `${base}/television/shows/${sid}/episodes`,
-    ),
-    enabled: !Number.isNaN(sid),
-  });
+// ── Episodes (scoped to one season) ────────────────────────────────────────────
+
+export function TelevisionEpisodesRankPage() {
+  const { id } = useParams<{ id: string }>();
+  const seid = Number(id);
+  const { guildId } = useGuildApi();
+
+  const { data: season, isLoading: seasonLoading } = useTelevisionSeason(seid);
+  const { data: show } = useTelevisionShow(season?.show_id ?? 0);
+  const { data: ranked = [], isLoading } = useRankedTelevisionEpisodes(seid);
+  const answers = useAnswers(`television/seasons/${seid}/episodes`);
+  const reorder = useReorder(`television/seasons/${seid}/episodes`, "television");
+
+  const items: RankItem[] = useMemo(
+    () =>
+      ranked.map((r) => ({
+        id: r.episode.id,
+        label: r.episode.name,
+        sublabel: r.episode.name_en,
+        meta: `${r.episode.release_year} · ${mins(r.episode.runtime_minutes)}`,
+      })),
+    [ranked],
+  );
+
+  const tabs = (
+    <div className="page-tabs">
+      <NavLink to={`/g/${guildId}/television/seasons/${seid}`} end>
+        Overview
+      </NavLink>
+      <NavLink to={`/g/${guildId}/television/seasons/${seid}/rank`}>Rank Episodes</NavLink>
+    </div>
+  );
+
+  return (
+    <PairwiseRankPage
+      title={season ? `Rank ${show ? `${show.name} ` : ""}${season.name} Episodes` : "Rank Episodes"}
+      scopeKey={`tv-episodes:${seid}`}
+      noun="episode"
+      nounPlural="episodes"
+      items={items}
+      isLoading={seasonLoading || isLoading || answers.isLoading}
+      comparisons={answers.comparisons}
+      onAnswer={answers.onAnswer}
+      onDeleteAnswer={answers.onDeleteAnswer}
+      onClearAnswers={answers.onClearAnswers}
+      onApply={(ids) => reorder.mutateAsync(ids)}
+      tabs={tabs}
+    />
+  );
 }

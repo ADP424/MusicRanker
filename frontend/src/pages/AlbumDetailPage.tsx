@@ -7,6 +7,7 @@ import { gk, rk } from "../api/keys";
 import { useAlbumEntry, useArtistCatalog, useGuildApi, useMusicGenres, useUpdateAlbumEntry } from "../api/hooks";
 import type { Album, Genre, NamedRef } from "../api/types";
 import { AlbumForm } from "../components/AlbumForm";
+import { AlbumSoundtracksSection } from "../components/AlbumSoundtracksSection";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { LinksSection } from "../components/LinksSection";
 import { GenreChooser } from "../genre/GenreChooser";
@@ -22,7 +23,7 @@ function fmtRuntime(seconds: number) {
 
 function AlbumArtistsSection({ albumId, album }: { albumId: number; album: Album }) {
   const qc = useQueryClient();
-  const { guildId, base } = useGuildApi();
+  const { guildId, userId, base } = useGuildApi();
   const canEdit = useCan("catalog_edit");
   const [editing, setEditing] = useState(false);
   const [confirmUnlink, setConfirmUnlink] = useState<NamedRef | null>(null);
@@ -38,6 +39,8 @@ function AlbumArtistsSection({ albumId, album }: { albumId: number; album: Album
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: gk(guildId, "albums") });
     qc.invalidateQueries({ queryKey: gk(guildId, "artists") });
+    // Linking carries my rank over to the new artist; unlinking drops it.
+    qc.invalidateQueries({ queryKey: rk(guildId, userId, "artists") });
   };
 
   const link = useMutation({
@@ -364,51 +367,6 @@ export function AlbumDetailPage() {
           {album.alias && (
             <div><span className="detail-label">Alias</span><span>{album.alias}</span></div>
           )}
-          {album.soundtrack_movies.length > 0 && (
-            <div>
-              <span className="detail-label">Soundtrack for</span>
-              <span>
-                {album.soundtrack_movies.map((m, i) => (
-                  <span key={m.id}>
-                    {i > 0 && ", "}
-                    <Link to={`/g/${guildId}/movies/${m.id}`}>
-                      {m.name}{m.name_en && <span style={{ opacity: 0.6 }}> ({m.name_en})</span>}
-                    </Link>
-                  </span>
-                ))}
-              </span>
-            </div>
-          )}
-          {album.soundtrack_television_shows.length > 0 && (
-            <div>
-              <span className="detail-label">Soundtrack for (TV)</span>
-              <span>
-                {album.soundtrack_television_shows.map((s, i) => (
-                  <span key={s.id}>
-                    {i > 0 && ", "}
-                    <Link to={`/g/${guildId}/television/shows/${s.id}`}>
-                      {s.name}{s.name_en && <span style={{ opacity: 0.6 }}> ({s.name_en})</span>}
-                    </Link>
-                  </span>
-                ))}
-              </span>
-            </div>
-          )}
-          {album.soundtrack_games.length > 0 && (
-            <div>
-              <span className="detail-label">Soundtrack for (Game)</span>
-              <span>
-                {album.soundtrack_games.map((g, i) => (
-                  <span key={g.id}>
-                    {i > 0 && ", "}
-                    <Link to={`/g/${guildId}/games/${g.id}`}>
-                      {g.name}{g.name_en && <span style={{ opacity: 0.6 }}> ({g.name_en})</span>}
-                    </Link>
-                  </span>
-                ))}
-              </span>
-            </div>
-          )}
         </div>
         {album.notes && (
           <div className="detail-tags" style={{ marginTop: "0.5rem" }}>
@@ -420,6 +378,7 @@ export function AlbumDetailPage() {
 
       <AlbumArtistsSection albumId={albumId} album={album} />
       <AlbumGenresSection albumId={albumId} album={album} />
+      <AlbumSoundtracksSection album={album} />
       <LinksSection path="albums" section="albums" ownerId={albumId} />
       {album.artists.length > 0 && <MyAlbumListSection artistId={firstArtistId} albumId={albumId} />}
 

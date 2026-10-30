@@ -11,9 +11,10 @@ from .database_models import NATIONALITIES
 from .merge import apply as _merge_handlers  # noqa: F401 — registers the "guild_merge" handler
 from .middleware import CsrfMiddleware
 from .routers import (
-    albums, artists, auth, game_genres, game_platforms, game_stats, genres, guilds, igdb_import, jobs_router,
+    albums, artists, auth, book_genres, book_stats, books, game_genres, game_person_scan, game_platforms, game_stats,
+    genres, guilds, igdb_import, jobs_router,
     merges, movie_genres, movie_person_scan, movie_stats, movies, persons, stats, television, television_genres,
-    television_stats, tmdb_import, tmdb_tv_import,
+    television_person_scan, television_stats, tmdb_import, tmdb_tv_import,
 )
 from .routers import games
 from .security import CSRF_HEADER
@@ -59,6 +60,8 @@ app.include_router(game_genres.category_router)
 app.include_router(game_genres.router)
 app.include_router(television_genres.category_router)
 app.include_router(television_genres.router)
+app.include_router(book_genres.category_router)
+app.include_router(book_genres.router)
 app.include_router(game_platforms.category_router)
 app.include_router(game_platforms.router)
 
@@ -74,19 +77,25 @@ app.include_router(games.router)
 app.include_router(games.links_router)
 app.include_router(television.router)
 app.include_router(television.links_router)
+app.include_router(television.season_links_router)
 app.include_router(television.episode_links_router)
+app.include_router(books.router)
+app.include_router(books.links_router)
 
 # stats
 app.include_router(stats.router)
 app.include_router(movie_stats.router)
 app.include_router(game_stats.router)
 app.include_router(television_stats.router)
+app.include_router(book_stats.router)
 
 # imports
 app.include_router(tmdb_import.router)
 app.include_router(tmdb_tv_import.router)
 app.include_router(igdb_import.router)
 app.include_router(movie_person_scan.router)
+app.include_router(television_person_scan.router)
+app.include_router(game_person_scan.router)
 
 
 @app.exception_handler(IntegrityError)

@@ -12,7 +12,9 @@ interface Item { source_id: number; name: string; name_en: string | null; year: 
 type Decisions = Record<string, Record<number, { action: Action; target_id: number | null }>>;
 interface JobState { status: string; phase: string; processed: number; total: number; queue_position: number; error?: string | null }
 
-const SECTIONS = ["genres", "platforms", "people", "artists", "albums", "movies", "games", "television_shows"] as const;
+const SECTIONS = [
+  "genres", "platforms", "people", "artists", "albums", "books", "movies", "games", "television_shows",
+] as const;
 const FINISHED = ["done", "error", "cancelled"];
 
 export function MergeWizard() {

@@ -47,3 +47,10 @@ television_show_genres_junction = guild_junction(
 television_episode_genres_junction = guild_junction(
     "television_episode_genres_junction", ("episode_id", "television_episodes"), ("genre_id", "genres")
 )
+book_genres = guild_junction("book_genres", ("book_id", "books"), ("genre_id", "genres"))
+# A book and the movies / games / shows adapted from it.
+book_movie_adaptations = guild_junction("book_movie_adaptations", ("book_id", "books"), ("movie_id", "movies"))
+book_game_adaptations = guild_junction("book_game_adaptations", ("book_id", "books"), ("game_id", "games"))
+book_television_show_adaptations = guild_junction(
+    "book_television_show_adaptations", ("book_id", "books"), ("show_id", "television_shows")
+)

@@ -98,15 +98,45 @@ class UserTelevisionShowRank(UserRank, Base):
     )
 
 
+class UserTelevisionSeasonRank(UserRank, Base):
+    """Seasons are ranked *within their show*, the way albums are within an
+    artist's discography. Notes only — watch counts live on episodes."""
+
+    __tablename__ = "user_television_season_ranks"
+    season_id: Mapped[int] = mapped_column(primary_key=True)
+    show_id: Mapped[int] = mapped_column(ForeignKey("television_shows.id", ondelete="CASCADE"), nullable=False)
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["season_id", "guild_id"], ["television_seasons.id", "television_seasons.guild_id"], ondelete="CASCADE"
+        ),
+        _order_index("user_television_season_ranks", "show_id"),
+    )
+
+
 class UserTelevisionEpisodeRank(UserRank, Base):
+    """Episodes are ranked *within their season*. ``show_id`` rides along for
+    show-wide queries (stats); ``season_id`` is the ranking scope."""
+
     __tablename__ = "user_television_episode_ranks"
     episode_id: Mapped[int] = mapped_column(primary_key=True)
     show_id: Mapped[int] = mapped_column(ForeignKey("television_shows.id", ondelete="CASCADE"), nullable=False)
+    season_id: Mapped[int] = mapped_column(ForeignKey("television_seasons.id", ondelete="CASCADE"), nullable=False)
     watches: Mapped[int] = mapped_column(server_default="1")
     __table_args__ = (
         CheckConstraint("watches >= 1", name="chk_user_tv_episode_watches_min"),
         ForeignKeyConstraint(
             ["episode_id", "guild_id"], ["television_episodes.id", "television_episodes.guild_id"], ondelete="CASCADE"
         ),
-        _order_index("user_television_episode_ranks", "show_id"),
+        _order_index("user_television_episode_ranks", "season_id"),
+    )
+
+
+class UserBookRank(UserRank, Base):
+    __tablename__ = "user_book_ranks"
+    book_id: Mapped[int] = mapped_column(primary_key=True)
+    reads: Mapped[int] = mapped_column(server_default="1")
+    __table_args__ = (
+        CheckConstraint("reads >= 1", name="chk_user_book_reads_min"),
+        ForeignKeyConstraint(["book_id", "guild_id"], ["books.id", "books.guild_id"], ondelete="CASCADE"),
+        _order_index("user_book_ranks"),
     )

@@ -11,10 +11,14 @@ import { MergeWizard } from "./guild/MergeWizard";
 import { AlbumDetailPage } from "./pages/AlbumDetailPage";
 import { ArtistDetailPage } from "./pages/ArtistDetailPage";
 import { ArtistsPage } from "./pages/ArtistsPage";
+import { BookDetailPage } from "./pages/BookDetailPage";
+import { BooksPage } from "./pages/BooksPage";
+import { BookStatsPage } from "./pages/BookStatsPage";
 import { GameDetailPage } from "./pages/GameDetailPage";
 import { GamesPage } from "./pages/GamesPage";
 import { MovieDetailPage } from "./pages/MovieDetailPage";
 import { MoviePersonScanPage } from "./pages/MoviePersonScanPage";
+import { GamePersonScanPage, TelevisionPersonScanPage } from "./pages/PersonScanPage";
 import { MoviesPage } from "./pages/MoviesPage";
 import { GameStatsPage } from "./pages/GameStatsPage";
 import { MovieStatsPage } from "./pages/MovieStatsPage";
@@ -23,15 +27,16 @@ import { PeoplePage } from "./pages/PeoplePage";
 import { PersonDetailPage } from "./pages/PersonDetailPage";
 import { StatsPage } from "./pages/StatsPage";
 import { TelevisionEpisodeDetailPage } from "./pages/TelevisionEpisodeDetailPage";
+import { TelevisionSeasonDetailPage } from "./pages/TelevisionSeasonDetailPage";
 import { TelevisionShowDetailPage } from "./pages/TelevisionShowDetailPage";
 import { TelevisionShowsPage } from "./pages/TelevisionShowsPage";
 import { TelevisionStatsPage } from "./pages/TelevisionStatsPage";
 import { GenreDetailPage } from "./genre/GenreDetailPage";
 import { GenresPage } from "./genre/GenresPage";
-import { GAME_GENRES, GAME_PLATFORMS, MOVIE_GENRES, MUSIC_GENRES, TELEVISION_GENRES } from "./genre/config";
+import { BOOK_GENRES, GAME_GENRES, GAME_PLATFORMS, MOVIE_GENRES, MUSIC_GENRES, TELEVISION_GENRES } from "./genre/config";
 import {
-  ArtistAlbumsRankPage, ArtistsRankPage, GamesRankPage, MoviesRankPage,
-  TelevisionEpisodesRankPage, TelevisionShowsRankPage,
+  ArtistAlbumsRankPage, ArtistsRankPage, BooksRankPage, GamesRankPage, MoviesRankPage,
+  TelevisionEpisodesRankPage, TelevisionSeasonsRankPage, TelevisionShowsRankPage,
 } from "./rank/pages";
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
@@ -74,6 +79,24 @@ function MusicSection() {
   );
 }
 
+function BooksSection() {
+  return (
+    <>
+      <SectionNav links={[["books", "Books", true], ["books/rank", "Rank"], ["books/genres", "Genres"], ["books/stats", "Stats"]]} />
+      <main>
+        <Routes>
+          <Route path="/" element={<BooksPage />} />
+          <Route path="/rank" element={<BooksRankPage />} />
+          <Route path="/:id" element={<BookDetailPage />} />
+          <Route path="/genres" element={<GenresPage domain={BOOK_GENRES} />} />
+          <Route path="/genres/:id" element={<GenreDetailPage domain={BOOK_GENRES} />} />
+          <Route path="/stats" element={<BookStatsPage />} />
+        </Routes>
+      </main>
+    </>
+  );
+}
+
 function MoviesSection() {
   return (
     <>
@@ -96,7 +119,7 @@ function MoviesSection() {
 function GamesSection() {
   return (
     <>
-      <SectionNav links={[["games", "Games", true], ["games/rank", "Rank"], ["games/genres", "Genres"], ["games/platforms", "Platforms"], ["games/stats", "Stats"]]} />
+      <SectionNav links={[["games", "Games", true], ["games/rank", "Rank"], ["games/genres", "Genres"], ["games/platforms", "Platforms"], ["games/stats", "Stats"], ["games/scan", "Scan"]]} />
       <main>
         <Routes>
           <Route path="/" element={<GamesPage />} />
@@ -107,6 +130,7 @@ function GamesSection() {
           <Route path="/platforms" element={<GenresPage domain={GAME_PLATFORMS} />} />
           <Route path="/platforms/:id" element={<GenreDetailPage domain={GAME_PLATFORMS} />} />
           <Route path="/stats" element={<GameStatsPage />} />
+          <Route path="/scan" element={<GamePersonScanPage />} />
         </Routes>
       </main>
     </>
@@ -116,17 +140,20 @@ function GamesSection() {
 function TelevisionSection() {
   return (
     <>
-      <SectionNav links={[["television", "Shows", true], ["television/rank", "Rank"], ["television/genres", "Genres"], ["television/stats", "Stats"]]} />
+      <SectionNav links={[["television", "Shows", true], ["television/rank", "Rank"], ["television/genres", "Genres"], ["television/stats", "Stats"], ["television/scan", "Scan"]]} />
       <main>
         <Routes>
           <Route path="/" element={<TelevisionShowsPage />} />
           <Route path="/rank" element={<TelevisionShowsRankPage />} />
           <Route path="/shows/:id" element={<TelevisionShowDetailPage />} />
-          <Route path="/shows/:id/rank" element={<TelevisionEpisodesRankPage />} />
+          <Route path="/shows/:id/rank" element={<TelevisionSeasonsRankPage />} />
+          <Route path="/seasons/:id" element={<TelevisionSeasonDetailPage />} />
+          <Route path="/seasons/:id/rank" element={<TelevisionEpisodesRankPage />} />
           <Route path="/episodes/:id" element={<TelevisionEpisodeDetailPage />} />
           <Route path="/genres" element={<GenresPage domain={TELEVISION_GENRES} />} />
           <Route path="/genres/:id" element={<GenreDetailPage domain={TELEVISION_GENRES} />} />
           <Route path="/stats" element={<TelevisionStatsPage />} />
+          <Route path="/scan" element={<TelevisionPersonScanPage />} />
         </Routes>
       </main>
     </>
@@ -180,6 +207,7 @@ function GuildShell() {
         <Route path="members" element={canManage ? <GuildMembersPage /> : <Navigate to=".." replace />} />
         <Route path="merge" element={canMerge ? <MergeWizard /> : <Navigate to=".." replace />} />
         <Route path="music/*" element={<MusicSection />} />
+        <Route path="books/*" element={<BooksSection />} />
         <Route path="movies/*" element={<MoviesSection />} />
         <Route path="people/*" element={<PeopleSection />} />
         <Route path="television/*" element={<TelevisionSection />} />
