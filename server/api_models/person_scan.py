@@ -1,22 +1,24 @@
-"""Schemas for the generic person-link scans (television, games). The movie
-scan keeps its own, movie-shaped ones in `movie_person_scan.py`."""
+"""Schemas for the person-link scans: TMDB (movies + television) and IGDB."""
 
+from datetime import datetime
 from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
-from .base import ORMSchema
-
-EntityKind = Literal["show", "season", "episode", "game"]
+EntityKind = Literal["movie", "show", "season", "episode", "game"]
+Verdict = Literal["verified", "name_only", "conflict", ""]
 
 
 class PersonScanStartIn(BaseModel):
-    # Shows for the television scan, games for the game scan.
+    # Scope the scan to these entities (all of them when omitted). Which kind
+    # they are: "movie" or "show" for the TMDB scan, "game" for IGDB; defaults
+    # to the scan's first.
     entity_ids: Optional[list[int]] = Field(default=None, min_length=1)
+    entity_kind: Optional[EntityKind] = None
     force_refresh: bool = False
 
 
-class PersonScanStatsOut(ORMSchema):
+class PersonScanStatsOut(BaseModel):
     items_total: int
     items_in_scope: int
     items_resolved: int
@@ -25,7 +27,7 @@ class PersonScanStatsOut(ORMSchema):
     cache_hits: int
 
 
-class PersonScanJobOut(ORMSchema):
+class PersonScanJobOut(BaseModel):
     id: str
     status: Literal["pending", "running", "done", "cancelled", "error"]
     phase: Literal["queued", "loading", "fetching", "matching", "finished"]
@@ -35,9 +37,12 @@ class PersonScanJobOut(ORMSchema):
     error: Optional[str] = None
     candidate_count: Optional[int] = None
     stats: Optional[PersonScanStatsOut] = None
+    scoped: bool = False  # limited to some entities, not a full scan
+    created_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
 
 
-class PersonScanCandidateOut(ORMSchema):
+class PersonScanCandidateOut(BaseModel):
     key: str
     person_id: int
     person_name: str
@@ -60,9 +65,12 @@ class PersonScanCandidateOut(ORMSchema):
     source_person_id: int
     source_popularity: float
     suppressed: bool
+    verdict: Verdict = ""
+    # medium ("movie" / "show") -> [linked works that corroborate, linked works checked]
+    evidence: dict[str, tuple[int, int]] = {}
 
 
-class PersonScanUnresolvedOut(ORMSchema):
+class PersonScanUnresolvedOut(BaseModel):
     entity_kind: EntityKind
     id: int
     name: str

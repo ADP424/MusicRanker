@@ -1,13 +1,12 @@
 import type { CastRole, TmdbTvImportPersonIn, TmdbTvPerson } from "../api/types";
 import { CAST_ROLE_LABELS } from "../api/types";
-import { tmdbCreditDescription, type TmdbRowPerson } from "./TmdbPersonRow";
+import { type ImportRowPerson, tmdbCreditDescription } from "./import/ImportPersonRow";
 
 /** Shared by the show, season and episode TMDB import dialogs. */
 export const ACTOR_ROLES: CastRole[] = ["lead_actor", "actor", "cameo_actor"];
 
-export function toRow(p: TmdbTvPerson): TmdbRowPerson {
+export function toRow(p: TmdbTvPerson): ImportRowPerson<CastRole> {
   return {
-    tmdb_id: p.tmdb_id,
     name: p.name,
     description: tmdbCreditDescription(p),
     suggested_role: p.suggested_role,
@@ -20,8 +19,7 @@ export function toRow(p: TmdbTvPerson): TmdbRowPerson {
       person_name: m.person_name,
       has_entries: m.has_screen_entries,
       filmography_overlap: m.filmography_overlap,
-      artist_summary: m.artist_summary,
-      game_summary: m.game_summary,
+      summaries: [m.artist_summary, m.game_summary],
     })),
   };
 }
@@ -31,7 +29,11 @@ export function toRow(p: TmdbTvPerson): TmdbRowPerson {
 export function seedResolutions(people: TmdbTvPerson[], into: Record<number, number | null>) {
   for (const p of people) {
     if (p.tmdb_id in into) continue;
-    const id = p.parent_person_id ?? p.db_matches.find((m) => m.filmography_overlap)?.person_id;
+    // Already on the parent, a verified match, or else the only person by
+    // that name: reuse them rather than creating a duplicate.
+    const id = p.parent_person_id
+      ?? p.db_matches.find((m) => m.filmography_overlap)?.person_id
+      ?? (p.db_matches.length === 1 ? p.db_matches[0].person_id : undefined);
     if (id != null) into[p.tmdb_id] = id;
   }
 }
@@ -39,7 +41,7 @@ export function seedResolutions(people: TmdbTvPerson[], into: Record<number, num
 /** "Already on the show as Creator, Lead Actor" — or undefined if they aren't. */
 export function parentNote(p: TmdbTvPerson, parent: "show" | "season"): string | undefined {
   if (p.parent_roles.length === 0) return undefined;
-  return `Already on the ${parent} as ${p.parent_roles.map((r) => CAST_ROLE_LABELS[r]).join(", ")} — preselected`;
+  return `Already on the ${parent} as ${p.parent_roles.map((r) => CAST_ROLE_LABELS[r]).join(", ")}, so preselected`;
 }
 
 export function personIn(

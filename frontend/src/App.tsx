@@ -1,43 +1,65 @@
-import { Link, NavLink, Navigate, Route, Routes, useNavigate } from "react-router-dom";
+import { Suspense, lazy, type ComponentType } from "react";
+import { Navigate, Route, Routes } from "react-router-dom";
 import { AuthProvider, useAuth } from "./auth/AuthProvider";
-import { ActivityIndicator, LoadingState } from "./components/Spinner";
-import { LoginPage } from "./auth/LoginPage";
-import { RegisterPage } from "./auth/RegisterPage";
-import { GuildProvider, useCan, useGuild } from "./guild/GuildProvider";
-import { GuildHomePage } from "./guild/GuildHomePage";
-import { GuildMembersPage } from "./guild/GuildMembersPage";
-import { GuildsPage } from "./guild/GuildsPage";
-import { MergeWizard } from "./guild/MergeWizard";
-import { AlbumDetailPage } from "./pages/AlbumDetailPage";
-import { ArtistDetailPage } from "./pages/ArtistDetailPage";
-import { ArtistsPage } from "./pages/ArtistsPage";
-import { BookDetailPage } from "./pages/BookDetailPage";
-import { BooksPage } from "./pages/BooksPage";
-import { BookStatsPage } from "./pages/BookStatsPage";
-import { GameDetailPage } from "./pages/GameDetailPage";
-import { GamesPage } from "./pages/GamesPage";
-import { MovieDetailPage } from "./pages/MovieDetailPage";
-import { MoviePersonScanPage } from "./pages/MoviePersonScanPage";
-import { GamePersonScanPage, TelevisionPersonScanPage } from "./pages/PersonScanPage";
-import { MoviesPage } from "./pages/MoviesPage";
-import { GameStatsPage } from "./pages/GameStatsPage";
-import { MovieStatsPage } from "./pages/MovieStatsPage";
-import { PeopleGraphPage } from "./pages/PeopleGraphPage";
-import { PeoplePage } from "./pages/PeoplePage";
-import { PersonDetailPage } from "./pages/PersonDetailPage";
-import { StatsPage } from "./pages/StatsPage";
-import { TelevisionEpisodeDetailPage } from "./pages/TelevisionEpisodeDetailPage";
-import { TelevisionSeasonDetailPage } from "./pages/TelevisionSeasonDetailPage";
-import { TelevisionShowDetailPage } from "./pages/TelevisionShowDetailPage";
-import { TelevisionShowsPage } from "./pages/TelevisionShowsPage";
-import { TelevisionStatsPage } from "./pages/TelevisionStatsPage";
-import { GenreDetailPage } from "./genre/GenreDetailPage";
-import { GenresPage } from "./genre/GenresPage";
+import { LoadFailed } from "./components/LoadFailed";
+import { LoadingState } from "./components/Spinner";
+import { AppShell } from "./shell/AppShell";
+const LoginPage = lazyNamed(() => import("./auth/LoginPage"), "LoginPage");
+const RegisterPage = lazyNamed(() => import("./auth/RegisterPage"), "RegisterPage");
+import { GuildProvider, useCan } from "./guild/GuildProvider";
+const GuildStatsPage = lazyNamed(() => import("./guild/GuildStatsPage"), "GuildStatsPage");
+const GuildHomePage = lazyNamed(() => import("./guild/GuildHomePage"), "GuildHomePage");
+const GuildMembersPage = lazyNamed(() => import("./guild/GuildMembersPage"), "GuildMembersPage");
+const GuildsPage = lazyNamed(() => import("./guild/GuildsPage"), "GuildsPage");
+const MergeWizard = lazyNamed(() => import("./guild/MergeWizard"), "MergeWizard");
+const ComparePage = lazyNamed(() => import("./guild/ComparePage"), "ComparePage");
+const AccountPage = lazyNamed(() => import("./auth/AccountPage"), "AccountPage");
+const AlbumDetailPage = lazyNamed(() => import("./pages/AlbumDetailPage"), "AlbumDetailPage");
+const ArtistDetailPage = lazyNamed(() => import("./pages/ArtistDetailPage"), "ArtistDetailPage");
+const ArtistsPage = lazyNamed(() => import("./pages/ArtistsPage"), "ArtistsPage");
+const BookDetailPage = lazyNamed(() => import("./pages/BookDetailPage"), "BookDetailPage");
+const BooksPage = lazyNamed(() => import("./pages/BooksPage"), "BooksPage");
+const BookStatsPage = lazyNamed(() => import("./pages/BookStatsPage"), "BookStatsPage");
+const GameDetailPage = lazyNamed(() => import("./pages/GameDetailPage"), "GameDetailPage");
+const GamesPage = lazyNamed(() => import("./pages/GamesPage"), "GamesPage");
+const MovieDetailPage = lazyNamed(() => import("./pages/MovieDetailPage"), "MovieDetailPage");
+const GamePersonScanPage = lazyNamed(() => import("./pages/PersonScanPage"), "GamePersonScanPage");
+const TmdbPersonScanPage = lazyNamed(() => import("./pages/PersonScanPage"), "TmdbPersonScanPage");
+const MoviesPage = lazyNamed(() => import("./pages/MoviesPage"), "MoviesPage");
+const GameStatsPage = lazyNamed(() => import("./pages/GameStatsPage"), "GameStatsPage");
+const MovieStatsPage = lazyNamed(() => import("./pages/MovieStatsPage"), "MovieStatsPage");
+const PeopleGraphPage = lazyNamed(() => import("./pages/PeopleGraphPage"), "PeopleGraphPage");
+const NationalitiesPage = lazyNamed(() => import("./pages/NationalitiesPage"), "NationalitiesPage");
+const PeoplePage = lazyNamed(() => import("./pages/PeoplePage"), "PeoplePage");
+const PersonDetailPage = lazyNamed(() => import("./pages/PersonDetailPage"), "PersonDetailPage");
+const StatsPage = lazyNamed(() => import("./pages/StatsPage"), "StatsPage");
+const TelevisionEpisodeDetailPage = lazyNamed(() => import("./pages/TelevisionEpisodeDetailPage"), "TelevisionEpisodeDetailPage");
+const TelevisionSeasonDetailPage = lazyNamed(() => import("./pages/TelevisionSeasonDetailPage"), "TelevisionSeasonDetailPage");
+const TelevisionShowDetailPage = lazyNamed(() => import("./pages/TelevisionShowDetailPage"), "TelevisionShowDetailPage");
+const TelevisionShowsPage = lazyNamed(() => import("./pages/TelevisionShowsPage"), "TelevisionShowsPage");
+const TelevisionShowEpisodesPage = lazyNamed(() => import("./pages/TelevisionShowEpisodesPage"), "TelevisionShowEpisodesPage");
+const TelevisionStatsPage = lazyNamed(() => import("./pages/TelevisionStatsPage"), "TelevisionStatsPage");
+const GenreDetailPage = lazyNamed(() => import("./genre/GenreDetailPage"), "GenreDetailPage");
+const GenresPage = lazyNamed(() => import("./genre/GenresPage"), "GenresPage");
 import { BOOK_GENRES, GAME_GENRES, GAME_PLATFORMS, MOVIE_GENRES, MUSIC_GENRES, TELEVISION_GENRES } from "./genre/config";
-import {
-  ArtistAlbumsRankPage, ArtistsRankPage, BooksRankPage, GamesRankPage, MoviesRankPage,
-  TelevisionEpisodesRankPage, TelevisionSeasonsRankPage, TelevisionShowsRankPage,
-} from "./rank/pages";
+const ArtistAlbumsRankPage = lazyNamed(() => import("./rank/pages"), "ArtistAlbumsRankPage");
+const ArtistsRankPage = lazyNamed(() => import("./rank/pages"), "ArtistsRankPage");
+const BooksRankPage = lazyNamed(() => import("./rank/pages"), "BooksRankPage");
+const GamesRankPage = lazyNamed(() => import("./rank/pages"), "GamesRankPage");
+const MoviesRankPage = lazyNamed(() => import("./rank/pages"), "MoviesRankPage");
+const TelevisionEpisodesRankPage = lazyNamed(() => import("./rank/pages"), "TelevisionEpisodesRankPage");
+const TelevisionSeasonsRankPage = lazyNamed(() => import("./rank/pages"), "TelevisionSeasonsRankPage");
+const TelevisionShowEpisodesRankPage = lazyNamed(() => import("./rank/pages"), "TelevisionShowEpisodesRankPage");
+const TelevisionShowsRankPage = lazyNamed(() => import("./rank/pages"), "TelevisionShowsRankPage");
+
+/** Route pages load on first visit, so the initial bundle carries only the shell
+ *  (recharts and d3-force in particular stay out of it). */
+function lazyNamed<M, K extends keyof M>(load: () => Promise<M>, name: K) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- `lazy` itself is typed on ComponentType<any>
+  return lazy(() => load().then((m) => ({ default: m[name] as ComponentType<any> })));
+}
+
+const pageFallback = <LoadingState />;
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const { me, loading } = useAuth();
@@ -45,25 +67,10 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
   return me ? <>{children}</> : <Navigate to="/login" replace />;
 }
 
-/** Shared chrome: the section's own tabs. The global TopBar already covers
- * getting back to the guild home / all guilds / sign-out, so this only needs
- * the tabs themselves now. */
-function SectionNav({ links }: { links: [to: string, label: string, end?: boolean][] }) {
-  const guild = useGuild();
-  return (
-    <nav>
-      {links.map(([to, label, end]) => (
-        <NavLink key={to} to={`/g/${guild.id}/${to}`} end={end}>{label}</NavLink>
-      ))}
-    </nav>
-  );
-}
-
 function MusicSection() {
   return (
     <>
-      <SectionNav links={[["music", "Artists", true], ["music/rank", "Rank"], ["music/genres", "Genres"], ["music/stats", "Stats"]]} />
-      <main>
+      <Suspense fallback={pageFallback}>
         <Routes>
           <Route path="/" element={<ArtistsPage />} />
           <Route path="/rank" element={<ArtistsRankPage />} />
@@ -73,8 +80,9 @@ function MusicSection() {
           <Route path="/genres" element={<GenresPage domain={MUSIC_GENRES} />} />
           <Route path="/genres/:id" element={<GenreDetailPage domain={MUSIC_GENRES} />} />
           <Route path="/stats" element={<StatsPage />} />
+          <Route path="*" element={<LoadFailed what="page" error={null} />} />
         </Routes>
-      </main>
+      </Suspense>
     </>
   );
 }
@@ -82,8 +90,7 @@ function MusicSection() {
 function BooksSection() {
   return (
     <>
-      <SectionNav links={[["books", "Books", true], ["books/rank", "Rank"], ["books/genres", "Genres"], ["books/stats", "Stats"]]} />
-      <main>
+      <Suspense fallback={pageFallback}>
         <Routes>
           <Route path="/" element={<BooksPage />} />
           <Route path="/rank" element={<BooksRankPage />} />
@@ -91,8 +98,9 @@ function BooksSection() {
           <Route path="/genres" element={<GenresPage domain={BOOK_GENRES} />} />
           <Route path="/genres/:id" element={<GenreDetailPage domain={BOOK_GENRES} />} />
           <Route path="/stats" element={<BookStatsPage />} />
+          <Route path="*" element={<LoadFailed what="page" error={null} />} />
         </Routes>
-      </main>
+      </Suspense>
     </>
   );
 }
@@ -100,8 +108,7 @@ function BooksSection() {
 function MoviesSection() {
   return (
     <>
-      <SectionNav links={[["movies", "Movies", true], ["movies/rank", "Rank"], ["movies/genres", "Genres"], ["movies/stats", "Stats"], ["movies/scan", "Scan"]]} />
-      <main>
+      <Suspense fallback={pageFallback}>
         <Routes>
           <Route path="/" element={<MoviesPage />} />
           <Route path="/rank" element={<MoviesRankPage />} />
@@ -109,9 +116,10 @@ function MoviesSection() {
           <Route path="/genres" element={<GenresPage domain={MOVIE_GENRES} />} />
           <Route path="/genres/:id" element={<GenreDetailPage domain={MOVIE_GENRES} />} />
           <Route path="/stats" element={<MovieStatsPage />} />
-          <Route path="/scan" element={<MoviePersonScanPage />} />
+          <Route path="/scan" element={<TmdbPersonScanPage />} />
+          <Route path="*" element={<LoadFailed what="page" error={null} />} />
         </Routes>
-      </main>
+      </Suspense>
     </>
   );
 }
@@ -119,8 +127,7 @@ function MoviesSection() {
 function GamesSection() {
   return (
     <>
-      <SectionNav links={[["games", "Games", true], ["games/rank", "Rank"], ["games/genres", "Genres"], ["games/platforms", "Platforms"], ["games/stats", "Stats"], ["games/scan", "Scan"]]} />
-      <main>
+      <Suspense fallback={pageFallback}>
         <Routes>
           <Route path="/" element={<GamesPage />} />
           <Route path="/rank" element={<GamesRankPage />} />
@@ -131,8 +138,9 @@ function GamesSection() {
           <Route path="/platforms/:id" element={<GenreDetailPage domain={GAME_PLATFORMS} />} />
           <Route path="/stats" element={<GameStatsPage />} />
           <Route path="/scan" element={<GamePersonScanPage />} />
+          <Route path="*" element={<LoadFailed what="page" error={null} />} />
         </Routes>
-      </main>
+      </Suspense>
     </>
   );
 }
@@ -140,22 +148,24 @@ function GamesSection() {
 function TelevisionSection() {
   return (
     <>
-      <SectionNav links={[["television", "Shows", true], ["television/rank", "Rank"], ["television/genres", "Genres"], ["television/stats", "Stats"], ["television/scan", "Scan"]]} />
-      <main>
+      <Suspense fallback={pageFallback}>
         <Routes>
           <Route path="/" element={<TelevisionShowsPage />} />
           <Route path="/rank" element={<TelevisionShowsRankPage />} />
           <Route path="/shows/:id" element={<TelevisionShowDetailPage />} />
           <Route path="/shows/:id/rank" element={<TelevisionSeasonsRankPage />} />
+          <Route path="/shows/:id/episodes" element={<TelevisionShowEpisodesPage />} />
+          <Route path="/shows/:id/episodes/rank" element={<TelevisionShowEpisodesRankPage />} />
           <Route path="/seasons/:id" element={<TelevisionSeasonDetailPage />} />
           <Route path="/seasons/:id/rank" element={<TelevisionEpisodesRankPage />} />
           <Route path="/episodes/:id" element={<TelevisionEpisodeDetailPage />} />
           <Route path="/genres" element={<GenresPage domain={TELEVISION_GENRES} />} />
           <Route path="/genres/:id" element={<GenreDetailPage domain={TELEVISION_GENRES} />} />
           <Route path="/stats" element={<TelevisionStatsPage />} />
-          <Route path="/scan" element={<TelevisionPersonScanPage />} />
+          <Route path="/scan" element={<TmdbPersonScanPage />} />
+          <Route path="*" element={<LoadFailed what="page" error={null} />} />
         </Routes>
-      </main>
+      </Suspense>
     </>
   );
 }
@@ -163,36 +173,16 @@ function TelevisionSection() {
 function PeopleSection() {
   return (
     <>
-      <SectionNav links={[["people", "People", true], ["people/graph", "Graph"]]} />
-      <main>
+      <Suspense fallback={pageFallback}>
         <Routes>
           <Route path="/" element={<PeoplePage />} />
           <Route path="/graph" element={<PeopleGraphPage />} />
+          <Route path="/nationalities" element={<NationalitiesPage />} />
           <Route path="/:id" element={<PersonDetailPage />} />
+          <Route path="*" element={<LoadFailed what="page" error={null} />} />
         </Routes>
-      </main>
+      </Suspense>
     </>
-  );
-}
-
-/** Always-visible top bar inside a guild: identity, guild switcher, sign-out.
- * Without this, the only way to reach "All guilds" or sign out was to already
- * be on the guild home page — everywhere else (an artist page, a movie's
- * detail view, three levels deep) was a dead end. */
-function TopBar() {
-  const guild = useGuild();
-  const { me, logout } = useAuth();
-  const navigate = useNavigate();
-  return (
-    <div className="top-bar">
-      <Link to="." className="top-bar-guild">{guild.name}</Link>
-      <div className="top-bar-actions">
-        <ActivityIndicator />
-        <Link to="/guilds" className="top-bar-link">All guilds</Link>
-        <span className="meta">{me?.username}</span>
-        <button className="top-bar-link" onClick={() => logout().then(() => navigate("/login"))}>Sign out</button>
-      </div>
-    </div>
   );
 }
 
@@ -200,12 +190,14 @@ function GuildShell() {
   const canManage = useCan("manage_members");
   const canMerge = useCan("merge_in");
   return (
-    <>
-      <TopBar />
+    <AppShell>
+      <Suspense fallback={pageFallback}>
       <Routes>
         <Route path="/" element={<GuildHomePage />} />
         <Route path="members" element={canManage ? <GuildMembersPage /> : <Navigate to=".." replace />} />
         <Route path="merge" element={canMerge ? <MergeWizard /> : <Navigate to=".." replace />} />
+        <Route path="compare" element={<ComparePage />} />
+        <Route path="stats" element={<GuildStatsPage />} />
         <Route path="music/*" element={<MusicSection />} />
         <Route path="books/*" element={<BooksSection />} />
         <Route path="movies/*" element={<MoviesSection />} />
@@ -214,23 +206,27 @@ function GuildShell() {
         <Route path="games/*" element={<GamesSection />} />
         <Route path="*" element={<Navigate to="." replace />} />
       </Routes>
-    </>
+      </Suspense>
+    </AppShell>
   );
 }
 
 export function App() {
   return (
     <AuthProvider>
+      <Suspense fallback={pageFallback}>
       <Routes>
         <Route path="/login" element={<LoginPage />} />
         <Route path="/register" element={<RegisterPage />} />
         <Route path="/guilds" element={<RequireAuth><GuildsPage /></RequireAuth>} />
+        <Route path="/account" element={<RequireAuth><Suspense fallback={pageFallback}><AccountPage /></Suspense></RequireAuth>} />
         <Route
           path="/g/:guildId/*"
           element={<RequireAuth><GuildProvider><GuildShell /></GuildProvider></RequireAuth>}
         />
         <Route path="*" element={<Navigate to="/guilds" replace />} />
       </Routes>
+      </Suspense>
     </AuthProvider>
   );
 }

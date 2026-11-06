@@ -8,7 +8,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .album_game_soundtrack import album_game_soundtrack
 from .base import Base
 from .junctions import book_game_adaptations, game_genres_junction, game_platforms_junction
-from .mixins import Audited, GuildScoped, NormalizedNames, guild_unique
+from .mixins import Audited, Described, external_id_index, guild_unique, GuildScoped, NormalizedNames
 
 if TYPE_CHECKING:
     from .album import Album
@@ -17,15 +17,20 @@ if TYPE_CHECKING:
     from .genre import Genre
 
 
-class Game(GuildScoped, Audited, NormalizedNames, Base):
+class Game(GuildScoped, Audited, NormalizedNames, Described, Base):
     __tablename__ = "games"
-    __table_args__ = (guild_unique("games"), Index("idx_games_guild_norm", "guild_id", "name_norm"))
+    __table_args__ = (
+        guild_unique("games"),
+        Index("idx_games_guild_norm", "guild_id", "name_norm"),
+        external_id_index("games", "igdb_id"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(Text)
     name_en: Mapped[str | None] = mapped_column(Text)
     release_year: Mapped[int]
     notes: Mapped[str | None] = mapped_column(Text)
+    igdb_id: Mapped[int | None]
     # `hours_played` / `play_link` / `global_rank` are gone: personal (UserGameRank)
     # or now labelled entries in `links`.
 

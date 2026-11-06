@@ -6,8 +6,8 @@ from .base import ORMSchema
 class PersonIn(BaseModel):
     name: str
     name_en: str | None = None
-    birth_nationality: str
-    core_nationality: str
+    birth_nationality: str = "Unknown"  # the other one is copied in when only one is given
+    core_nationality: str = "Unknown"
     notes: str | None = None
 
 

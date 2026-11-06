@@ -33,6 +33,7 @@ from typing import Any, Optional
 import requests
 from dotenv import load_dotenv
 
+from .cache_paths import default_cache_path
 from .lanes import IGDB_LANE
 from .scan_common import SCOPED_REJECTIONS_DDL, ScopedRejections
 
@@ -42,7 +43,7 @@ IGDB_BASE = "https://api.igdb.com/v4"
 TWITCH_TOKEN_URL = "https://id.twitch.tv/oauth2/token"
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
-CACHE_PATH = Path(os.environ.get("IGDB_CACHE_PATH", _REPO_ROOT / "igdb_cache.sqlite3"))
+CACHE_PATH = Path(os.environ.get("IGDB_CACHE_PATH") or default_cache_path(_REPO_ROOT, "igdb_cache.sqlite3"))
 
 REQ_PER_SEC = float(os.environ.get("IGDB_RPS", "3"))
 BURST = int(os.environ.get("IGDB_BURST", "4"))

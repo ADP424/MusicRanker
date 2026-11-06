@@ -1,3 +1,8 @@
+import { Plus, Search } from "lucide-react";
+
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { cn } from "@/lib/utils";
 import type { Person } from "../api/types";
 import { InlineBusy, LoadingState } from "./Spinner";
 
@@ -60,6 +65,9 @@ export function matchesPersonSearch(
   }
 }
 
+/** People shown at once (the ticked ones always are); the search box narrows the rest. */
+const SHOWN = 60;
+
 /**
  * Presentational person/role picker shared by MovieForm, GameForm,
  * ArtistDetailPage, MovieDetailPage and GameDetailPage. It renders the role
@@ -98,68 +106,56 @@ export function PersonPicker<R extends string>(props: {
     searchField, onSearchField, search, onSearch, onNewPerson,
     people, isChecked, onToggle, buttonType = "button", loading = false, busy = false,
   } = props;
+  // A guild can have thousands of people: show the ticked ones and the first
+  // matches, and let the search box do the rest.
+  const ticked = people.filter((p) => isChecked(p, activeRole));
+  const rest = people.filter((p) => !isChecked(p, activeRole));
+  const shown = [...ticked, ...rest.slice(0, SHOWN)];
+  const hidden = rest.length - Math.min(rest.length, SHOWN);
 
   return (
-    <>
-      {/* Role selector */}
-      <div style={{ display: "flex", gap: "0.5rem", marginBottom: "0.5rem", flexWrap: "wrap" }}>
+    <div className="grid gap-2">
+      <div className="flex flex-wrap gap-1" role="radiogroup" aria-label="Role">
         {roles.map((role) => (
-          <label
-            key={role}
-            className={`chip${activeRole === role ? " chip-active" : ""}`}
-            onClick={() => onRole(role)}
-            style={{ cursor: "pointer" }}
-          >
+          <button key={role} type="button" role="radio" aria-checked={activeRole === role} onClick={() => onRole(role)}
+                  data-slot="chip"
+                  className={cn("rounded-full border px-2.5 py-0.5 text-xs transition-colors",
+                    activeRole === role ? "border-primary bg-primary text-primary-foreground" : "hover:bg-accent")}>
             {roleLabels[role]}
-          </label>
+          </button>
         ))}
       </div>
-
-      {/* Search-field selector */}
-      <div style={{ display: "flex", gap: "0.5rem", marginBottom: "0.4rem", flexWrap: "wrap" }}>
-        {PERSON_SEARCH_FIELDS.map((f) => (
-          <label
-            key={f}
-            className={`chip${searchField === f ? " chip-active" : ""}`}
-            onClick={() => onSearchField(f)}
-            style={{ cursor: "pointer" }}
-          >
-            {FIELD_LABEL[f]}
-          </label>
-        ))}
-      </div>
-
-      <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", marginBottom: "0.4rem" }}>
-        <input
-          className="genre-search"
-          type="search"
-          placeholder={FIELD_PLACEHOLDER[searchField]}
-          value={search}
-          onChange={(e) => onSearch(e.target.value)}
-          style={{ margin: 0, flex: 1 }}
-        />
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative min-w-48 flex-1">
+          <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
+          <Input type="search" className="pl-8" placeholder={FIELD_PLACEHOLDER[searchField]} value={search}
+                 aria-label="Search people" onChange={(e) => onSearch(e.target.value)} />
+        </div>
+        <select aria-label="Search in" value={searchField} onChange={(e) => onSearchField(e.target.value as PersonSearchField)}>
+          {PERSON_SEARCH_FIELDS.map((f) => <option key={f} value={f}>{f === "all" ? "Anywhere" : `${FIELD_LABEL[f]} names`}</option>)}
+        </select>
         {busy && <InlineBusy label="Saving…" />}
-        <button type={buttonType} style={{ whiteSpace: "nowrap" }} onClick={onNewPerson}>
-          + New Person
-        </button>
+        <Button type={buttonType} variant="outline" size="sm" onClick={onNewPerson}><Plus className="size-4" /> New person</Button>
       </div>
       {loading ? (
         <LoadingState compact label="Loading people…" />
       ) : (
-        <div className="chips">
-          {people.map((p) => (
-            <label key={p.id} className="chip">
-              <input
-                type="checkbox"
-                checked={isChecked(p, activeRole)}
-                onChange={() => onToggle(p, activeRole)}
-              />
-              {p.name}{p.name_en && <span style={{ opacity: 0.6 }}> ({p.name_en})</span>}
-            </label>
-          ))}
-          {people.length === 0 && <small>No people match.</small>}
+        <div className="flex max-h-56 flex-wrap gap-1.5 overflow-y-auto rounded-md border p-2">
+          {shown.map((p) => {
+            const on = isChecked(p, activeRole);
+            return (
+              <label key={p.id}
+                     className={cn("flex cursor-pointer items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs",
+                       on ? "border-primary/50 bg-primary/10" : "hover:bg-accent")}>
+                <input type="checkbox" data-slot="checkbox-native" className="size-3.5" checked={on} onChange={() => onToggle(p, activeRole)} />
+                {p.name}{p.name_en && <span className="text-muted-foreground">({p.name_en})</span>}
+              </label>
+            );
+          })}
+          {people.length === 0 && <span className="text-xs text-muted-foreground">No people match.</span>}
+          {hidden > 0 && <span className="self-center text-xs text-muted-foreground">and {hidden.toLocaleString()} more: type to narrow</span>}
         </div>
       )}
-    </>
+    </div>
   );
 }

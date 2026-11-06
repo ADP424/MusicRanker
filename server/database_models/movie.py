@@ -1,21 +1,20 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 from sqlalchemy import Index, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .album_movie_soundtrack import album_movie_soundtrack
 from .base import Base
 from .junctions import book_movie_adaptations, movie_genres_junction
-from .mixins import Audited, GuildScoped, NormalizedNames, guild_unique
+from .mixins import Audited, Described, GuildScoped, NormalizedNames, external_id_index, guild_unique
 
 
-class Movie(GuildScoped, Audited, NormalizedNames, Base):
+class Movie(GuildScoped, Audited, NormalizedNames, Described, Base):
     __tablename__ = "movies"
     __table_args__ = (
         guild_unique("movies"),
         Index("idx_movies_guild_norm", "guild_id", "name_norm"),
+        external_id_index("movies", "tmdb_id"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -24,6 +23,7 @@ class Movie(GuildScoped, Audited, NormalizedNames, Base):
     runtime_minutes: Mapped[int]
     release_year: Mapped[int]
     notes: Mapped[str | None] = mapped_column(Text)
+    tmdb_id: Mapped[int | None]
 
     person_links = relationship("MoviePerson", back_populates="movie", cascade="all, delete-orphan",
                                 foreign_keys="MoviePerson.movie_id")

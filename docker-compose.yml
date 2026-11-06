@@ -1,0 +1,44 @@
+# docker compose up -d   ->  http://localhost:8000   (README.md has the details)
+# Needs a .env next to this file (see .env.example) for the TMDB/IGDB keys;
+# the database settings below override whatever it says about DB_*.
+services:
+  db:
+    # Same major version as a local install, so its dumps load here unchanged.
+    image: postgres:18
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: music_ranker
+      POSTGRES_USER: music_ranker
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-change-me}
+    volumes:
+      # Postgres 18 images keep the cluster in a versioned folder under this path.
+      - pgdata18:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U music_ranker -d music_ranker"]
+      interval: 5s
+      retries: 10
+
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      DATABASE: music_ranker
+      DB_USER: music_ranker
+      DB_PASSWORD: ${DB_PASSWORD:-change-me}
+      DB_HOST: db
+      DB_PORT: "5432"
+      # Serve over https in front of this (Caddy, nginx...) and set this to the
+      # number of proxies, so rate limits see real client addresses.
+      TRUSTED_PROXY_HOPS: ${TRUSTED_PROXY_HOPS:-0}
+    ports:
+      - "8000:8000"
+    volumes:
+      - cache:/data
+
+volumes:
+  pgdata18:
+  cache:

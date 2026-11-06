@@ -1,17 +1,60 @@
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import { useMutation } from "@tanstack/react-query";
+import { Search } from "lucide-react";
+import { useMemo, useState } from "react";
 
-import { api } from "../api/client";
-import { useArtistCatalog, useGuildApi, useMusicGenres } from "../api/hooks";
-import { gk, rk } from "../api/keys";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { Batch } from "../api/client";
+import { useArtistCatalog, useGuildApi } from "../api/hooks";
 import type { Album } from "../api/types";
 import { MUSIC_GENRES } from "../genre/config";
 import { GenreChooser } from "../genre/GenreChooser";
 import { useCan } from "../guild/GuildProvider";
+import {
+  CheckField, ChipCheck, ChipList, countSummary, diffIds, Field, FieldRow, FormDialog, FormSection, orNull,
+} from "./form/FormKit";
 import { commitLinks, LinksField, useLinksField } from "./LinksField";
-import { BusyButton, LoadingState } from "./Spinner";
+import { LoadingState } from "./Spinner";
 
-const orNull = (s: string) => (s.trim() === "" ? null : s);
+/** Ticks artists from the catalog. Mounted only while its section is open, so
+ *  the catalog loads on demand. */
+function ArtistPicker({ selected, onChange }: { selected: Set<number>; onChange: (next: Set<number>) => void }) {
+  const { data: artists = [], isLoading } = useArtistCatalog();
+  const [search, setSearch] = useState("");
+  const shown = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return artists
+      .filter((a) => !q || a.name.toLowerCase().includes(q) || !!a.name_en?.toLowerCase().includes(q))
+      .sort((a, b) => Number(selected.has(b.id)) - Number(selected.has(a.id)))
+      .slice(0, 80);
+    // Order by the selection as it was when the search changed, so ticking doesn't reshuffle.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [artists, search]);
+
+  return (
+    <>
+      <div className="relative">
+        <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
+        <Input type="search" className="pl-8" placeholder="Search artists…" aria-label="Search artists"
+               value={search} onChange={(e) => setSearch(e.target.value)} />
+      </div>
+      {isLoading ? <LoadingState compact label="Loading artists…" /> : (
+        <ChipList>
+          {shown.map((a) => (
+            <ChipCheck key={a.id} checked={selected.has(a.id)} onChange={(on) => {
+              const next = new Set(selected);
+              if (on) next.add(a.id); else next.delete(a.id);
+              onChange(next);
+            }}>
+              {a.name}{a.name_en && <span className="text-muted-foreground">({a.name_en})</span>}
+            </ChipCheck>
+          ))}
+          {shown.length === 0 && <span className="text-xs text-muted-foreground">No artists match.</span>}
+        </ChipList>
+      )}
+    </>
+  );
+}
 
 export function AlbumForm(props: {
   artistId: number;
@@ -20,214 +63,112 @@ export function AlbumForm(props: {
 }) {
   const { artistId, initial, onClose } = props;
   const editing = initial !== undefined;
-  const qc = useQueryClient();
-  const { guildId, userId, base } = useGuildApi();
+  const { base } = useGuildApi();
   const canRank = useCan("rank");
-  useMusicGenres(); // warm cache
-  const [artistsOpen, setArtistsOpen] = useState(false);
-  const [genreOpen, setGenreOpen] = useState(false);
   const [addToList, setAddToList] = useState(true);
 
-  const initMin = initial ? Math.floor(initial.runtime_seconds / 60) : 0;
-  const initSec = initial ? initial.runtime_seconds % 60 : 0;
-
   const [f, setF] = useState({
-    name:         initial?.name         ?? "",
-    name_en:      initial?.name_en      ?? "",
-    min:          initMin,
-    sec:          initSec,
-    release_year: initial?.release_year ?? new Date().getFullYear(),
-    alias:        initial?.alias        ?? "",
-    notes:        initial?.notes        ?? "",
+    name:         initial?.name    ?? "",
+    name_en:      initial?.name_en ?? "",
+    min:          initial ? String(Math.floor(initial.runtime_seconds / 60)) : "",
+    sec:          initial ? String(initial.runtime_seconds % 60) : "0",
+    release_year: String(initial?.release_year ?? new Date().getFullYear()),
+    alias:        initial?.alias   ?? "",
+    notes:        initial?.notes   ?? "",
   });
+  const set = (k: keyof typeof f) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>
+    setF((prev) => ({ ...prev, [k]: e.target.value }));
 
-  const [genreIds, setGenreIds] = useState<Set<number>>(new Set(initial?.genre_ids ?? []));
+  const [genreIds, setGenreIds] = useState<Set<number>>(() => new Set(initial?.genre_ids ?? []));
+  const [artistIds, setArtistIds] = useState<Set<number>>(
+    () => new Set(editing ? initial.artists.map((a) => a.id) : [artistId]),
+  );
   const [links, setLinks] = useLinksField(initial?.links);
 
-  const { data: allArtists = [], isLoading: artistsLoading } = useArtistCatalog();
-  const [artistIds, setArtistIds] = useState<Set<number>>(
-    () => new Set(editing ? initial.artists.map((a) => a.id) : [artistId])
-  );
-  const [artistSearch, setArtistSearch] = useState("");
-
-  const before = useMemo(
-    () => ({ artists: new Set(initial?.artists.map((a) => a.id) ?? []), genres: new Set(initial?.genre_ids ?? []) }),
-    [initial],
-  );
-
   const save = useMutation({
+    meta: { errorToast: false },
     mutationFn: async () => {
-      const runtime_seconds = f.min * 60 + f.sec;
-      let album: Album;
+      const body = {
+        name: f.name.trim(),
+        name_en: orNull(f.name_en),
+        runtime_seconds: Number(f.min) * 60 + Number(f.sec || 0),
+        release_year: Number(f.release_year),
+        alias: orNull(f.alias),
+        notes: orNull(f.notes),
+      };
+      const b = new Batch();
+      const ref = editing ? initial.id : Batch.ref(0);
       if (editing) {
-        album = await api.patch<Album>(`${base}/albums/${initial.id}`, {
-          name: f.name, name_en: orNull(f.name_en), runtime_seconds, release_year: f.release_year,
-          alias: orNull(f.alias), notes: orNull(f.notes),
-        });
-        for (const id of artistIds) if (!before.artists.has(id)) await api.put(`${base}/albums/${album.id}/artists/${id}`);
-        for (const id of before.artists) if (!artistIds.has(id)) await api.delete(`${base}/albums/${album.id}/artists/${id}`);
-        for (const id of genreIds) if (!before.genres.has(id)) await api.put(`${base}/albums/${album.id}/genres/${id}`);
-        for (const id of before.genres) if (!genreIds.has(id)) await api.delete(`${base}/albums/${album.id}/genres/${id}`);
-        await commitLinks(base, "albums", album.id, links, initial.links);
+        b.patch(`${base}/albums/${initial.id}`, body);
+        diffIds(b, `${base}/albums/${ref}`, "artists", initial.artists.map((a) => a.id), artistIds);
       } else {
-        album = await api.post<Album>(`${base}/albums`, {
-          name: f.name, name_en: orNull(f.name_en), runtime_seconds, release_year: f.release_year,
-          alias: orNull(f.alias), notes: orNull(f.notes), artist_ids: [...artistIds],
-        });
-        for (const id of genreIds) await api.put(`${base}/albums/${album.id}/genres/${id}`);
-        await commitLinks(base, "albums", album.id, links, []);
-        if (addToList && canRank) {
-          for (const id of artistIds) await api.put(`${base}/artists/${id}/albums/${album.id}/entry`, {});
-        }
+        b.post(`${base}/albums`, { ...body, artist_ids: [...artistIds] });
       }
-      return album;
+      diffIds(b, `${base}/albums/${ref}`, "genres", initial?.genre_ids ?? [], genreIds);
+      commitLinks(b, base, "albums", ref, links, editing ? initial.links : []);
+      // An album is ranked within each of its artists' discographies.
+      if (!editing && addToList && canRank) {
+        for (const a of artistIds) b.put(`${base}/artists/${a}/albums/${ref}/entry`, {});
+      }
+      return (await b.run())[0] as Album;
     },
-    onSuccess: (album) => {
-      qc.invalidateQueries({ queryKey: gk(guildId, "artists", artistId, "albums") });
-      qc.invalidateQueries({ queryKey: gk(guildId, "artists") });
-      // New entries (on create) or carried-over ranks (on linking a co-artist) can land in
-      // any credited artist's list, not just this one's.
-      qc.invalidateQueries({ queryKey: rk(guildId, userId, "artists") });
-      onClose(album.name, album.id);
-    },
+    onSuccess: (album) => onClose(album.name, album.id),
   });
 
-  const num =
-    (k: "min" | "sec" | "release_year") =>
-    (e: React.ChangeEvent<HTMLInputElement>) =>
-      setF({ ...f, [k]: Number(e.target.value) });
-  const txt =
-    (k: "name" | "name_en" | "alias" | "notes") =>
-    (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>
-      setF({ ...f, [k]: e.target.value });
-
-  const [artistSortSnap, setArtistSortSnap] = useState(() => artistIds);
-  useEffect(() => { setArtistSortSnap(artistIds); }, [artistSearch]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const filteredArtists = useMemo(() => {
-    const q = artistSearch.trim().toLowerCase();
-    return allArtists
-      .filter((a) => !q || a.name.toLowerCase().includes(q) || !!a.name_en?.toLowerCase().includes(q))
-      .sort((a, b) => (artistSortSnap.has(a.id) ? 0 : 1) - (artistSortSnap.has(b.id) ? 0 : 1));
-  }, [artistSearch, allArtists, artistSortSnap]);
+  const initialNames = new Map((initial?.artists ?? []).map((a) => [a.id, a.name]));
+  const artistSummary = [...artistIds].every((id) => initialNames.has(id))
+    ? [...artistIds].map((id) => initialNames.get(id)).join(", ") || "None selected"
+    : countSummary(artistIds.size);
 
   return (
-    <dialog open className="modal">
-      <form onSubmit={(e) => { e.preventDefault(); save.mutate(); }}>
-        <h2>{editing ? "Edit" : "New"} Album</h2>
-
-        <label>Name
-          <input required value={f.name} onChange={txt("name")} />
-        </label>
-
-        <label><span className="label-text">English name <span className="info-icon" title="optional">ⓘ</span></span>
-          <input value={f.name_en} onChange={txt("name_en")} />
-        </label>
-
-        <div className="grid-2">
-          <label>Runtime
-            <div className="inline">
-              <input type="number" min={0} value={f.min}
-                     onChange={num("min")} style={{ width: "4rem" }} /> min
-              <input type="number" min={0} max={59} value={f.sec}
-                     onChange={num("sec")} style={{ width: "4rem" }} /> sec
-            </div>
-          </label>
-          <label>Release year
-            <input required type="number" value={f.release_year}
-                   onChange={num("release_year")} />
-          </label>
+    <FormDialog
+      title={editing ? "Edit album" : "New album"}
+      onClose={() => onClose()}
+      onSubmit={() => save.mutate()}
+      busy={save.isPending}
+      error={save.error}
+      submitDisabled={artistIds.size === 0}
+      submitLabel={editing ? "Save" : "Create"}
+      busyLabel={editing ? "Saving…" : "Creating…"}
+      footerStart={!editing && canRank && (
+        <CheckField checked={addToList} onChange={setAddToList}>Add to my list</CheckField>
+      )}
+    >
+      <Field label="Name">
+        <Input required autoFocus={!editing} value={f.name} onChange={set("name")} />
+      </Field>
+      <Field label="English name" optional>
+        <Input value={f.name_en} onChange={set("name_en")} />
+      </Field>
+      <FieldRow>
+        <div className="grid content-start gap-1.5 text-sm">
+          <span className="font-medium">Runtime</span>
+          <div className="flex items-center gap-2">
+            <Input required type="number" min={0} aria-label="Minutes" className="w-20" value={f.min} onChange={set("min")} />
+            <span className="text-muted-foreground">min</span>
+            <Input type="number" min={0} max={59} aria-label="Seconds" className="w-20" value={f.sec} onChange={set("sec")} />
+            <span className="text-muted-foreground">sec</span>
+          </div>
         </div>
+        <Field label="Release year">
+          <Input required type="number" value={f.release_year} onChange={set("release_year")} />
+        </Field>
+      </FieldRow>
+      <Field label="Alias" optional hint="If released under a different name">
+        <Input value={f.alias} onChange={set("alias")} />
+      </Field>
+      <Field label="Notes" optional>
+        <Textarea rows={3} value={f.notes} onChange={set("notes")} />
+      </Field>
 
-        <label><span className="label-text">Alias <span className="info-icon" title="if released under a different name">ⓘ</span></span>
-          <input value={f.alias} onChange={txt("alias")} />
-        </label>
-
-        <label><span className="label-text">Notes <span className="info-icon" title="optional">ⓘ</span></span>
-          <textarea rows={3} value={f.notes} onChange={txt("notes")} />
-        </label>
-
-        <fieldset>
-          <legend
-            className="collapsible-legend"
-            onClick={() => setArtistsOpen((o) => !o)}
-          >
-            Artists
-            <span className="collapse-arrow">{artistsOpen ? "▲" : "▼"}</span>
-          </legend>
-          {artistsOpen && (
-            <>
-              <input
-                className="genre-search"
-                type="search"
-                placeholder="Search artists…"
-                value={artistSearch}
-                onChange={(e) => setArtistSearch(e.target.value)}
-              />
-              {artistsLoading ? (
-                <LoadingState compact label="Loading artists…" />
-              ) : (
-                <div className="chips">
-                  {filteredArtists.map((a) => (
-                    <label key={a.id} className="chip">
-                      <input
-                        type="checkbox"
-                        checked={artistIds.has(a.id)}
-                        onChange={(e) => {
-                          const next = new Set(artistIds);
-                          e.target.checked ? next.add(a.id) : next.delete(a.id);
-                          setArtistIds(next);
-                        }}
-                      />
-                      {a.name}{a.name_en && <span style={{ opacity: 0.6 }}> ({a.name_en})</span>}
-                    </label>
-                  ))}
-                </div>
-              )}
-            </>
-          )}
-          {!artistsOpen && (
-            <span className="collapsed-summary" onClick={() => setArtistsOpen(true)}>
-              {artistIds.size} selected
-            </span>
-          )}
-        </fieldset>
-
-        <fieldset>
-          <legend
-            className="collapsible-legend"
-            onClick={() => setGenreOpen((o) => !o)}
-          >
-            Genres
-            <span className="collapse-arrow">{genreOpen ? "▲" : "▼"}</span>
-          </legend>
-          {genreOpen && (
-            <GenreChooser domain={MUSIC_GENRES} selected={genreIds} onChange={setGenreIds} />
-          )}
-          {!genreOpen && (
-            <span className="collapsed-summary" onClick={() => setGenreOpen(true)}>
-              {genreIds.size > 0 ? `${genreIds.size} selected` : "None selected"}
-            </span>
-          )}
-        </fieldset>
-
-        <LinksField links={links} onChange={setLinks} />
-
-        {!editing && canRank && (
-          <label className="checkbox-label">
-            <input type="checkbox" checked={addToList} onChange={(e) => setAddToList(e.target.checked)} />
-            Add to my list
-          </label>
-        )}
-
-        <footer>
-          <button type="button" onClick={() => onClose()} disabled={save.isPending}>Cancel</button>
-          <BusyButton type="submit" busy={save.isPending} busyLabel={editing ? "Saving…" : "Creating…"}>
-            {editing ? "Save" : "Create"}
-          </BusyButton>
-        </footer>
-        {save.isError && <p className="err">{(save.error as Error).message}</p>}
-      </form>
-    </dialog>
+      <FormSection title="Artists" summary={artistSummary}>
+        <ArtistPicker selected={artistIds} onChange={setArtistIds} />
+        {artistIds.size === 0 && <p className="text-xs text-destructive">An album needs at least one artist.</p>}
+      </FormSection>
+      <FormSection title="Genres" summary={countSummary(genreIds.size)}>
+        <GenreChooser domain={MUSIC_GENRES} selected={genreIds} onChange={setGenreIds} />
+      </FormSection>
+      <LinksField links={links} onChange={setLinks} />
+    </FormDialog>
   );
 }

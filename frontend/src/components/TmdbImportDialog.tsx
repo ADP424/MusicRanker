@@ -1,20 +1,21 @@
-import { useQueryClient } from "@tanstack/react-query";
-import { useCallback, useMemo, useState } from "react";
+import { useMutation } from "@tanstack/react-query";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { api } from "../api/client";
 import { useGuildApi, useTmdbImport, useTmdbLookup } from "../api/hooks";
-import { rk } from "../api/keys";
-import type { CastRole, TmdbImportPersonIn, TmdbLookup, TmdbPerson } from "../api/types";
+import type { CastRole, TmdbImportOut, TmdbImportPersonIn, TmdbLookup, TmdbPerson } from "../api/types";
 import { GenreChooser } from "../genre/GenreChooser";
 import { MOVIE_GENRES } from "../genre/config";
 import { useCan } from "../guild/GuildProvider";
-import { BusyButton } from "./Spinner";
-import { TmdbPersonRow, tmdbCreditDescription, type TmdbRowPerson } from "./TmdbPersonRow";
+import { importSummary, UnmappedMapper, useWorkLinks } from "./import/ImportExtras";
+import { ImportDialog, ImportFooter, ImportSearch, ImportSection, ImportTitle, plural } from "./import/ImportKit";
+import { type ImportRowPerson, TmdbPersonRow, tmdbCreditDescription } from "./import/ImportPersonRow";
+import { Notice } from "./form/FormKit";
+import { LookupSummary } from "./LookupSummary";
 
 /** The movie API's credit shape -> the shared row's media-agnostic shape. */
-function toRow(p: TmdbPerson): TmdbRowPerson {
+function toRow(p: TmdbPerson): ImportRowPerson<CastRole> {
   return {
-    tmdb_id: p.tmdb_id,
     name: p.name,
     description: tmdbCreditDescription(p),
     suggested_role: p.suggested_role,
@@ -27,10 +28,21 @@ function toRow(p: TmdbPerson): TmdbRowPerson {
       person_name: m.person_name,
       has_entries: m.has_screen_entries,
       filmography_overlap: m.filmography_overlap,
-      artist_summary: m.artist_summary,
-      game_summary: m.game_summary,
+      summaries: [m.artist_summary, m.game_summary],
     })),
   };
+}
+
+/** Ticked by default: the director(s) and composer(s), the top-billed cast,
+ * and anyone already in the catalog with a matching filmography. */
+function defaultTicks(data: TmdbLookup): Set<number> {
+  const out = new Set<number>();
+  data.people.forEach((p, i) => {
+    const crew = p.credit_type === "crew";
+    const topBilled = p.credit_type === "cast" && (p.billing_order ?? 99) < 8;
+    if (crew || topBilled || p.db_matches.some((m) => m.filmography_overlap)) out.add(i);
+  });
+  return out;
 }
 
 /* ── main component ──────────────────────────────────── */
@@ -38,12 +50,18 @@ function toRow(p: TmdbPerson): TmdbRowPerson {
 export function TmdbImportDialog({
   onClose,
   onSuccess,
+  initial,
+  mergeInto,
 }: {
   onClose: () => void;
   onSuccess?: (movieId: number) => void;
+  /** Open on this TMDB title straight away (from a person's TMDB credits). */
+  initial?: { tmdbId: number; title: string; year?: number | null };
+  /** Add the credits to this movie instead of creating one. */
+  mergeInto?: { id: number; name: string; release_year: number; tmdb_id: number | null };
 }) {
-  const [title, setTitle] = useState("");
-  const [year, setYear] = useState("");
+  const [title, setTitle] = useState(initial?.title ?? mergeInto?.name ?? "");
+  const [year, setYear] = useState(initial?.year ? String(initial.year) : mergeInto ? String(mergeInto.release_year) : "");
   const [lookup, setLookup] = useState<TmdbLookup | null>(null);
   const [checked, setChecked] = useState<Set<number>>(new Set());
   const [roles, setRoles] = useState<CastRole[]>([]);
@@ -54,27 +72,35 @@ export function TmdbImportDialog({
   const [error, setError] = useState<string | null>(null);
   const [addToList, setAddToList] = useState(true);
 
-  const qc = useQueryClient();
-  const { guildId, userId, base } = useGuildApi();
+  const { guildId, base } = useGuildApi();
   const canRank = useCan("rank");
   const lookupMut = useTmdbLookup();
   const importMut = useTmdbImport();
+  const mergeMut = useMutation({
+    meta: { errorToast: false },
+    mutationFn: ({ id, body }: { id: number; body: unknown }) =>
+      api.post<{ people_linked: number } & Pick<TmdbImportOut, "created_people" | "reused_people">>(`${base}/movies/tmdb-import/credits/${id}`, body),
+  });
+  const links = useWorkLinks(mergeInto ? undefined : lookup?.title);
 
   /* ── search ──────────────────────────────────────── */
 
-  const handleSearch = useCallback(() => {
+  const handleSearch = useCallback((tmdbId?: number) => {
     setError(null);
     lookupMut.mutate(
-      { title: title.trim(), year: year ? parseInt(year, 10) : undefined },
+      { title: title.trim(), year: year ? parseInt(year, 10) : undefined, tmdb_id: tmdbId },
       {
         onSuccess(data) {
           setLookup(data);
-          setChecked(new Set());
+          setChecked(defaultTicks(data));
           setRoles(data.people.map((p) => p.suggested_role));
           const res: Record<number, number | null> = {};
           for (const p of data.people) {
             if (p.tmdb_id in res) continue;
-            const v = p.db_matches.find((m) => m.filmography_overlap);
+            // A verified match, or else the only person by that name: reuse
+            // them rather than creating a duplicate.
+            const v = p.db_matches.find((m) => m.filmography_overlap)
+              ?? (p.db_matches.length === 1 ? p.db_matches[0] : undefined);
             if (v) res[p.tmdb_id] = v.person_id;
           }
           setResolutions(res);
@@ -86,6 +112,13 @@ export function TmdbImportDialog({
       },
     );
   }, [title, year, lookupMut]);
+
+  // Once, on open: the lookup for the title we were opened on.
+  useEffect(() => {
+    if (initial) handleSearch(initial.tmdbId);
+    else if (mergeInto) handleSearch(mergeInto.tmdb_id ?? undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount only
+  }, []);
 
   /* ── people toggles ──────────────────────────────── */
 
@@ -136,21 +169,43 @@ export function TmdbImportDialog({
       })
       .filter((x): x is TmdbImportPersonIn => x !== null);
 
+    if (mergeInto) {
+      mergeMut.mutate(
+        {
+          id: mergeInto.id,
+          body: {
+            tmdb_id: lookup.tmdb_id, overview: lookup.overview, poster_url: lookup.poster_url,
+            people, genre_ids: [...selectedGenres],
+          },
+        },
+        {
+          onSuccess(result) {
+            importSummary(`${result.people_linked} credit${result.people_linked === 1 ? "" : "s"} for ${mergeInto.name}`, result);
+            onClose();
+          },
+          onError: (e) => setError(e.message),
+        },
+      );
+      return;
+    }
+
     importMut.mutate(
       {
+        tmdb_id: lookup.tmdb_id,
         title: lookup.title,
         original_title: lookup.original_title,
+        overview: lookup.overview,
+        poster_url: lookup.poster_url,
         runtime_minutes: lookup.runtime,
         release_year: releaseYear,
         people,
         genre_ids: [...selectedGenres],
+        add_to_list: addToList && canRank,
       },
       {
         async onSuccess(result) {
-          if (addToList && canRank) {
-            await api.put(`${base}/movies/${result.movie_id}/entry`, {});
-            qc.invalidateQueries({ queryKey: rk(guildId, userId, "movies") });
-          }
+          await links.commit("movie", result.movie_id);
+          importSummary(lookup.title, result);
           onSuccess?.(result.movie_id);
           onClose();
         },
@@ -159,7 +214,7 @@ export function TmdbImportDialog({
     );
   }, [
     lookup, checked, roles, resolutions, selectedGenres,
-    releaseYear, importMut, onClose, onSuccess, addToList, canRank, base, qc, guildId, userId,
+    releaseYear, importMut, mergeMut, mergeInto, links, onClose, onSuccess, addToList, canRank,
   ]);
 
   const unmappedGenres = useMemo(
@@ -172,94 +227,31 @@ export function TmdbImportDialog({
 
   /* ── render ──────────────────────────────────────── */
 
-  const importing = importMut.isPending || importMut.isSuccess;
+  const importing = importMut.isPending || importMut.isSuccess || mergeMut.isPending;
 
   return (
-    <div className="modal tmdb-import-panel">
-      <h2>Import Movie from TMDB</h2>
-
-      {error && <p className="tip-error">{error}</p>}
-
-      {/* search form */}
-      {!lookup && (
-        <form
-          className="tip-search"
-          onSubmit={(e) => {
-            e.preventDefault();
-            handleSearch();
-          }}
-        >
-          <label>
-            Title
-            <input
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              placeholder="Movie title"
-              autoFocus
-            />
-          </label>
-          <label>
-            Year
-            <input
-              value={year}
-              onChange={(e) => setYear(e.target.value)}
-              placeholder="optional"
-              type="number"
-              min={1888}
-              max={2099}
-            />
-          </label>
-          <BusyButton type="submit" busy={lookupMut.isPending} busyLabel="Searching TMDB…" disabled={!title.trim()}>Search TMDB</BusyButton>
-          <button type="button" onClick={onClose}>Cancel</button>
-        </form>
-      )}
-
-      {/* results */}
-      {lookup && (
+    <ImportDialog title={mergeInto ? `Import credits from TMDB · ${mergeInto.name}` : "Import a movie from TMDB"}
+                  onClose={onClose} error={error} reviewing={!!lookup}>
+      {!lookup ? (
+        <ImportSearch source="TMDB" title={title} onTitle={setTitle} year={year} onYear={setYear}
+                      placeholder="Movie title, or paste a TMDB link" minYear={1888}
+                      busy={lookupMut.isPending} onSearch={() => handleSearch()} onCancel={onClose} />
+      ) : (
         <>
-          {/* movie header */}
-          <div className="tip-movie-header">
-            <h3>
-              {lookup.title}
-              {releaseYear ? ` (${releaseYear})` : ""}
-              <span className="tip-runtime"> — {lookup.runtime} min</span>
-            </h3>
-            {lookup.ambiguous && (
-              <span className="tip-warn">
-                ⚠ Multiple matches — showing most popular
-              </span>
-            )}
-            <button
-              type="button"
-              className="icon"
-              onClick={() => {
-                setLookup(null);
-                setError(null);
-              }}
-              title="New search"
-            >
-              ↩
-            </button>
-          </div>
-
-          {releaseYear === 0 && (
-            <p className="tip-warn">
-              ⚠ TMDB has no release date for this title — it can't be imported without a year.
-            </p>
+          <ImportTitle title={lookup.title} year={releaseYear || null} facts={lookup.runtime ? `${lookup.runtime} min` : undefined}
+                       ambiguous={lookup.ambiguous} onNewSearch={() => { setLookup(null); setError(null); }} />
+          <LookupSummary image={lookup.poster_url} overview={lookup.overview}
+                         candidates={lookup.candidates} busy={lookupMut.isPending}
+                         onPick={(c) => c.tmdb_id && handleSearch(c.tmdb_id)}
+                         existing={!mergeInto && lookup.existing_movie_id ? { to: `/g/${guildId}/movies/${lookup.existing_movie_id}`, label: "Open it" } : null} />
+          {releaseYear === 0 && !mergeInto && (
+            <Notice tone="warning">TMDB has no release date for this title, and a movie can't be imported without a year.</Notice>
           )}
 
-          {/* people */}
-          <section className="tip-section">
-            <div className="tip-section-head">
-              <h3>
-                Cast &amp; Crew ({lookup.people.length} total, {checkedCount}{" "}
-                selected)
-              </h3>
-              <button type="button" onClick={checkAll}>Check All</button>
-              <button type="button" onClick={uncheckAll}>Uncheck All</button>
-            </div>
-
-            <div className="tip-people-list">
+          <ImportSection title="Cast & crew" count={`${checkedCount} of ${lookup.people.length} selected`}
+                         onAll={checkAll} onNone={uncheckAll}
+                         hint="Directors, composers, the top-billed cast and anyone already in the catalog are ticked.">
+            <div className="grid gap-1.5">
               {lookup.people.map((p, i) => (
                 <TmdbPersonRow
                   key={`${p.tmdb_id}-${p.job ?? p.billing_order ?? p.credit_type}`}
@@ -274,34 +266,26 @@ export function TmdbImportDialog({
                 />
               ))}
             </div>
-          </section>
+          </ImportSection>
 
-          {/* genres */}
-          <section className="tip-section">
-            <h3>Genres</h3>
+          <ImportSection title="Genres" count={`${selectedGenres.size} selected`}>
             <GenreChooser domain={MOVIE_GENRES} selected={selectedGenres} onChange={setSelectedGenres} />
-            {unmappedGenres.length > 0 && (
-              <p className="tip-warn">
-                Unmapped TMDB genres: {unmappedGenres.join(", ")}
-              </p>
-            )}
-          </section>
+            <UnmappedMapper source="TMDB" noun="genres" names={unmappedGenres} domain={MOVIE_GENRES}
+                            onMapped={(id) => setSelectedGenres((prev) => new Set(prev).add(id))} />
+          </ImportSection>
 
-          {/* footer */}
-          <footer className="tip-footer">
-            {canRank && (
-              <label className="checkbox-label tip-add-to-list">
-                <input type="checkbox" checked={addToList} onChange={(e) => setAddToList(e.target.checked)} />
-                Add to my list
-              </label>
-            )}
-            <button type="button" onClick={onClose} disabled={importing}>Cancel</button>
-            <BusyButton type="button" className="tip-primary" busy={importing} busyLabel="Importing…" disabled={releaseYear === 0} onClick={handleImport}>
-              Import Movie + {checkedCount} people
-            </BusyButton>
-          </footer>
+          {links.section}
+
+          <ImportFooter
+            addToList={!mergeInto && canRank ? { checked: addToList, onChange: setAddToList } : null}
+            onCancel={onClose}
+            importing={importing}
+            disabled={releaseYear === 0 && !mergeInto}
+            onImport={handleImport}
+            label={mergeInto ? `Add ${plural(checkedCount, "credit")}` : `Import with ${plural(checkedCount, "person", "people")}`}
+          />
         </>
       )}
-    </div>
+    </ImportDialog>
   );
 }

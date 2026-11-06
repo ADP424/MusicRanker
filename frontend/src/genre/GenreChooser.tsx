@@ -1,9 +1,12 @@
 import { useQuery } from "@tanstack/react-query";
+import { Search } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
+import { Input } from "@/components/ui/input";
 import { api } from "../api/client";
+import { ChipCheck, ChipList, FilterChip } from "../components/form/FormKit";
 import { LoadingState } from "../components/Spinner";
-import type { GenreDomain, GenreLike } from "./config";
+import { type GenreDomain, type GenreLike, useGenreKey } from "./config";
 
 /**
  * Reusable hierarchical-taxonomy picker with:
@@ -28,6 +31,7 @@ export function GenreChooser(props: {
 }) {
   const { domain, selected, onChange, single, excludeId } = props;
   const apiBase = domain.useApiBase();
+  const key = useGenreKey(domain);
   const { data: allGenres = [], isLoading: genresLoading } = domain.useAll();
   const { data: categories = [] } = domain.useCategories();
 
@@ -36,13 +40,13 @@ export function GenreChooser(props: {
   const [parentFilter, setParentFilter] = useState<number | null>(null);
 
   const { data: rootGenres = [] } = useQuery({
-    queryKey: [domain.key, apiBase, "roots"],
+    queryKey: key("roots"),
     queryFn: () => api.get<GenreLike[]>(`${apiBase}/roots`),
   });
 
   // Fetch ALL descendants of the active filter (not just direct children)
   const { data: descendants = [], isLoading: descendantsLoading } = useQuery({
-    queryKey: [domain.key, apiBase, parentFilter, "descendants"],
+    queryKey: key(parentFilter, "descendants"),
     queryFn: () => api.get<GenreLike[]>(`${apiBase}/${parentFilter}/descendants`),
     enabled: parentFilter !== null,
   });
@@ -153,18 +157,16 @@ export function GenreChooser(props: {
   }
 
   return (
-    <div className="genre-chooser">
-      <div className="genre-chooser-controls">
-        <input
-          className="genre-search"
-          type="search"
-          placeholder={`Search ${domain.noun}…`}
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-        />
+    <div className="grid gap-2">
+      <div className="flex flex-wrap gap-2">
+        <div className="relative min-w-48 flex-1">
+          <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
+          <Input type="search" className="pl-8" placeholder={`Search ${domain.noun}…`} aria-label={`Search ${domain.noun}`}
+                 value={search} onChange={(e) => setSearch(e.target.value)} />
+        </div>
         {categories.length > 0 && (
           <select
-            className="genre-category-select"
+            aria-label="Category"
             value={categoryFilter ?? ""}
             onChange={(e) => selectCategory(e.target.value === "" ? null : Number(e.target.value))}
           >
@@ -174,40 +176,29 @@ export function GenreChooser(props: {
             ))}
           </select>
         )}
-        <div className="chips genre-filters">
-          <label
-            className={`chip${parentFilter === null ? " chip-active" : ""}`}
-            onClick={() => setParentFilter(null)}
-          >
-            All
-          </label>
+      </div>
+      {visibleRoots.length > 0 && (
+        <div className="flex flex-wrap gap-1" aria-label={`Narrow to a top-level ${domain.heading.toLowerCase()}`}>
+          <FilterChip active={parentFilter === null} onClick={() => setParentFilter(null)}>All</FilterChip>
           {visibleRoots.map((g) => (
-            <label
-              key={g.id}
-              className={`chip${parentFilter === g.id ? " chip-active" : ""}`}
-              onClick={() => setParentFilter(parentFilter === g.id ? null : g.id)}
-            >
+            <FilterChip key={g.id} active={parentFilter === g.id}
+                        onClick={() => setParentFilter(parentFilter === g.id ? null : g.id)}>
               {g.name}
-            </label>
+            </FilterChip>
           ))}
         </div>
-      </div>
+      )}
       {genresLoading || (parentFilter !== null && descendantsLoading) ? (
         <LoadingState compact label={`Loading ${domain.noun}…`} />
       ) : (
-        <div className="chips">
+        <ChipList>
           {candidates.map((g) => (
-            <label key={g.id} className="chip">
-              <input
-                type="checkbox"
-                checked={selected.has(g.id)}
-                onChange={(e) => toggle(g.id, e.target.checked)}
-              />
+            <ChipCheck key={g.id} checked={selected.has(g.id)} onChange={(on) => toggle(g.id, on)}>
               {g.name}
-            </label>
+            </ChipCheck>
           ))}
-          {candidates.length === 0 && <small>No {domain.noun} match.</small>}
-        </div>
+          {candidates.length === 0 && <span className="text-xs text-muted-foreground">No {domain.noun} match.</span>}
+        </ChipList>
       )}
     </div>
   );

@@ -27,6 +27,7 @@ from .database_models import (
     TelevisionSeason,
     TelevisionSeasonPerson,
     TelevisionShow,
+    TelevisionShowEpisodeComparison,
     UserTelevisionEpisodeRank,
 )
 from .ranking import next_rank
@@ -46,9 +47,10 @@ def next_episode_rank(db: Session, season_id: int) -> Decimal:
 
 def move_episode(db: Session, episode: TelevisionEpisode, season: TelevisionSeason) -> None:
     """Re-home `episode` at the end of `season` (same show). Every member's
-    personal rank of it moves to the end of their list for the new season, and
-    their pairwise answers involving it are dropped — they compared it against
-    episodes it no longer shares a list with."""
+    personal rank of it moves to the end of their list for the new season (its
+    show-wide position is untouched), and their pairwise answers involving it
+    follow it: a pair now within one season lives in that season's table, a pair
+    across seasons in the show-wide one."""
     if episode.season_id == season.id:
         return
     if season.show_id != episode.show_id:
@@ -61,12 +63,24 @@ def move_episode(db: Session, episode: TelevisionEpisode, season: TelevisionSeas
             scope=UserTelevisionEpisodeRank.season_id == season.id,
         )
         row.season_id = season.id
-    for cmp in db.scalars(
-        select(TelevisionEpisodeComparison).where(
-            or_(TelevisionEpisodeComparison.winner_id == episode.id, TelevisionEpisodeComparison.loser_id == episode.id)
-        )
-    ):
-        db.delete(cmp)
+
+    answers = []
+    for model in (TelevisionEpisodeComparison, TelevisionShowEpisodeComparison):
+        for cmp in db.scalars(select(model).where(or_(model.winner_id == episode.id, model.loser_id == episode.id))):
+            answers.append((cmp.user_id, cmp.guild_id, cmp.winner_id, cmp.loser_id, cmp.created_at))
+            db.delete(cmp)
+    db.flush()
+    others = {w if l == episode.id else l for _, _, w, l, _ in answers}
+    season_of = dict(db.execute(
+        select(TelevisionEpisode.id, TelevisionEpisode.season_id).where(TelevisionEpisode.id.in_(others))
+    ).all()) if others else {}
+    for user_id, guild_id, w, l, at in answers:
+        other = w if l == episode.id else l
+        common = {"user_id": user_id, "guild_id": guild_id, "winner_id": w, "loser_id": l, "created_at": at}
+        if season_of.get(other) == season.id:
+            db.add(TelevisionEpisodeComparison(season_id=season.id, **common))
+        else:
+            db.add(TelevisionShowEpisodeComparison(show_id=episode.show_id, **common))
     db.flush()
     db.expire(episode, ["season"])
 

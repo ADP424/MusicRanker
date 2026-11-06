@@ -1,14 +1,15 @@
-"""Insert helper for guild-scoped `secondary=` many-to-many/self-referential
-relationships (see `database_models/junctions.py`'s `guild_junction()` and
-`database_models/categories.py`'s `_members()`).
+"""Insert helper for guild-scoped `secondary=` relationships declared with an
+**explicit** `primaryjoin`/`secondaryjoin` (the self-referential `parents`
+relationships, and the category memberships from `categories.py`'s `_members()`).
 
-Appending to one of these relationships the ordinary ORM way
-(`row.parents.append(parent)`) inserts into the association table via SQLAlchemy's
-`secondary=` machinery, which only knows about the two FK columns declared in the
-`primaryjoin`/`secondaryjoin` — it has no idea the table also carries a `guild_id`
-column, so that column is left NULL and the not-null constraint added by
-`guild_junction()`/`_members()` rejects the insert. Use `link_guild_scoped` instead
-of `.append()` for any relationship backed by one of these tables.
+A *bare* `secondary=` relationship (`Movie.genres`, `Game.platforms`, …) is fine to
+assign or `.append()` to: SQLAlchemy derives its join from the composite FKs, so its
+synchronize pairs include `guild_id` and the junction row gets it automatically.
+
+An explicit join, though, names only the id columns. SQLAlchemy then has no idea the
+table also carries a `guild_id`, leaves it NULL, and the not-null constraint added
+by `guild_junction()`/`_members()` rejects the insert. Use `link_guild_scoped`
+instead of `.append()` for those.
 """
 
 from sqlalchemy.orm import InstrumentedAttribute, Session

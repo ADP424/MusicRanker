@@ -7,7 +7,7 @@ from sqlalchemy import ForeignKeyConstraint, Index, Numeric, Text, UniqueConstra
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base
-from .mixins import Audited, GuildScoped, NormalizedNames, guild_unique
+from .mixins import Audited, Described, guild_unique, GuildScoped, NormalizedNames
 
 if TYPE_CHECKING:
     from .television import TelevisionShow
@@ -15,7 +15,7 @@ if TYPE_CHECKING:
     from .television_person import TelevisionSeasonPerson
 
 
-class TelevisionSeason(GuildScoped, Audited, NormalizedNames, Base):
+class TelevisionSeason(GuildScoped, Audited, NormalizedNames, Described, Base):
     """A season of a show — the layer between a show and its episodes. Ranked
     *within* its show (``season_rank`` is the canonical airing order; a user's
     personal order is ``UserTelevisionSeasonRank``), and episodes are in turn

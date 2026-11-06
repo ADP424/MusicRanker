@@ -25,6 +25,8 @@ from typing import Iterator, Optional, Sequence
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
+from . import nationalities
+from .normalize import norm as db_norm  # what name_norm columns hold
 from .database_models import (
     NATIONALITIES,
     AlbumArtist,
@@ -249,6 +251,30 @@ def search_best(
     return max(pool, key=lambda r: r.get("popularity", 0)), len(pool) > 1
 
 
+def search_candidates(
+    c: TmdbClient, path: str, query: str, *, year: int | None, year_param: str, title_key: str, date_key: str,
+    limit: int = 8,
+) -> list[dict]:
+    """The top search results as {tmdb_id, title, year, poster_url}, for "not
+    this one?" in the import dialogs. Same request as `search_best`, so cached."""
+    params: dict[str, str] = {"query": query}
+    if year is not None:
+        params[year_param] = str(year)
+    data = c.get(path, params=params, ttl=TTL_SEARCH) or {}
+    out = []
+    for r in (data.get("results") or [])[:limit]:
+        y = (r.get(date_key) or "")[:4]
+        out.append({"tmdb_id": r["id"], "title": r.get(title_key) or "", "year": int(y) if y.isdigit() else None,
+                    "poster_url": image_url(r.get("poster_path"), "w92")})
+    return out
+
+
+def parse_tmdb_ref(text: str, kind: str) -> int | None:
+    """A pasted TMDB link (themoviedb.org/movie/603-the-matrix) or "tmdb:603" -> 603."""
+    m = re.search(rf"themoviedb\.org/{kind}/(\d+)", text) or re.fullmatch(r"\s*tmdb:(\d+)\s*", text)
+    return int(m.group(1)) if m else None
+
+
 # ── Cast-role heuristic ──────────────────────────────────────────────
 def suggest_cast_role(
     *,
@@ -418,19 +444,22 @@ def person_load_options() -> list:
 
 
 def batch_load_persons(db: Session, guild_id: int, names: set[str]) -> dict[str, list[Person]]:
-    """Single query for all candidate persons in this guild, relations eager-loaded."""
-    if not names:
+    """Single query for all candidate persons in this guild, relations eager-loaded.
+    Keyed by normalised name (look up with `db_norm(name)`), the same matching the
+    scans use, so "Penelope Cruz" finds "Penélope Cruz" instead of duplicating her."""
+    norms = {db_norm(n) for n in names} - {""}
+    if not norms:
         return {}
     rows = db.scalars(
         select(Person)
-        .where(Person.guild_id == guild_id, Person.name.in_(names) | Person.name_en.in_(names))
+        .where(Person.guild_id == guild_id, Person.name_norm.in_(norms) | Person.name_en_norm.in_(norms))
         .options(*person_load_options())
     ).all()
     by_name: dict[str, list[Person]] = {}
     for p in rows:
-        by_name.setdefault(p.name, []).append(p)
-        if p.name_en and p.name_en != p.name:
-            by_name.setdefault(p.name_en, []).append(p)
+        by_name.setdefault(p.name_norm, []).append(p)
+        if p.name_en_norm and p.name_en_norm != p.name_norm:
+            by_name.setdefault(p.name_en_norm, []).append(p)
     return by_name
 
 
@@ -494,7 +523,7 @@ def find_db_matches(
     caller can warn that it's a name-only match against a differing filmography."""
     seen: set[int] = set()
     out: list[PersonMatch] = []
-    for c in persons_by_name.get(name, []):
+    for c in persons_by_name.get(db_norm(name), []):
         if c.id in seen:
             continue
         seen.add(c.id)
@@ -578,10 +607,30 @@ def match_genre(tmdb_name: str, db_genres: list[Genre]) -> int | None:
     return None
 
 
+def match_genres(tmdb_genres: list[dict], db_genres: list[Genre]) -> list[tuple[int, str, int | None]]:
+    """-> (TMDB id, name, our genre id) per TMDB genre. TMDB's TV genres are
+    compounds ("Action & Adventure", "Sci-Fi & Fantasy"); one that matches
+    nothing as a whole is matched part by part."""
+    out: list[tuple[int, str, int | None]] = []
+    for tg in tmdb_genres:
+        whole = match_genre(tg["name"], db_genres)
+        if whole is None and "&" in tg["name"]:
+            out += [(tg["id"], part, match_genre(part, db_genres))
+                    for part in (p.strip() for p in tg["name"].split("&")) if part]
+        else:
+            out.append((tg["id"], tg["name"], whole))
+    return out
+
+
 def db_genres_for(db: Session, guild_id: int, media_flag: str) -> list[Genre]:
     return list(db.scalars(
         select(Genre).where(Genre.guild_id == guild_id, getattr(Genre, media_flag).is_(True)).order_by(Genre.name)
     ).all())
+
+
+def image_url(path: str | None, size: str = "w342") -> str | None:
+    """A TMDB poster/profile path as its CDN URL (hotlinked, never stored locally)."""
+    return f"https://image.tmdb.org/t/p/{size}{path}" if path else None
 
 
 # ── Import-side person resolution ────────────────────────────────────
@@ -622,8 +671,13 @@ class PeopleResolver:
             person = self.db.get(Person, existing_person_id)
             if person is None or person.guild_id != self.guild_id:
                 raise ValueError(f"Person id={existing_person_id} not found")
+        elif (known := self.db.scalar(
+            select(Person).where(Person.guild_id == self.guild_id, Person.tmdb_id == tmdb_id)
+        )) is not None:
+            # Already imported once: the same TMDB person, whatever the name says.
+            person = known
         else:
-            nat = nationality if nationality in KNOWN_NATIONALITIES else "Unknown"
+            nat = nationalities.resolve(self.db, self.guild_id, nationality)
             person = Person(
                 guild_id=self.guild_id, created_by_user_id=self.created_by_user_id,
                 name=name, name_en=None, birth_nationality=nat, core_nationality=nat,
@@ -632,6 +686,10 @@ class PeopleResolver:
             self.db.flush()
             is_new = True
 
+        if person.tmdb_id is None and not self.db.scalar(
+            select(Person.id).where(Person.guild_id == self.guild_id, Person.tmdb_id == tmdb_id)
+        ):
+            person.tmdb_id = tmdb_id
         self._by_tmdb[tmdb_id] = person
         if person.id not in self._seen:
             self._seen.add(person.id)

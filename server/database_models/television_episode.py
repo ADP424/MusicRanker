@@ -8,7 +8,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base
 from .junctions import television_episode_genres_junction
-from .mixins import Audited, GuildScoped, NormalizedNames, guild_unique
+from .mixins import Audited, Described, guild_unique, GuildScoped, NormalizedNames
 
 if TYPE_CHECKING:
     from .genre import Genre
@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from .television_season import TelevisionSeason
 
 
-class TelevisionEpisode(GuildScoped, Audited, NormalizedNames, Base):
+class TelevisionEpisode(GuildScoped, Audited, NormalizedNames, Described, Base):
     """An episode of a season. Ranked *within* its season (``episode_rank``),
     the way albums are ranked within an artist. Carries the concrete runtime,
     and its own (initially inherited) people/genres. Soundtracks are show-level
@@ -52,6 +52,8 @@ class TelevisionEpisode(GuildScoped, Audited, NormalizedNames, Base):
     release_year: Mapped[int]
     notes: Mapped[str | None] = mapped_column(Text)
     episode_rank: Mapped[Decimal | None] = mapped_column(Numeric)
+    # TMDB's number within the season; the canonical order is episode_rank.
+    episode_number: Mapped[int | None]
 
     show: Mapped[TelevisionShow] = relationship("TelevisionShow", viewonly=True,
                                                 foreign_keys="TelevisionEpisode.show_id")

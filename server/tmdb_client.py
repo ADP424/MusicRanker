@@ -6,11 +6,11 @@ One sidecar SQLite file holds four things:
                    response ETag for conditional revalidation
   kv               small key/value store.  Currently the movie.id -> tmdb_id
                    map, which is how we avoid adding a tmdb_id column to Movie
-  scan_rejections  (person_id, movie_id, slot) triples the user explicitly
-                   rejected, so the scanner stops resurfacing them
   scoped_scan_rejections
-                   the same for the television scan, keyed by entity kind
-                   (see scan_common.ScopedRejections)
+                   (scope, person_id, entity_id, slot) suggestions the user
+                   explicitly rejected, so the scan stops resurfacing them
+                   (see scan_common.ScopedRejections).  `scan_rejections` is
+                   the old movie-only table, emptied into it on start-up.
 
 Unlike the standalone script there is NO in-memory L1 cache: this process is
 long-lived and credits payloads are 30-100 KB each, so we read through to
@@ -25,12 +25,13 @@ import sqlite3
 import threading
 import time
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Optional
 from urllib.parse import urlencode
 
 import requests
 from dotenv import load_dotenv
 
+from .cache_paths import default_cache_path
 from .lanes import TMDB_LANE
 from .scan_common import SCOPED_REJECTIONS_DDL, ScopedRejections
 
@@ -39,7 +40,7 @@ load_dotenv()
 TMDB_BASE = "https://api.themoviedb.org/3"
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
-CACHE_PATH = Path(os.environ.get("TMDB_CACHE_PATH", _REPO_ROOT / "tmdb_cache.sqlite3"))
+CACHE_PATH = Path(os.environ.get("TMDB_CACHE_PATH") or default_cache_path(_REPO_ROOT, "tmdb_cache.sqlite3"))
 
 REQ_PER_SEC = float(os.environ.get("TMDB_RPS", "20"))
 BURST = int(os.environ.get("TMDB_BURST", "40"))
@@ -84,6 +85,13 @@ class Sidecar(ScopedRejections):
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.execute("PRAGMA synchronous=NORMAL")
         self._db.executescript(self._DDL)
+        # The old movie-only scan kept its rejections apart; they're scope
+        # "movie" of the shared table now (see tmdb_person_scan.SCOPES).
+        self._db.execute(
+            "INSERT OR IGNORE INTO scoped_scan_rejections "
+            "SELECT 'movie', person_id, movie_id, slot, created_at FROM scan_rejections"
+        )
+        self._db.execute("DELETE FROM scan_rejections")
         self._db.commit()
 
     # -- http_cache --------------------------------------------------
@@ -129,50 +137,6 @@ class Sidecar(ScopedRejections):
                 "INSERT OR REPLACE INTO kv VALUES (?, ?, ?)",
                 (key, json.dumps(value), time.time() + ttl),
             )
-            self._db.commit()
-
-    # -- rejections --------------------------------------------------
-    def rejections(self) -> set[tuple[int, int, str]]:
-        with self._lock:
-            rows = self._db.execute("SELECT person_id, movie_id, slot FROM scan_rejections").fetchall()
-        return {(r[0], r[1], r[2]) for r in rows}
-
-    def rejections_detailed(self) -> list[tuple[int, int, str, float]]:
-        with self._lock:
-            return self._db.execute(
-                "SELECT person_id, movie_id, slot, created_at " "FROM scan_rejections ORDER BY created_at DESC"
-            ).fetchall()
-
-    def add_rejections(self, items: Iterable[tuple[int, int, str]]) -> int:
-        items = list(items)
-        if not items:
-            return 0
-        now = time.time()
-        with self._lock:
-            before = self._db.total_changes
-            self._db.executemany(
-                "INSERT OR IGNORE INTO scan_rejections VALUES (?, ?, ?, ?)",
-                [(p, m, s, now) for p, m, s in items],
-            )
-            self._db.commit()
-            return self._db.total_changes - before
-
-    def remove_rejections(self, items: Iterable[tuple[int, int, str]]) -> int:
-        items = list(items)
-        if not items:
-            return 0
-        with self._lock:
-            before = self._db.total_changes
-            self._db.executemany(
-                "DELETE FROM scan_rejections " "WHERE person_id = ? AND movie_id = ? AND slot = ?",
-                items,
-            )
-            self._db.commit()
-            return self._db.total_changes - before
-
-    def clear_rejections(self) -> None:
-        with self._lock:
-            self._db.execute("DELETE FROM scan_rejections")
             self._db.commit()
 
 

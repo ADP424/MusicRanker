@@ -7,8 +7,13 @@ import type {
   CastRole, TelevisionEpisode, TelevisionSeason, TelevisionShow, TmdbTvEpisodeLookup, TmdbTvImportPersonIn,
 } from "../api/types";
 import { useCan } from "../guild/GuildProvider";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { CheckField, Field, Notice } from "./form/FormKit";
+import { importSummary } from "./import/ImportExtras";
+import { ImportDialog, ImportFooter, ImportSection, ImportTitle, plural } from "./import/ImportKit";
+import { TmdbPersonRow } from "./import/ImportPersonRow";
 import { BusyButton, LoadingState } from "./Spinner";
-import { TmdbPersonRow } from "./TmdbPersonRow";
 import { ACTOR_ROLES, parentNote, personIn, seedResolutions, toRow } from "./tmdbTvShared";
 
 /**
@@ -20,8 +25,8 @@ import { ACTOR_ROLES, parentNote, personIn, seedResolutions, toRow } from "./tmd
  * creates episodes with only title/runtime/year + director/composer, so this is
  * how they get cast); without it, it appends a new episode to the season.
  *
- * Our episodes don't store their episode number, so the lookup finds the
- * episode by title within the season and the S/E inputs are a manual override.
+ * The lookup uses the episode's stored number when it has one, otherwise it
+ * finds the episode by title within the season; the S/E inputs override both.
  */
 export function TmdbTelevisionEpisodeImportDialog({
   show,
@@ -40,7 +45,7 @@ export function TmdbTelevisionEpisodeImportDialog({
   const [year, setYear] = useState(String(show.release_year));
   const [episodeName, setEpisodeName] = useState(episode?.name ?? "");
   const [seasonNumber, setSeasonNumber] = useState(season.season_number != null ? String(season.season_number) : "");
-  const [epNumber, setEpNumber] = useState("");
+  const [epNumber, setEpNumber] = useState(episode?.episode_number != null ? String(episode.episode_number) : "");
 
   const [lookup, setLookup] = useState<TmdbTvEpisodeLookup | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -48,7 +53,7 @@ export function TmdbTelevisionEpisodeImportDialog({
   const [checked, setChecked] = useState<Set<number>>(new Set());
   const [roles, setRoles] = useState<Record<number, CastRole>>({});
   const [resolutions, setResolutions] = useState<Record<number, number | null>>({});
-  const [inheritSeasonPeople, setInheritSeasonPeople] = useState(false);
+  const [inheritSeasonPeople, setInheritSeasonPeople] = useState(true);
   const [updateFields, setUpdateFields] = useState(false);
   const [addToList, setAddToList] = useState(true);
 
@@ -109,6 +114,9 @@ export function TmdbTelevisionEpisodeImportDialog({
         episode: {
           name: e.name,
           name_en: null,
+          episode_number: e.episode_number,
+          overview: e.overview,
+          still_url: e.still_url,
           runtime_minutes: e.runtime,
           release_year: e.release_year,
           notes: null,
@@ -119,6 +127,7 @@ export function TmdbTelevisionEpisodeImportDialog({
       },
       {
         async onSuccess(result) {
+          importSummary(lookup.episode.name, result);
           if (!episode && addToList && canRank) {
             await api.put(`${base}/television/episodes/${result.episode_id}/entry`, {});
             qc.invalidateQueries({ queryKey: rk(guildId, userId, "television", "seasons", season.id, "episodes") });
@@ -138,65 +147,49 @@ export function TmdbTelevisionEpisodeImportDialog({
   const importing = importMut.isPending || importMut.isSuccess;
 
   return (
-    <div className="modal tmdb-import-panel">
-      <h2>
-        {episode ? "Import Episode Credits from TMDB" : "Import Episode from TMDB"}
-        <span style={{ opacity: 0.6, fontWeight: "normal" }}> — {show.name} · {season.name}</span>
-      </h2>
-      {error && <p className="tip-error">{error}</p>}
-
-      <form className="tip-search" onSubmit={(e) => { e.preventDefault(); runLookup(); }}>
-        <label>
-          Show title
-          <input value={title} onChange={(e) => setTitle(e.target.value)} />
-        </label>
-        <label>
-          Year
-          <input value={year} onChange={(e) => setYear(e.target.value)} type="number" />
-        </label>
-        <label>
-          Episode title
-          <input value={episodeName} onChange={(e) => setEpisodeName(e.target.value)} placeholder="matched against TMDB" />
-        </label>
-        <label>
-          Season
-          <input value={seasonNumber} onChange={(e) => setSeasonNumber(e.target.value)} type="number" min={0} placeholder="auto" />
-        </label>
-        <label>
-          Episode #
-          <input value={epNumber} onChange={(e) => setEpNumber(e.target.value)} type="number" min={1} placeholder="auto" />
-        </label>
-        <BusyButton type="submit" busy={lookupMut.isPending} busyLabel={lookup ? "Reloading…" : "Looking up…"}>{lookup ? "Reload" : "Find episode"}</BusyButton>
-        {!lookup && <button type="button" onClick={onClose}>Cancel</button>}
+    <ImportDialog title={`${episode ? "Import episode credits" : "Import an episode"} from TMDB · ${show.name}, ${season.name}`}
+                  onClose={onClose} error={error} reviewing={!!lookup}>
+      <form className="grid gap-3" onSubmit={(e) => { e.preventDefault(); e.stopPropagation(); runLookup(); }}>
+        <div className="grid gap-3 sm:grid-cols-[1fr_7rem]">
+          <Field label="Show title"><Input value={title} onChange={(e) => setTitle(e.target.value)} /></Field>
+          <Field label="Year"><Input value={year} onChange={(e) => setYear(e.target.value)} type="number" /></Field>
+        </div>
+        <div className="grid items-end gap-3 sm:grid-cols-[1fr_6rem_6rem_auto]">
+          <Field label="Episode title">
+            <Input value={episodeName} onChange={(e) => setEpisodeName(e.target.value)} placeholder="Matched against TMDB" />
+          </Field>
+          <Field label="Season"><Input value={seasonNumber} onChange={(e) => setSeasonNumber(e.target.value)} type="number" min={0} placeholder="auto" /></Field>
+          <Field label="Episode"><Input value={epNumber} onChange={(e) => setEpNumber(e.target.value)} type="number" min={1} placeholder="auto" /></Field>
+          <BusyButton type="submit" variant={lookup ? "outline" : "default"} busy={lookupMut.isPending} busyLabel={lookup ? "Reloading…" : "Looking up…"}>
+            {lookup ? "Reload" : "Find episode"}
+          </BusyButton>
+        </div>
       </form>
       {lookupMut.isPending && !lookup && <LoadingState label="Looking up the episode on TMDB…" />}
-      {notFound && (
-        <p className="tip-warn">
-          Couldn't find that episode by title — enter its season and episode number above.
-        </p>
+      {notFound && <Notice tone="warning">Couldn't find that episode by title. Enter its season and episode number.</Notice>}
+      {!lookup && (
+        <div className="-mx-5 flex justify-end border-t px-5 py-3">
+          <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
+        </div>
       )}
 
       {lookup && (
         <>
-          <div className="tip-movie-header">
-            <h3>
-              S{lookup.episode.season_number}E{lookup.episode.episode_number} — {lookup.episode.name}
-              <span className="tip-runtime"> — {lookup.episode.release_year} · {lookup.episode.runtime} min</span>
-            </h3>
-            {lookup.show_ambiguous && <span className="tip-warn">⚠ Multiple show matches — used most popular</span>}
-          </div>
+          <ImportTitle title={`S${lookup.episode.season_number}E${lookup.episode.episode_number} · ${lookup.episode.name}`}
+                       facts={`${lookup.episode.release_year} · ${lookup.episode.runtime} min`}
+                       ambiguous={lookup.show_ambiguous} />
           {lookup.show_name !== show.name && (
-            <p className="tip-warn">TMDB matched "{lookup.show_name}" — importing into "{show.name}".</p>
+            <Notice tone="warning">TMDB matched "{lookup.show_name}"; importing into "{show.name}".</Notice>
           )}
 
-          <section className="tip-section">
-            <div className="tip-section-head">
-              <h3>This episode's cast &amp; crew ({lookup.episode.people.length} total, {checked.size} selected)</h3>
-              <button type="button" onClick={() => setChecked(new Set(lookup.episode.people.map((_, i) => i)))}>Check All</button>
-              <button type="button" onClick={() => setChecked(new Set())}>Uncheck All</button>
-            </div>
-            <p className="meta">The episode's full cast, guest stars and crew. People already on the season are preselected.</p>
-            <div className="tip-people-list">
+          <ImportSection
+            title="This episode's cast & crew"
+            count={`${checked.size} of ${lookup.episode.people.length} selected`}
+            onAll={() => setChecked(new Set(lookup.episode.people.map((_, i) => i)))}
+            onNone={() => setChecked(new Set())}
+            hint="The full cast, guest stars and crew. People already on the season are preselected. Credits already on the episode are kept."
+          >
+            <div className="grid gap-1.5">
               {lookup.episode.people.map((p, i) => (
                 <TmdbPersonRow
                   key={`${p.tmdb_id}-${i}`}
@@ -210,7 +203,7 @@ export function TmdbTelevisionEpisodeImportDialog({
                   onToggle={() =>
                     setChecked((prev) => {
                       const next = new Set(prev);
-                      next.has(i) ? next.delete(i) : next.add(i);
+                      if (next.has(i)) next.delete(i); else next.add(i);
                       return next;
                     })
                   }
@@ -219,39 +212,23 @@ export function TmdbTelevisionEpisodeImportDialog({
                 />
               ))}
             </div>
-          </section>
+            <div className="mt-1 grid gap-2">
+              <CheckField checked={inheritSeasonPeople} onChange={setInheritSeasonPeople}>Also attach all of the season's people</CheckField>
+              {episode && (
+                <CheckField checked={updateFields} onChange={setUpdateFields}>Also overwrite title, runtime and year from TMDB</CheckField>
+              )}
+            </div>
+          </ImportSection>
 
-          <section className="tip-section">
-            <label className={`chip${inheritSeasonPeople ? " chip-active" : ""}`} style={{ cursor: "pointer" }}>
-              <input type="checkbox" checked={inheritSeasonPeople} onChange={(e) => setInheritSeasonPeople(e.target.checked)} />
-              Also attach all of the season's people
-            </label>
-            {episode && (
-              <label className={`chip${updateFields ? " chip-active" : ""}`} style={{ cursor: "pointer" }}>
-                <input type="checkbox" checked={updateFields} onChange={(e) => setUpdateFields(e.target.checked)} />
-                Also overwrite title / runtime / year from TMDB
-              </label>
-            )}
-            <p className="meta">
-              Credits already on this episode are kept; only missing ones are added.
-              Genres come from the show.
-            </p>
-          </section>
-
-          <footer className="tip-footer">
-            {!episode && canRank && (
-              <label className="checkbox-label tip-add-to-list">
-                <input type="checkbox" checked={addToList} onChange={(e) => setAddToList(e.target.checked)} />
-                Add to my list
-              </label>
-            )}
-            <button type="button" onClick={onClose} disabled={importing}>Cancel</button>
-            <BusyButton type="button" className="tip-primary" busy={importing} busyLabel="Importing…" onClick={handleImport}>
-              Import {checked.size} credit{checked.size !== 1 ? "s" : ""}
-            </BusyButton>
-          </footer>
+          <ImportFooter
+            addToList={!episode && canRank ? { checked: addToList, onChange: setAddToList } : null}
+            onCancel={onClose}
+            importing={importing}
+            onImport={handleImport}
+            label={`Import ${plural(checked.size, "credit")}`}
+          />
         </>
       )}
-    </div>
+    </ImportDialog>
   );
 }

@@ -6,28 +6,33 @@ from sqlalchemy import Index, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base
-from .mixins import Audited, GuildScoped, NormalizedNames, guild_unique
-from .nationality import nationality
+from .mixins import Audited, external_id_index, guild_unique, GuildScoped, NormalizedNames
+from .nationality import HasNationalities, nationality_fks
 
 if TYPE_CHECKING:
-    from .artist_person import ArtistPerson
+    from .artist_person import ArtistPerson  # noqa: F401  (string annotations)
     ...
 
 
-class Person(GuildScoped, Audited, NormalizedNames, Base):
+class Person(GuildScoped, Audited, NormalizedNames, HasNationalities, Base):
     __tablename__ = "people"
     __table_args__ = (
         guild_unique("people"),
         Index("idx_people_guild_norm", "guild_id", "name_norm"),
         Index("idx_people_guild_en_norm", "guild_id", "name_en_norm"),
+        external_id_index("people", "tmdb_id"),
+        external_id_index("people", "igdb_id"),
+        *nationality_fks("people"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(Text)
     name_en: Mapped[str | None] = mapped_column(Text)
-    birth_nationality: Mapped[str] = mapped_column(nationality)
-    core_nationality: Mapped[str] = mapped_column(nationality)
     notes: Mapped[str | None] = mapped_column(Text)  # guild-visible; personal notes live on the rank rows
+    # A TMDB person, or an IGDB company (studios are people here).
+    tmdb_id: Mapped[int | None]
+    igdb_id: Mapped[int | None]
+    image_url: Mapped[str | None] = mapped_column(Text)
 
     artist_links = relationship("ArtistPerson", back_populates="person", cascade="all, delete-orphan",
                                 foreign_keys="ArtistPerson.person_id")

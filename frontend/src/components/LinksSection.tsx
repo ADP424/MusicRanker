@@ -1,9 +1,12 @@
+import { ExternalLink, Pencil, X } from "lucide-react";
 import { useState } from "react";
 
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { useLinkMutations, useLinks } from "../api/hooks";
-import type { Link as LinkItem } from "../api/types";
 import { useCan } from "../guild/GuildProvider";
-import { ConfirmDialog } from "./ConfirmDialog";
+import { safeHref } from "../lib/url";
+import { Empty, Section } from "./detail/DetailKit";
 
 /**
  * Editable list of external links (listen/watch, discography, official site,
@@ -18,7 +21,6 @@ export function LinksSection(props: { path: string; section: string; ownerId: nu
   const [editing, setEditing] = useState(false);
   const [label, setLabel] = useState("");
   const [url, setUrl] = useState("");
-  const [confirmDelete, setConfirmDelete] = useState<LinkItem | null>(null);
 
   const { data: links = [] } = useLinks(path, ownerId);
   const { add, remove } = useLinkMutations(section, path, ownerId);
@@ -33,46 +35,41 @@ export function LinksSection(props: { path: string; section: string; ownerId: nu
   }
 
   return (
-    <section style={{ marginBottom: "1.5rem" }}>
-      <header className="page-head" style={{ marginBottom: "0.5rem" }}>
-        <h2 style={{ margin: 0 }}>Links</h2>
-        {canEdit && (
-          <button style={{ fontSize: 12 }} onClick={() => setEditing((o) => !o)}>
-            {editing ? "Done" : "Edit"}
-          </button>
-        )}
-      </header>
-
-      {links.length > 0 ? (
-        <ul className="plain-list">
+    <Section
+      title="Links"
+      busy={add.isPending || remove.isPending}
+      actions={canEdit && (
+        <Button variant={editing ? "default" : "outline"} size="sm" onClick={() => setEditing((o) => !o)}>
+          {editing ? "Done" : <><Pencil className="size-4" /> Edit</>}
+        </Button>
+      )}
+    >
+      {links.length === 0 ? <Empty>No links yet.</Empty> : (
+        <ul className="grid gap-1 text-sm">
           {links.map((l) => (
-            <li key={l.id} className="row" style={{ gridTemplateColumns: editing ? "1fr auto" : "1fr", alignItems: "center" }}>
-              <a href={l.url} target="_blank" rel="noreferrer">{l.label ?? l.url}</a>
+            <li key={l.id} className="flex items-center gap-2">
+              <a href={safeHref(l.url)} target="_blank" rel="noreferrer"
+                 className="inline-flex min-w-0 items-center gap-1.5 font-medium hover:underline">
+                <ExternalLink className="size-3.5 shrink-0 text-muted-foreground" />
+                <span className="truncate">{l.label ?? l.url}</span>
+              </a>
               {editing && (
-                <button type="button" style={{ fontSize: 12 }} onClick={() => setConfirmDelete(l)}>Remove</button>
+                <Button variant="ghost" size="icon" className="size-7" aria-label={`Remove ${l.label ?? l.url}`}
+                        onClick={() => remove.mutate(l.id)}>
+                  <X className="size-4" />
+                </Button>
               )}
             </li>
           ))}
         </ul>
-      ) : (
-        <p style={{ opacity: 0.5, margin: "0.25rem 0 0" }}>No links yet.</p>
       )}
-
       {editing && (
-        <form onSubmit={handleAdd} className="inline" style={{ marginTop: "0.5rem" }}>
-          <input placeholder="Label (optional)" value={label} onChange={(e) => setLabel(e.target.value)} style={{ maxWidth: "9rem" }} />
-          <input required placeholder="https://…" value={url} onChange={(e) => setUrl(e.target.value)} style={{ flex: 1 }} />
-          <button type="submit" disabled={add.isPending}>Add</button>
+        <form onSubmit={handleAdd} className="flex flex-wrap gap-2">
+          <Input aria-label="Link label" placeholder="Label (optional)" value={label} onChange={(e) => setLabel(e.target.value)} className="w-40" />
+          <Input aria-label="Link URL" required placeholder="https://…" value={url} onChange={(e) => setUrl(e.target.value)} className="min-w-48 flex-1" />
+          <Button type="submit" size="sm" disabled={add.isPending}>Add</Button>
         </form>
       )}
-
-      {confirmDelete && (
-        <ConfirmDialog
-          message={`Remove the link "${confirmDelete.label ?? confirmDelete.url}"?`}
-          onConfirm={() => { remove.mutate(confirmDelete.id); setConfirmDelete(null); }}
-          onCancel={() => setConfirmDelete(null)}
-        />
-      )}
-    </section>
+    </Section>
   );
 }

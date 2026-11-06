@@ -1,4 +1,6 @@
 const BASE = import.meta.env.VITE_API_URL ?? "/api";
+/** For plain links to the API, e.g. file downloads. */
+export const API_BASE = BASE;
 
 function cookie(name: string): string | null {
   const m = document.cookie.match(new RegExp(`(?:^|; )${name}=([^;]*)`));
@@ -12,6 +14,16 @@ export class ApiError extends Error {
 /** Set by AuthProvider; lets a 401 anywhere tear down the session cleanly. */
 let onUnauthorized: () => void = () => {};
 export const setUnauthorizedHandler = (fn: () => void) => { onUnauthorized = fn; };
+
+/** FastAPI's `detail`: a string, a list of validation errors, or (from /batch)
+ *  `{op, path, detail}` wrapping the failing step's own detail. */
+function detailText(d: unknown): string | undefined {
+  if (d == null) return undefined;
+  if (typeof d === "string") return d;
+  if (Array.isArray(d)) return d.map((e) => (e && typeof e === "object" && "msg" in e ? String(e.msg) : String(e))).join("; ");
+  if (typeof d === "object" && "detail" in d) return detailText((d as { detail: unknown }).detail);
+  return JSON.stringify(d);
+}
 
 async function req<T>(path: string, init: RequestInit = {}): Promise<T> {
   const method = (init.method ?? "GET").toUpperCase();
@@ -34,7 +46,7 @@ async function req<T>(path: string, init: RequestInit = {}): Promise<T> {
   }
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    throw new ApiError(res.status, body.detail ?? `${res.status} ${res.statusText}`);
+    throw new ApiError(res.status, detailText(body.detail) ?? `${res.status} ${res.statusText}`);
   }
   return res.status === 204 ? (undefined as T) : res.json();
 }
@@ -50,3 +62,22 @@ export const api = {
 /** The app boots with a GET so the server mints a csrftoken cookie before the
  *  first login POST. Login CSRF is a real attack; it is not exempt. */
 export const primeCsrf = () => fetch(`${BASE}/nationalities`, { credentials: "include" });
+
+type BatchOp = { method: "POST" | "PUT" | "PATCH" | "DELETE"; path: string; body?: unknown };
+
+/** Records writes and sends them as one `POST /batch`: one transaction, so a
+ *  form's create-then-link steps all happen or none do. A later op can use an
+ *  earlier op's response id as "{0.id}" (see `Batch.ref`). */
+export class Batch {
+  readonly ops: BatchOp[] = [];
+  post(path: string, body?: unknown) { this.ops.push({ method: "POST", path, body }); return this; }
+  put(path: string, body?: unknown) { this.ops.push({ method: "PUT", path, body }); return this; }
+  patch(path: string, body?: unknown) { this.ops.push({ method: "PATCH", path, body }); return this; }
+  delete(path: string) { this.ops.push({ method: "DELETE", path }); return this; }
+  /** The id of op `i`'s result, to use in a later op's path. */
+  static ref(i: number) { return `{${i}.id}`; }
+  /** -> each op's response, in order. */
+  async run(): Promise<unknown[]> {
+    return (await api.post<{ results: unknown[] }>("/batch", { ops: this.ops })).results;
+  }
+}

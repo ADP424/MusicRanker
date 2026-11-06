@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session as DbSession
 
+from ..api_models.guild import MergePreviewIn, MergeStartIn
 from ..authz import Capability
 from ..database import get_database
 from ..database_models import GuildMember
@@ -29,9 +30,9 @@ def _assert_source_owned(db: DbSession, user_id: int, source_guild_id: int, targ
 
 
 @router.post("/preview")
-def preview(guild_id: int, body: dict, ctx=Depends(guild_ctx(Capability.MERGE_IN)),
-            db: DbSession = Depends(get_database)):
-    src = body["source_guild_id"]
+def preview(guild_id: int, body: MergePreviewIn, ctx=Depends(guild_ctx(Capability.MERGE_IN)),
+            db: DbSession = Depends(get_database, scope="function")):
+    src = body.source_guild_id
     _assert_source_owned(db, ctx.user_id, src, guild_id)
     # D8: warn, don't block. Re-merging an updated source is a legitimate use.
     previously = db.scalar(
@@ -48,11 +49,9 @@ def preview(guild_id: int, body: dict, ctx=Depends(guild_ctx(Capability.MERGE_IN
 
 
 @router.post("", status_code=202)
-def start_merge(guild_id: int, body: dict, ctx=Depends(guild_ctx(Capability.MERGE_IN)),
-                db: DbSession = Depends(get_database)):
-    _assert_source_owned(db, ctx.user_id, body["source_guild_id"], guild_id)
+def start_merge(guild_id: int, body: MergeStartIn, ctx=Depends(guild_ctx(Capability.MERGE_IN)),
+                db: DbSession = Depends(get_database, scope="function")):
+    _assert_source_owned(db, ctx.user_id, body.source_guild_id, guild_id)
     job = enqueue(db, lane=JobLane.merge, kind="guild_merge", guild_id=guild_id, user_id=ctx.user_id,
-                  payload={"source_guild_id": body["source_guild_id"],
-                           "decisions": body["decisions"],
-                           "copy_my_ranking": body.get("copy_my_ranking", True)})
+                  payload=body.model_dump(mode="json"))
     return {"job_id": job.id, "queue_position": queue_position(db, job)}

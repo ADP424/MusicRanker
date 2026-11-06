@@ -14,7 +14,7 @@ from .categories import (
 )
 from .comparisons import (
     AlbumComparison, ArtistComparison, BookComparison, GameComparison, MovieComparison,
-    TelevisionEpisodeComparison, TelevisionSeasonComparison, TelevisionShowComparison,
+    TelevisionEpisodeComparison, TelevisionSeasonComparison, TelevisionShowComparison, TelevisionShowEpisodeComparison,
 )
 from .game import Game
 from .game_credit import GameRole, game_role_type
@@ -42,7 +42,7 @@ from .movie_cast_member import (
     cast_role_type,
 )
 from .movie_person import MoviePerson
-from .nationality import NATIONALITIES, nationality
+from .nationality import DEFAULT_NATIONALITIES, NATIONALITIES, UNKNOWN, HasNationalities, Nationality
 from .person import Person
 from .ranking import (
     UserAlbumRank, UserArtistRank, UserBookRank, UserGameRank, UserMovieRank,
@@ -56,7 +56,7 @@ from .user import Session, User
 
 __all__ = [
     "Base", "utcnow", "GuildScoped", "Audited", "NormalizedNames", "guild_unique", "guild_junction",
-    "NATIONALITIES", "nationality",
+    "NATIONALITIES", "DEFAULT_NATIONALITIES", "UNKNOWN", "HasNationalities", "Nationality",
     # identity & guilds
     "User", "Session", "Guild", "GuildMember", "GuildRole", "guild_role_type", "ROLE_ORDER", "INVITABLE_ROLES",
     "GuildInvitation", "InvitationStatus", "invitation_status_type",
@@ -89,5 +89,8 @@ __all__ = [
     "UserBookRank",
     "ArtistComparison", "AlbumComparison", "MovieComparison", "GameComparison",
     "TelevisionShowComparison", "TelevisionSeasonComparison", "TelevisionEpisodeComparison",
+    "TelevisionShowEpisodeComparison",
     "BookComparison",
 ]
+
+from . import indexes  # noqa: E402,F401 — registers reverse-direction indexes on the tables above

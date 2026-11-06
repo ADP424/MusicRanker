@@ -4,18 +4,19 @@ from datetime import timedelta
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session as DbSession
 
 from ..api_models.music import AlbumIn, AlbumOut, AlbumPatch, NamedRef
 from ..authz import Capability
 from ..database import get_database
 from ..database_models import (
-    Album, AlbumArtist, AlbumLink, Artist, Game, Genre, Movie, TelevisionShow, UserAlbumRank,
+    Album, AlbumArtist, AlbumComparison, AlbumLink, Artist, Game, Genre, Movie, TelevisionShow, UserAlbumRank,
 )
 from ..deps import GuildContext, guild_ctx
 from ..guild_junction_helpers import link_guild_scoped
 from ..ranking import next_rank
+from .. import loading
 from .links import make_links_router
 
 router = APIRouter(prefix="/guilds/{guild_id}/albums", tags=["albums"])
@@ -38,7 +39,7 @@ _SOUNDTRACKS = {
 
 
 def _album(db: DbSession, ctx: GuildContext, aid: int) -> Album:
-    a = db.get(Album, aid)
+    a = loading.get(db, Album, aid, loading.ALBUM)
     if a is None or a.guild_id != ctx.guild_id:
         raise HTTPException(404, "Album not found")
     return a
@@ -58,13 +59,13 @@ def _out(a: Album) -> AlbumOut:
 
 
 @router.get("", response_model=list[AlbumOut])
-def list_albums(ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
-    rows = db.scalars(select(Album).where(Album.guild_id == ctx.guild_id).order_by(Album.name)).all()
+def list_albums(ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database, scope="function")):
+    rows = db.scalars(select(Album).where(Album.guild_id == ctx.guild_id).order_by(Album.name).options(*loading.ALBUM)).all()
     return [_out(a) for a in rows]
 
 
 @router.post("", response_model=AlbumOut, status_code=201)
-def create_album(body: AlbumIn, ctx: GuildContext = Depends(CREATE), db: DbSession = Depends(get_database)):
+def create_album(body: AlbumIn, ctx: GuildContext = Depends(CREATE), db: DbSession = Depends(get_database, scope="function")):
     data = body.model_dump()
     artist_ids = data.pop("artist_ids")
     album = Album(guild_id=ctx.guild_id, created_by_user_id=ctx.user_id,
@@ -81,13 +82,13 @@ def create_album(body: AlbumIn, ctx: GuildContext = Depends(CREATE), db: DbSessi
 
 
 @router.get("/{aid}", response_model=AlbumOut)
-def get_album(aid: int, ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+def get_album(aid: int, ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database, scope="function")):
     return _out(_album(db, ctx, aid))
 
 
 @router.patch("/{aid}", response_model=AlbumOut)
 def update_album(aid: int, body: AlbumPatch, ctx: GuildContext = Depends(EDIT),
-                 db: DbSession = Depends(get_database)):
+                 db: DbSession = Depends(get_database, scope="function")):
     album = _album(db, ctx, aid)
     data = body.model_dump(exclude_unset=True)
     if "runtime_seconds" in data:
@@ -99,7 +100,7 @@ def update_album(aid: int, body: AlbumPatch, ctx: GuildContext = Depends(EDIT),
 
 
 @router.get("/{aid}/impact")
-def delete_impact(aid: int, ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+def delete_impact(aid: int, ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database, scope="function")):
     _album(db, ctx, aid)
     return {"rankings_destroyed": db.scalar(
         select(func.count()).select_from(UserAlbumRank).where(UserAlbumRank.album_id == aid)
@@ -107,13 +108,13 @@ def delete_impact(aid: int, ctx: GuildContext = Depends(VIEW), db: DbSession = D
 
 
 @router.delete("/{aid}", status_code=204)
-def delete_album(aid: int, ctx: GuildContext = Depends(DELETE), db: DbSession = Depends(get_database)):
+def delete_album(aid: int, ctx: GuildContext = Depends(DELETE), db: DbSession = Depends(get_database, scope="function")):
     db.delete(_album(db, ctx, aid))
 
 
 @router.put("/{aid}/artists/{artist_id}", status_code=204)
 def link_artist(aid: int, artist_id: int, ctx: GuildContext = Depends(EDIT),
-                db: DbSession = Depends(get_database)):
+                db: DbSession = Depends(get_database, scope="function")):
     _album(db, ctx, aid)
     artist = db.get(Artist, artist_id)
     if artist is None or artist.guild_id != ctx.guild_id:
@@ -145,25 +146,29 @@ def _carry_ranks_to_artist(db: DbSession, guild_id: int, aid: int, artist_id: in
 
 @router.delete("/{aid}/artists/{artist_id}", status_code=204)
 def unlink_artist(aid: int, artist_id: int, ctx: GuildContext = Depends(EDIT),
-                  db: DbSession = Depends(get_database)):
+                  db: DbSession = Depends(get_database, scope="function")):
+    _album(db, ctx, aid)
     link = db.get(AlbumArtist, (aid, artist_id))
     if link:
         db.delete(link)
     # The album is no longer in this artist's ranked list, so every member's
     # (artist, album) rank row and every pairwise answer about it are meaningless.
-    for row in db.scalars(
-        select(UserAlbumRank).where(UserAlbumRank.artist_id == artist_id, UserAlbumRank.album_id == aid)
-    ).all():
-        db.delete(row)
+    db.execute(delete(UserAlbumRank).where(
+        UserAlbumRank.guild_id == ctx.guild_id, UserAlbumRank.artist_id == artist_id, UserAlbumRank.album_id == aid,
+    ))
+    db.execute(delete(AlbumComparison).where(
+        AlbumComparison.guild_id == ctx.guild_id, AlbumComparison.artist_id == artist_id,
+        or_(AlbumComparison.winner_id == aid, AlbumComparison.loser_id == aid),
+    ))
 
 
 @router.get("/{aid}/genres", response_model=list[dict])
-def album_genres(aid: int, ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+def album_genres(aid: int, ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database, scope="function")):
     return [{"id": g.id, "name": g.name} for g in sorted(_album(db, ctx, aid).genres, key=lambda g: g.name)]
 
 
 @router.put("/{aid}/genres/{gid}", status_code=204)
-def add_genre(aid: int, gid: int, ctx: GuildContext = Depends(EDIT), db: DbSession = Depends(get_database)):
+def add_genre(aid: int, gid: int, ctx: GuildContext = Depends(EDIT), db: DbSession = Depends(get_database, scope="function")):
     album = _album(db, ctx, aid)
     genre = db.get(Genre, gid)
     if genre is None or genre.guild_id != ctx.guild_id:
@@ -175,7 +180,7 @@ def add_genre(aid: int, gid: int, ctx: GuildContext = Depends(EDIT), db: DbSessi
 
 
 @router.delete("/{aid}/genres/{gid}", status_code=204)
-def remove_genre(aid: int, gid: int, ctx: GuildContext = Depends(EDIT), db: DbSession = Depends(get_database)):
+def remove_genre(aid: int, gid: int, ctx: GuildContext = Depends(EDIT), db: DbSession = Depends(get_database, scope="function")):
     album = _album(db, ctx, aid)
     genre = db.get(Genre, gid)
     if genre is not None and genre in album.genres:
@@ -185,7 +190,7 @@ def remove_genre(aid: int, gid: int, ctx: GuildContext = Depends(EDIT), db: DbSe
 # ── soundtracks: the movies / games / TV shows this album scores ─────────────
 @router.put("/{aid}/soundtracks/{kind}/{target_id}", status_code=204)
 def link_soundtrack(aid: int, kind: SoundtrackKind, target_id: int, ctx: GuildContext = Depends(EDIT),
-                    db: DbSession = Depends(get_database)):
+                    db: DbSession = Depends(get_database, scope="function")):
     album = _album(db, ctx, aid)
     model, rel = _SOUNDTRACKS[kind]
     target = db.get(model, target_id)
@@ -197,7 +202,7 @@ def link_soundtrack(aid: int, kind: SoundtrackKind, target_id: int, ctx: GuildCo
 
 @router.delete("/{aid}/soundtracks/{kind}/{target_id}", status_code=204)
 def unlink_soundtrack(aid: int, kind: SoundtrackKind, target_id: int, ctx: GuildContext = Depends(EDIT),
-                      db: DbSession = Depends(get_database)):
+                      db: DbSession = Depends(get_database, scope="function")):
     album = _album(db, ctx, aid)
     model, rel = _SOUNDTRACKS[kind]
     target = db.get(model, target_id)

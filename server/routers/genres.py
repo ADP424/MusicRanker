@@ -42,7 +42,7 @@ category_router = make_category_router(
 @router.patch("/{gid}/media-types", response_model=MusicGenreOut)
 def update_media_types(gid: int, body: GenreMediaTypesPatch,
                        ctx: GuildContext = Depends(guild_ctx(Capability.CATALOG_EDIT)),
-                       db: Session = Depends(get_database)):
+                       db: Session = Depends(get_database, scope="function")):
     """Cross-domain: toggle which media types a genre applies to. Not scoped
     to this router's own ``is_music`` flag — this is the one place all five
     flags are editable together. Still guild-scoped: `make_genre_router`'s own

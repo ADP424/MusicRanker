@@ -5,8 +5,16 @@ from .base import ORMSchema
 
 
 class IgdbLookupIn(ORMSchema):
+    title: str = ""  # or "igdb:1234"
+    year: int | None = None
+    igdb_id: int | None = None  # skip the search: this exact game
+
+
+class IgdbCandidateOut(ORMSchema):
+    igdb_id: int
     title: str
     year: int | None = None
+    cover_url: str | None = None
 
 
 class DbPersonMatchOut(ORMSchema):
@@ -49,6 +57,11 @@ class IgdbLookupOut(ORMSchema):
     title: str
     release_date: str | None = None
     summary: str | None = None
+    cover_url: str | None = None
+    # A game already in the catalog with this IGDB id (or the same title and year).
+    existing_game_id: int | None = None
+    # The other search results, best first (empty when looked up by id).
+    candidates: list[IgdbCandidateOut] = []
     people: list[IgdbPersonOut]
     genres: list[IgdbGenreOut]
     platforms: list[IgdbPlatformOut]
@@ -65,11 +78,16 @@ class IgdbImportPersonIn(ORMSchema):
 
 
 class IgdbImportIn(ORMSchema):
+    igdb_id: int | None = None
     title: str
     release_year: int
+    summary: str | None = None
+    cover_url: str | None = None
     people: list[IgdbImportPersonIn] = []
     genre_ids: list[int] = []
     platform_ids: list[int] = []
+    #: Also put the game at the bottom of the importing user's list.
+    add_to_list: bool = False
 
 
 class IgdbImportPersonResult(ORMSchema):
@@ -77,6 +95,23 @@ class IgdbImportPersonResult(ORMSchema):
     name: str
     nationality: str
     created: bool
+
+
+class IgdbCreditsIn(ORMSchema):
+    """Credits (and genres, platforms, any blank metadata) for a game already in the catalog."""
+
+    igdb_id: int | None = None
+    summary: str | None = None
+    cover_url: str | None = None
+    people: list[IgdbImportPersonIn] = []
+    genre_ids: list[int] = []
+    platform_ids: list[int] = []
+
+
+class IgdbCreditsOut(ORMSchema):
+    people_linked: int
+    created_people: list[IgdbImportPersonResult]
+    reused_people: list[IgdbImportPersonResult]
 
 
 class IgdbImportOut(ORMSchema):

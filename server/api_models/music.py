@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from urllib.parse import urlsplit
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from ..database_models.artist_band_role import BandRole
 from .base import ORMSchema
@@ -12,6 +13,19 @@ class LinkIn(BaseModel):
     label: str | None = None
     url: str
     position: int = 0
+
+    @field_validator("url")
+    @classmethod
+    def _web_url(cls, v: str) -> str:
+        """Only http(s): links are rendered as <a href>, and a `javascript:` URL
+        there is stored XSS. A bare host ("example.com/x") gets https:// added."""
+        v = v.strip()
+        if "://" not in v and not v.lower().startswith(("javascript:", "data:", "vbscript:")):
+            v = "https://" + v
+        parts = urlsplit(v)
+        if parts.scheme.lower() not in ("http", "https") or not parts.netloc:
+            raise ValueError("Links must be http:// or https:// web addresses")
+        return v
 
 
 class LinkOut(ORMSchema):
@@ -39,8 +53,8 @@ class AlbumRef(ORMSchema):
 class ArtistIn(BaseModel):
     name: str
     name_en: str | None = None
-    birth_nationality: str
-    core_nationality: str
+    birth_nationality: str = "Unknown"  # the other one is copied in when only one is given
+    core_nationality: str = "Unknown"
     primary_genre: int | None = None
     notes: str | None = None
 

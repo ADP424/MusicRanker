@@ -5,14 +5,19 @@ import { useGuildApi, useTmdbTvSeasonImport, useTmdbTvSeasonLookup } from "../ap
 import { rk } from "../api/keys";
 import type { CastRole, TelevisionSeason, TelevisionShow, TmdbTvImportPersonIn, TmdbTvSeasonLookup } from "../api/types";
 import { useCan } from "../guild/GuildProvider";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { CheckField, Field, Notice } from "./form/FormKit";
+import { EpisodeCrewReview, importSummary } from "./import/ImportExtras";
+import { ImportCheckRow, ImportDialog, ImportFooter, ImportSection, ImportTitle, plural } from "./import/ImportKit";
+import { TmdbPersonRow } from "./import/ImportPersonRow";
 import { BusyButton, LoadingState } from "./Spinner";
-import { TmdbPersonRow } from "./TmdbPersonRow";
 import { ACTOR_ROLES, autoCrewLabel, parentNote, personIn, seedResolutions, toRow } from "./tmdbTvShared";
 
 /**
  * Per-season TMDB import — the show dialog's review flow, one layer down.
  *
- * Offers everyone credited on every episode of the season. People already on
+ * Offers everyone credited on at least 80% of the season's episodes. People already on
  * the show come preselected (and say so); the rest are opt-in. With `season`
  * it merges into that existing season; without, it adds a new season to the
  * show. Either way the ticked episodes are made to exist in the season — ones
@@ -30,6 +35,7 @@ export function TmdbTelevisionSeasonImportDialog({
   onSuccess?: (seasonId: number) => void;
 }) {
   const nextNumber = Math.max(0, ...show.seasons.map((s) => s.season_number ?? 0)) + 1;
+  const [fullCast, setFullCast] = useState(false);
   const [title, setTitle] = useState(show.name);
   const [year, setYear] = useState(String(show.release_year));
   const [seasonNumber, setSeasonNumber] = useState(String(season?.season_number ?? nextNumber));
@@ -41,7 +47,7 @@ export function TmdbTelevisionSeasonImportDialog({
   const [roles, setRoles] = useState<Record<number, CastRole>>({});
   const [resolutions, setResolutions] = useState<Record<number, number | null>>({});
   const [episodesOn, setEpisodesOn] = useState<Set<number>>(new Set());
-  const [populateDown, setPopulateDown] = useState(false);
+  const [populateDown, setPopulateDown] = useState(true);
   const [updateFields, setUpdateFields] = useState(false);
   const [addToList, setAddToList] = useState(true);
 
@@ -94,12 +100,15 @@ export function TmdbTelevisionSeasonImportDialog({
         season_id: season?.id ?? null,
         update_season_fields: season ? updateFields : false,
         populate_down: populateDown,
+        full_episode_cast: fullCast,
         season: {
           name: s.name,
           name_en: null,
           season_number: s.season_number,
           release_year: s.release_year,
           notes: null,
+          overview: s.overview,
+          poster_url: s.poster_url,
           people: s.people
             .map((p, i) => (checked.has(i) ? personIn(p, roles[i] ?? p.suggested_role, resolutions) : null))
             .filter((x): x is TmdbTvImportPersonIn => x !== null),
@@ -108,6 +117,9 @@ export function TmdbTelevisionSeasonImportDialog({
             .map((e) => ({
               name: e.name,
               name_en: null,
+              episode_number: e.episode_number,
+              overview: e.overview,
+              still_url: e.still_url,
               runtime_minutes: e.runtime,
               release_year: e.release_year,
               notes: null,
@@ -123,6 +135,7 @@ export function TmdbTelevisionSeasonImportDialog({
             await api.put(`${base}/television/seasons/${result.season_id}/entry`, {});
             qc.invalidateQueries({ queryKey: rk(guildId, userId, "television", "shows", show.id, "seasons") });
           }
+          importSummary(s.name, result);
           onSuccess?.(result.season_id);
           onClose();
         },
@@ -130,7 +143,7 @@ export function TmdbTelevisionSeasonImportDialog({
       },
     );
   }, [
-    lookup, checked, roles, resolutions, episodesOn, populateDown, updateFields, show.id, season, importMut,
+    lookup, checked, roles, resolutions, episodesOn, populateDown, updateFields, show.id, season, importMut, fullCast,
     onClose, onSuccess, addToList, canRank, base, qc, guildId, userId,
   ]);
 
@@ -139,57 +152,41 @@ export function TmdbTelevisionSeasonImportDialog({
   const existingNames = new Set((season?.episodes ?? []).map((e) => e.name.trim().toLowerCase()));
 
   return (
-    <div className="modal tmdb-import-panel">
-      <h2>
-        {season ? `Import ${season.name} from TMDB` : "Import Season from TMDB"}
-        <span style={{ opacity: 0.6, fontWeight: "normal" }}> — {show.name}</span>
-      </h2>
-      {error && <p className="tip-error">{error}</p>}
-
-      <form className="tip-search" onSubmit={(e) => { e.preventDefault(); runLookup(); }}>
-        <label>
-          Show title
-          <input value={title} onChange={(e) => setTitle(e.target.value)} />
-        </label>
-        <label>
-          Year
-          <input value={year} onChange={(e) => setYear(e.target.value)} type="number" />
-        </label>
-        <label>
-          Season #
-          <input value={seasonNumber} onChange={(e) => setSeasonNumber(e.target.value)} type="number" min={0} required />
-        </label>
-        <BusyButton type="submit" busy={lookupMut.isPending} busyLabel={lookup ? "Reloading…" : "Looking up…"}>{lookup ? "Reload" : "Find season"}</BusyButton>
-        {!lookup && <button type="button" onClick={onClose}>Cancel</button>}
+    <ImportDialog title={`${season ? `Import ${season.name}` : "Import a season"} from TMDB · ${show.name}`} onClose={onClose} error={error} reviewing={!!lookup}>
+      <form className="grid items-end gap-3 sm:grid-cols-[1fr_7rem_6rem_auto]" onSubmit={(e) => { e.preventDefault(); e.stopPropagation(); runLookup(); }}>
+        <Field label="Show title"><Input value={title} onChange={(e) => setTitle(e.target.value)} /></Field>
+        <Field label="Year"><Input value={year} onChange={(e) => setYear(e.target.value)} type="number" /></Field>
+        <Field label="Season"><Input value={seasonNumber} onChange={(e) => setSeasonNumber(e.target.value)} type="number" min={0} required /></Field>
+        <BusyButton type="submit" variant={lookup ? "outline" : "default"} busy={lookupMut.isPending} busyLabel={lookup ? "Reloading…" : "Looking up…"}>
+          {lookup ? "Reload" : "Find season"}
+        </BusyButton>
       </form>
       {lookupMut.isPending && !lookup && <LoadingState label="Looking up the season on TMDB…" />}
-      {notFound && <p className="tip-warn">Couldn't find that season on TMDB — check the show title, year and season number.</p>}
+      {notFound && <Notice tone="warning">Couldn't find that season on TMDB. Check the show title, year and season number.</Notice>}
+      {!lookup && (
+        <div className="-mx-5 flex justify-end border-t px-5 py-3">
+          <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
+        </div>
+      )}
 
       {lookup && (
         <>
-          <div className="tip-movie-header">
-            <h3>
-              {lookup.season.name}
-              <span className="tip-runtime"> — {lookup.season.release_year} · {lookup.season.episode_count} episodes</span>
-            </h3>
-            {lookup.show_ambiguous && <span className="tip-warn">⚠ Multiple show matches — used most popular</span>}
-          </div>
+          <ImportTitle title={lookup.season.name}
+                       facts={`${lookup.season.release_year} · ${plural(lookup.season.episode_count, "episode")}`}
+                       ambiguous={lookup.show_ambiguous} />
           {lookup.show_name !== show.name && (
-            <p className="tip-warn">TMDB matched "{lookup.show_name}" — importing into "{show.name}".</p>
+            <Notice tone="warning">TMDB matched "{lookup.show_name}"; importing into "{show.name}".</Notice>
           )}
 
-          <section className="tip-section">
-            <div className="tip-section-head">
-              <h3>Season Cast &amp; Crew ({lookup.season.people.length} shown, {checked.size} selected)</h3>
-              <button type="button" onClick={() => setChecked(new Set(lookup.season.people.map((_, i) => i)))}>Check All</button>
-              <button type="button" onClick={() => setChecked(new Set())}>Uncheck All</button>
-            </div>
-            <p className="meta">
-              Everyone credited on all {lookup.season.episodes_counted} episodes of this season. People already
-              on the show are preselected.
-            </p>
-            {lookup.season.people.length === 0 && <p className="meta">Nobody is credited on every episode of this season.</p>}
-            <div className="tip-people-list">
+          <ImportSection
+            title="Season cast & crew"
+            count={`${checked.size} of ${lookup.season.people.length} selected`}
+            onAll={() => setChecked(new Set(lookup.season.people.map((_, i) => i)))}
+            onNone={() => setChecked(new Set())}
+            hint={`Everyone on at least 80% of this season's ${lookup.season.episodes_counted} episodes. People already on the show are preselected.`}
+          >
+            {lookup.season.people.length === 0 && <p className="text-sm text-muted-foreground">Nobody is credited on most of this season's episodes.</p>}
+            <div className="grid gap-1.5">
               {lookup.season.people.map((p, i) => (
                 <TmdbPersonRow
                   key={`${p.tmdb_id}-${p.suggested_role}-${i}`}
@@ -203,7 +200,7 @@ export function TmdbTelevisionSeasonImportDialog({
                   onToggle={() =>
                     setChecked((prev) => {
                       const next = new Set(prev);
-                      next.has(i) ? next.delete(i) : next.add(i);
+                      if (next.has(i)) next.delete(i); else next.add(i);
                       return next;
                     })
                   }
@@ -212,72 +209,65 @@ export function TmdbTelevisionSeasonImportDialog({
                 />
               ))}
             </div>
-            <label className={`chip${populateDown ? " chip-active" : ""}`} style={{ cursor: "pointer" }}>
-              <input type="checkbox" checked={populateDown} onChange={(e) => setPopulateDown(e.target.checked)} />
-              Populate down: also attach this season's people to every one of its episodes
-            </label>
-            {season && (
-              <label className={`chip${updateFields ? " chip-active" : ""}`} style={{ cursor: "pointer" }}>
-                <input type="checkbox" checked={updateFields} onChange={(e) => setUpdateFields(e.target.checked)} />
-                Also overwrite name / number / year from TMDB
-              </label>
-            )}
-          </section>
-
-          <section className="tip-section">
-            <div className="tip-section-head">
-              <h3>Episodes ({lookup.season.episodes.length} found, {episodesOn.size} selected)</h3>
-              <button type="button" onClick={() => setEpisodesOn(new Set(lookup.season.episodes.map((e) => e.episode_number)))}>Check All</button>
-              <button type="button" onClick={() => setEpisodesOn(new Set())}>Uncheck All</button>
+            <div className="mt-1 grid gap-2">
+              <CheckField checked={populateDown} onChange={setPopulateDown}>
+                Populate down: also attach this season's people to every one of its episodes
+              </CheckField>
+              {season && (
+                <CheckField checked={updateFields} onChange={setUpdateFields}>Also overwrite name, number and year from TMDB</CheckField>
+              )}
             </div>
-            <p className="meta">
-              Ticked episodes already in this season (same title) are left as they are; the rest are created
-              with their director and composer.
-            </p>
-            {lookup.season.episodes.map((e) => {
-              const on = episodesOn.has(e.episode_number);
-              const exists = existingNames.has(e.name.trim().toLowerCase());
-              return (
-                <div key={e.episode_number} className={`tip-row${on ? " tip-row--checked" : ""}`}>
-                  <label className="tip-check">
-                    <input
-                      type="checkbox"
-                      checked={on}
-                      onChange={() =>
-                        setEpisodesOn((prev) => {
-                          const next = new Set(prev);
-                          next.has(e.episode_number) ? next.delete(e.episode_number) : next.add(e.episode_number);
-                          return next;
-                        })
-                      }
-                    />
-                  </label>
-                  <div className="tip-body">
-                    <div className="tip-main">
-                      <strong className="tip-name">E{e.episode_number} — {e.name}</strong>
-                      <span className="tip-desc">{e.release_year} · {e.runtime} min{exists ? " · already in this season" : ""}</span>
-                    </div>
-                    <div className="tip-credits">{autoCrewLabel(e.people)}</div>
-                  </div>
-                </div>
-              );
-            })}
-          </section>
+          </ImportSection>
 
-          <footer className="tip-footer">
-            {!season && canRank && (
-              <label className="checkbox-label tip-add-to-list">
-                <input type="checkbox" checked={addToList} onChange={(e) => setAddToList(e.target.checked)} />
-                Add to my list
-              </label>
-            )}
-            <button type="button" onClick={onClose} disabled={importing}>Cancel</button>
-            <BusyButton type="button" className="tip-primary" busy={importing} busyLabel="Importing…" onClick={handleImport}>
-              Import {checked.size} credit{checked.size !== 1 ? "s" : ""} + {episodesOn.size} episode{episodesOn.size !== 1 ? "s" : ""}
-            </BusyButton>
-          </footer>
+          <ImportSection
+            title="Episodes"
+            count={`${episodesOn.size} of ${lookup.season.episodes.length} selected`}
+            onAll={() => setEpisodesOn(new Set(lookup.season.episodes.map((e) => e.episode_number)))}
+            onNone={() => setEpisodesOn(new Set())}
+            hint="Ticked episodes already in this season (same title) are left as they are; the rest are created with their director and composer."
+          >
+            <CheckField checked={fullCast} onChange={setFullCast}>
+              Import the full cast of every ticked episode
+              <span className="block text-xs text-muted-foreground">
+                Guest stars and all, including on episodes already here. One TMDB call per episode.
+              </span>
+            </CheckField>
+            <div className="grid gap-1.5">
+              {lookup.season.episodes.map((e) => {
+                const exists = existingNames.has(e.name.trim().toLowerCase());
+                return (
+                  <ImportCheckRow
+                    key={e.episode_number}
+                    checked={episodesOn.has(e.episode_number)}
+                    onToggle={() =>
+                      setEpisodesOn((prev) => {
+                        const next = new Set(prev);
+                        if (next.has(e.episode_number)) next.delete(e.episode_number); else next.add(e.episode_number);
+                        return next;
+                      })
+                    }
+                    title={`E${e.episode_number} · ${e.name}`}
+                    detail={`${e.release_year} · ${e.runtime} min${exists ? " · already in this season" : ""}`}
+                    sub={autoCrewLabel(e.people)}
+                  />
+                );
+              })}
+            </div>
+          </ImportSection>
+
+          <EpisodeCrewReview episodes={lookup.season.episodes.filter((e) => episodesOn.has(e.episode_number))}
+                             resolutions={resolutions}
+                             onResolve={(id, pid) => setResolutions((prev) => ({ ...prev, [id]: pid }))} />
+
+          <ImportFooter
+            addToList={!season && canRank ? { checked: addToList, onChange: setAddToList } : null}
+            onCancel={onClose}
+            importing={importing}
+            onImport={handleImport}
+            label={`Import ${plural(checked.size, "credit")}, ${plural(episodesOn.size, "episode")}`}
+          />
         </>
       )}
-    </div>
+    </ImportDialog>
   );
 }

@@ -1,6 +1,6 @@
 """Game-centric scan for missing developer links, via IGDB.
 
-The game counterpart of `tmdb_scan.py`, much smaller because IGDB's credit
+The game counterpart of `tmdb_person_scan.py`, much smaller because IGDB's credit
 data is company-level only: there is no per-person cast or crew to offer (see
 `igdb_import.py`), so this scan finds *developer studios* already in the
 catalogue as people but not yet linked to games IGDB says they developed.
@@ -19,7 +19,6 @@ that name corroborates them.
 
 from __future__ import annotations
 
-import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -31,14 +30,15 @@ from .igdb_client import TTL_SEARCH, IgdbClient, get_sidecar
 from .normalize import norm
 from .scan_common import (
     Candidate,
-    JobRegistry,
     ScanJob,
+    ScanResult,
     ScanStats,
     Unresolved,
     fetch_all,
     identify,
     index_people,
-    run_job,
+    register_scan,
+    remember_ids,
     sort_candidates,
 )
 
@@ -69,12 +69,14 @@ class LGame:
     name: str
     name_en: Optional[str]
     release_year: Optional[int]
+    igdb_id: Optional[int] = None
 
 
 def _load_db(db, guild_id: int):
     games = [
         LGame(*r)
-        for r in db.query(Game.id, Game.name, Game.name_en, Game.release_year).filter(Game.guild_id == guild_id)
+        for r in db.query(Game.id, Game.name, Game.name_en, Game.release_year, Game.igdb_id)
+        .filter(Game.guild_id == guild_id)
     ]
     people = [
         (r[0], r[1], r[2]) for r in db.query(Person.id, Person.name, Person.name_en).filter(Person.guild_id == guild_id)
@@ -119,7 +121,10 @@ def _companies(r: dict) -> list[tuple[int, str, bool]]:
 def _resolve(client: IgdbClient, g: LGame, linked: set[str], *, allow_network: bool) -> Optional[dict]:
     """`linked` is the normalised names of people already linked to `g`: when
     several IGDB games fit the title and year, the one crediting the most of
-    them wins."""
+    them wins. A stored IGDB id skips the search."""
+    if g.igdb_id:
+        data = client.post("games", f"{_FIELDS} where id = {g.igdb_id};", ttl=TTL_SEARCH, allow_network=allow_network)
+        return data[0] if data else None
     scores: dict[int, tuple] = {}
     results: dict[int, dict] = {}
     wanted = {norm(n) for n in (g.name, g.name_en) if n}
@@ -212,78 +217,78 @@ def _match(games, people, links, index, by_norm, scope, suppressed) -> list[Cand
 
 
 # ──────────────────────────────────────────────────────────────
-#  Entry point for BackgroundTasks
+#  The job
 # ──────────────────────────────────────────────────────────────
-REGISTRY = JobRegistry()
+NAME = "igdb"
 
 
-def run_scan(job_id: str, guild_id: int, game_ids: Optional[list[int]], force_refresh: bool) -> None:
-    """See `scan_common.run_job`; `database.SessionLocal` is looked up at call
-    time for the reason given in `tmdb_scan.run_scan`."""
+def run_scan(
+    job: ScanJob, guild_id: int, game_ids: Optional[list[int]], _kind: Optional[str], force_refresh: bool
+) -> Optional[ScanResult]:
+    with database.SessionLocal() as db:
+        games, people, links = _load_db(db, guild_id)
 
-    def body(job: ScanJob) -> None:
-        with database.SessionLocal() as db:
-            games, people, links = _load_db(db, guild_id)
+    by_norm, pnorms = index_people(people, norm)
+    linked: dict[int, set[str]] = defaultdict(set)
+    linked_devs: dict[int, set[str]] = defaultdict(set)
+    for pid, gid, role in links:
+        linked[gid] |= pnorms[pid]
+        if role is GameRole.developer:
+            linked_devs[gid] |= pnorms[pid]
 
-        by_norm, pnorms = index_people(people, norm)
-        linked: dict[int, set[str]] = defaultdict(set)
-        linked_devs: dict[int, set[str]] = defaultdict(set)
-        for pid, gid, role in links:
-            linked[gid] |= pnorms[pid]
-            if role is GameRole.developer:
-                linked_devs[gid] |= pnorms[pid]
+    all_ids = {g.id for g in games}
+    scope = (set(game_ids) & all_ids) if game_ids else all_ids
 
-        all_ids = {g.id for g in games}
-        scope = (set(game_ids) & all_ids) if game_ids else all_ids
+    sidecar = get_sidecar()
+    client = IgdbClient(sidecar, force_refresh=force_refresh)
+    index: dict[int, _Company] = {}
+    keep = set(by_norm)
+    unresolved: list[Unresolved] = []
+    resolved = 0
+    learned: dict[int, int] = {}  # game id -> IGDB id
 
-        sidecar = get_sidecar()
-        client = IgdbClient(sidecar, force_refresh=force_refresh)
-        index: dict[int, _Company] = {}
-        keep = set(by_norm)
-        unresolved: list[Unresolved] = []
-        resolved = 0
+    fetched = fetch_all(
+        job,
+        games,
+        lambda g: _resolve(client, g, linked[g.id], allow_network=g.id in scope),
+        lambda g: g.name,
+        WORKERS,
+    )
+    for g, r in fetched:
+        reason = None
+        if r is None:
+            reason = "IGDB has no game with this title and year"
+        elif len(linked_devs[g.id]) >= MISMATCH_MIN_LINKS and not (
+            linked_devs[g.id] & {norm(name) for _, name, _ in _companies(r)}
+        ):
+            reason = "IGDB's credits for it name none of its linked developers — probably the wrong game"
+        if reason:
+            if g.id in scope:
+                unresolved.append(Unresolved(GAME, g.id, g.name, g.release_year, reason))
+            continue
+        resolved += 1
+        learned[g.id] = r["id"]
+        _ingest(index, keep, g, r)
 
-        fetched = fetch_all(
-            job,
-            games,
-            lambda g: _resolve(client, g, linked[g.id], allow_network=g.id in scope),
-            lambda g: g.name,
-            WORKERS,
-        )
-        for g, r in fetched:
-            reason = None
-            if r is None:
-                reason = "IGDB has no game with this title and year"
-            elif len(linked_devs[g.id]) >= MISMATCH_MIN_LINKS and not (
-                linked_devs[g.id] & {norm(name) for _, name, _ in _companies(r)}
-            ):
-                reason = "IGDB's credits for it name none of its linked developers — probably the wrong game"
-            if reason:
-                if g.id in scope:
-                    unresolved.append(Unresolved(GAME, g.id, g.name, g.release_year, reason))
-                continue
-            resolved += 1
-            _ingest(index, keep, g, r)
+    if job.cancel.is_set():
+        return None
 
-        if job.cancel.is_set():
-            return
+    job.mark(phase="matching")
+    candidates = _match(games, people, links, index, by_norm, scope, sidecar.scoped_rejections([SCOPE]))
+    studios = {c.person_id: c.source_person_id for c in candidates if c.match == "verified"}
+    remember_ids(guild_id, [(Game, "igdb_id", learned), (Person, "igdb_id", studios)])
+    return ScanResult(
+        candidates=candidates,
+        unresolved=unresolved,
+        stats=ScanStats(
+            items_total=len(games),
+            items_in_scope=len(scope),
+            items_resolved=resolved,
+            items_unresolved=len(unresolved),
+            network_calls=client.network_calls,
+            cache_hits=client.cache_hits,
+        ),
+    )
 
-        job.mark(phase="matching")
-        candidates = _match(games, people, links, index, by_norm, scope, sidecar.scoped_rejections([SCOPE]))
-        job.mark(
-            status="done",
-            phase="finished",
-            candidates=candidates,
-            unresolved=unresolved,
-            finished_at=time.time(),
-            stats=ScanStats(
-                items_total=len(games),
-                items_in_scope=len(scope),
-                items_resolved=resolved,
-                items_unresolved=len(unresolved),
-                network_calls=client.network_calls,
-                cache_hits=client.cache_hits,
-            ),
-        )
 
-    run_job(REGISTRY, job_id, guild_id, body)
+register_scan(NAME, run_scan)

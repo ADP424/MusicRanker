@@ -4,7 +4,8 @@ member's personal ranking (defaults to the caller).
 
 Game score formula
 -------------------
-Score = 1 / position (1-based, per the viewing member's own ranking).
+Score = percentile of the position in the viewing member's own ranking,
+(n - position + 0.5) / n: 0.95 for #1 of 10, 0.05 for #10 (see stats_common.percentile).
 Person score = mean of scores of all their (ranked) games.
 
 Differences from movie stats
@@ -26,12 +27,13 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
-from sqlalchemy.orm import Session as DbSession
+from sqlalchemy.orm import Session as DbSession, selectinload
 
 from ..authz import Capability
 from ..database import get_database
 from ..database_models import Game, GamePerson, GamePlatform, Genre, GuildMember, Person, UserGameRank
 from ..database_models.game_credit import GameRole
+from ..stats_common import add_all_route, percentile, session_cached
 from ..deps import GuildContext, guild_ctx
 
 router = APIRouter(prefix="/guilds/{guild_id}/game-stats", tags=["game-stats"])
@@ -49,6 +51,7 @@ def _target_user(db: DbSession, ctx: GuildContext, user_id: int | None) -> int:
 # ---------------------------------------------------------------------------
 # Shared data loader
 # ---------------------------------------------------------------------------
+@session_cached
 def _load(db: DbSession, ctx: GuildContext, uid: int):
     """
     Returns:
@@ -65,10 +68,10 @@ def _load(db: DbSession, ctx: GuildContext, uid: int):
     ).all())
     game_ids = [r.game_id for r in rank_rows]
     game_by_id: dict[int, Game] = {g.id: g for g in db.scalars(
-        select(Game).where(Game.id.in_(game_ids))
+        select(Game).where(Game.id.in_(game_ids)).options(selectinload(Game.genres), selectinload(Game.platforms))
     ).all()} if game_ids else {}
     games = [game_by_id[gid] for gid in game_ids if gid in game_by_id]
-    game_score: dict[int, float] = {g.id: 1.0 / pos for g, pos in zip(games, range(1, len(games) + 1))}
+    game_score: dict[int, float] = {g.id: percentile(pos, len(games)) for pos, g in enumerate(games, 1)}
     hours_by_game: dict[int, float | None] = {
         r.game_id: float(r.hours_played) if r.hours_played is not None else None for r in rank_rows
     }
@@ -209,7 +212,7 @@ def _taxonomy_rows(
 # Endpoints
 # ---------------------------------------------------------------------------
 @router.get("/summary")
-def summary(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+def summary(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database, scope="function")):
     uid = _target_user(db, ctx, user_id)
     games, game_score, hours_by_game, person_games, person_by_id = _load(db, ctx, uid)
 
@@ -280,7 +283,7 @@ def summary(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW)
 
 
 @router.get("/by-year")
-def by_year(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+def by_year(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database, scope="function")):
     uid = _target_user(db, ctx, user_id)
     games, game_score, *_ = _load(db, ctx, uid)
     rows = _group_stats(games, key_fn=lambda g: g.release_year, score_fn=lambda g: game_score[g.id])
@@ -291,7 +294,7 @@ def by_year(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW)
 
 
 @router.get("/by-decade")
-def by_decade(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+def by_decade(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database, scope="function")):
     uid = _target_user(db, ctx, user_id)
     games, game_score, *_ = _load(db, ctx, uid)
     rows = _group_stats(games, key_fn=lambda g: _decade(g.release_year), score_fn=lambda g: game_score[g.id])
@@ -303,7 +306,7 @@ def by_decade(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIE
 
 @router.get("/by-nationality")
 def by_nationality(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW),
-                   db: DbSession = Depends(get_database)):
+                   db: DbSession = Depends(get_database, scope="function")):
     uid = _target_user(db, ctx, user_id)
     games, game_score, _, _, person_by_id = _load(db, ctx, uid)
     game_director = _directors(db, games, person_by_id)
@@ -323,10 +326,12 @@ def by_nationality(user_id: int | None = Query(None), ctx: GuildContext = Depend
 
 
 @router.get("/by-genre")
-def by_genre(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+def by_genre(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database, scope="function")):
     uid = _target_user(db, ctx, user_id)
     games, game_score, hours_by_game, *_ = _load(db, ctx, uid)
-    genres = list(db.scalars(select(Genre).where(Genre.guild_id == ctx.guild_id, Genre.is_game.is_(True))).all())
+    genres = list(db.scalars(
+        select(Genre).where(Genre.guild_id == ctx.guild_id, Genre.is_game.is_(True)).options(selectinload(Genre.parents))
+    ).all())
     built = _taxonomy_rows(
         games, game_score, hours_by_game, genres,
         member_fn=lambda g: g.genres, id_key="genre_id", name_key="genre_name", count_key="game_count",
@@ -335,10 +340,12 @@ def by_genre(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW
 
 
 @router.get("/by-platform")
-def by_platform(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+def by_platform(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database, scope="function")):
     uid = _target_user(db, ctx, user_id)
     games, game_score, hours_by_game, *_ = _load(db, ctx, uid)
-    platforms = list(db.scalars(select(GamePlatform).where(GamePlatform.guild_id == ctx.guild_id)).all())
+    platforms = list(db.scalars(
+        select(GamePlatform).where(GamePlatform.guild_id == ctx.guild_id).options(selectinload(GamePlatform.parents))
+    ).all())
     built = _taxonomy_rows(
         games, game_score, hours_by_game, platforms,
         member_fn=lambda g: g.platforms, id_key="platform_id", name_key="platform_name", count_key="game_count",
@@ -347,7 +354,7 @@ def by_platform(user_id: int | None = Query(None), ctx: GuildContext = Depends(V
 
 
 @router.get("/scatter")
-def scatter(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+def scatter(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database, scope="function")):
     uid = _target_user(db, ctx, user_id)
     games, game_score, hours_by_game, person_games, person_by_id = _load(db, ctx, uid)
 
@@ -375,7 +382,7 @@ def scatter(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW)
 
 @router.get("/person-detail/{pid}")
 def person_detail(pid: int, user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW),
-                  db: DbSession = Depends(get_database)):
+                  db: DbSession = Depends(get_database, scope="function")):
     uid = _target_user(db, ctx, user_id)
     _, game_score, hours_by_game, person_games, person_by_id = _load(db, ctx, uid)
     p = person_by_id.get(pid) or db.get(Person, pid)
@@ -412,3 +419,14 @@ def person_detail(pid: int, user_id: int | None = Query(None), ctx: GuildContext
         "collaborators": collaborator_names,
         "avg_game_score": (round(mean(s for _, s in pairs), 6) if pairs else None),
     }
+
+
+add_all_route(router, VIEW, {
+    "summary": summary,
+    "by_year": by_year,
+    "by_decade": by_decade,
+    "by_nationality": by_nationality,
+    "by_genre": by_genre,
+    "by_platform": by_platform,
+    "scatter": scatter,
+})

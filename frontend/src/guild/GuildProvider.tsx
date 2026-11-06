@@ -32,7 +32,7 @@ export function GuildProvider({ children }: { children: React.ReactNode }) {
   const { guildId } = useParams<{ guildId: string }>();
   const { data: guilds, isLoading, isError } = useGuilds();
   if (isLoading) return <LoadingState label="Loading guild…" />;
-  if (isError) return <p className="err" style={{ padding: "2rem" }}>Couldn't load your guilds. <Navigate to="/guilds" replace /></p>;
+  if (isError) return <p className="p-8 text-sm text-destructive">Couldn't load your guilds. <Navigate to="/guilds" replace /></p>;
   const guild = guilds?.find((g) => g.id === Number(guildId));
   if (!guild) return <Navigate to="/guilds" replace />;
   return <Ctx.Provider value={guild}>{children}</Ctx.Provider>;

@@ -1,5 +1,11 @@
-import { ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ArrowDown, ArrowLeftRight, ArrowUp, CircleCheck, Search, TriangleAlert, X } from "lucide-react";
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { cn } from "@/lib/utils";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { FilterChip, FormDialog, Notice } from "../components/form/FormKit";
 import { BusyButton, LoadingState, Spinner } from "../components/Spinner";
 import { useGuildApi } from "../api/hooks";
 import type { Comparison, ComparisonIn } from "../api/types";
@@ -34,29 +40,31 @@ interface Props {
 function OrderDiff({ previous, next, byId }: { previous: number[]; next: number[]; byId: Map<number, RankItem> }) {
   const oldIdx = useMemo(() => new Map(previous.map((id, i) => [id, i])), [previous]);
   return (
-    <div className="rank-result">
+    <ol className="divide-y rounded-md border text-sm">
       {next.map((id, i) => {
         const item = byId.get(id);
         const before = oldIdx.get(id);
         const delta = before === undefined ? 0 : before - i;
         return (
-          <div className="rank-result-row" key={id}>
-            <span className="pos">#{i + 1}</span>
-            <span className="name">
+          <li className="grid grid-cols-[3rem_minmax(0,1fr)_3.5rem] items-center gap-2 px-3 py-1.5" key={id}>
+            <span className="text-muted-foreground tabular-nums">#{i + 1}</span>
+            <span className="truncate font-medium">
               {item?.label ?? `(removed #${id})`}
-              {item?.sublabel && <span style={{ opacity: 0.6 }}> ({item.sublabel})</span>}
+              {item?.sublabel && <span className="font-normal text-muted-foreground"> ({item.sublabel})</span>}
             </span>
-            {delta > 0 ? (
-              <span className="rank-up">▲ {delta}</span>
-            ) : delta < 0 ? (
-              <span className="rank-down">▼ {-delta}</span>
-            ) : (
-              <span className="rank-same">—</span>
-            )}
-          </div>
+            <span className="flex items-center justify-end gap-0.5 text-xs tabular-nums">
+              {delta > 0 ? (
+                <span className="flex items-center gap-0.5 text-success"><ArrowUp className="size-3" /> {delta}<span className="sr-only"> up</span></span>
+              ) : delta < 0 ? (
+                <span className="flex items-center gap-0.5 text-destructive"><ArrowDown className="size-3" /> {-delta}<span className="sr-only"> down</span></span>
+              ) : (
+                <span className="text-muted-foreground">–</span>
+              )}
+            </span>
+          </li>
         );
       })}
-    </div>
+    </ol>
   );
 }
 
@@ -94,66 +102,81 @@ function AnswersPanel({
 
   if (!analysis.comparisons.length) {
     return (
-      <section style={{ marginTop: "2rem" }}>
-        <h2 className="rank-h2">Your answers</h2>
-        <p className="rank-empty">Nothing yet. Answer a question above and it'll be saved here.</p>
+      <section className="grid gap-2">
+        <h2>Your answers</h2>
+        <p className="text-sm text-muted-foreground">Nothing yet. Answer a question above and it'll be saved here.</p>
       </section>
     );
   }
 
   return (
-    <section style={{ marginTop: "2rem" }}>
-      <h2 className="rank-h2">Your answers ({analysis.comparisons.length})</h2>
-      <div className="search-bar">
-        <input
-          type="search"
-          placeholder="Filter answers…"
-          value={filter}
-          onChange={(e) => setFilter(e.target.value)}
-        />
+    <section className="grid gap-2">
+      <h2>Your answers <span className="font-normal text-muted-foreground">{analysis.comparisons.length}</span></h2>
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative min-w-48 flex-1">
+          <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
+          <Input type="search" className="pl-8" placeholder="Filter answers…" aria-label="Filter answers"
+                 value={filter} onChange={(e) => setFilter(e.target.value)} />
+        </div>
         {analysis.cycleCount > 0 && (
-          <button
-            className={`chip${onlyConflicts ? " chip-active" : ""}`}
-            onClick={() => setOnlyConflicts((v) => !v)}
-          >
-            ⚠ Contradictions
-          </button>
+          <FilterChip active={onlyConflicts} onClick={() => setOnlyConflicts((v) => !v)}>Contradictions</FilterChip>
         )}
-        <span className="search-count">
-          {rows.length} shown
-        </span>
+        <span className="text-sm text-muted-foreground">{rows.length} shown</span>
       </div>
 
-      <div className="rank-answers">
+      <ul className="divide-y rounded-lg border text-sm">
         {rows.map((c) => {
           const k = pairKey(c.winner_id, c.loser_id);
           const cyclic = analysis.cyclic.has(k);
           const overridden = analysis.overridden.has(k);
+          const winner = byId.get(c.winner_id)?.label ?? `#${c.winner_id}`;
+          const loser = byId.get(c.loser_id)?.label ?? `#${c.loser_id}`;
           return (
-            <div className={`rank-answer-row${cyclic ? " rank-answer-cyclic" : ""}`} key={k}>
-              <span className="rank-answer-side">{byId.get(c.winner_id)?.label ?? `#${c.winner_id}`}</span>
-              <span className="rank-gt" title="is preferred over">›</span>
-              <span className="rank-answer-side rank-answer-loser">
-                {byId.get(c.loser_id)?.label ?? `#${c.loser_id}`}
+            <li className={cn("flex flex-wrap items-center gap-x-2 gap-y-0.5 px-3 py-1", cyclic && "bg-warning/10")} key={k}>
+              <span className="min-w-0 truncate font-medium">{winner}</span>
+              <span className="text-muted-foreground" title="is preferred over">›</span>
+              <span className="min-w-0 truncate text-muted-foreground">{loser}</span>
+              {(overridden || cyclic) && (
+                <span className="flex items-center gap-1 text-xs"
+                      title={overridden ? "Part of a preference cycle; this answer is currently being overridden" : "Part of a preference cycle"}>
+                  <TriangleAlert className="size-3.5 text-warning" /> {overridden ? "overridden" : "in a cycle"}
+                </span>
+              )}
+              <span className="ml-auto flex">
+                <BusyButton variant="ghost" size="icon" className="size-7" title="Swap: the other one wins"
+                            aria-label={`Swap: ${loser} wins`} disabled={busy} busy={pendingKey === k} busyLabel={null} onClick={() => onSwap(c)}>
+                  <ArrowLeftRight />
+                </BusyButton>
+                <BusyButton variant="ghost" size="icon" className="size-7" title="Delete this answer"
+                            aria-label={`Delete the answer ${winner} over ${loser}`} disabled={busy} busy={pendingKey === k} busyLabel={null} onClick={() => onDelete(c)}>
+                  <X />
+                </BusyButton>
               </span>
-              <span className="rank-answer-flag">
-                {overridden ? (
-                  <span title="Part of a preference cycle — this answer is currently being overridden">⚠ overridden</span>
-                ) : cyclic ? (
-                  <span title="Part of a preference cycle">⚠ in a cycle</span>
-                ) : null}
-              </span>
-              <BusyButton className="icon" title="Swap: the other one wins" disabled={busy} busy={pendingKey === k} busyLabel={null} onClick={() => onSwap(c)}>
-                ⇄
-              </BusyButton>
-              <BusyButton className="icon" title="Delete this answer" disabled={busy} busy={pendingKey === k} busyLabel={null} onClick={() => onDelete(c)}>
-                ✕
-              </BusyButton>
-            </div>
+            </li>
           );
         })}
-      </div>
+      </ul>
     </section>
+  );
+}
+
+const KBD = "rounded border bg-muted px-1 font-mono text-[0.7rem]";
+
+/** One side of the question. */
+function ChoiceCard({ item, keys, disabled, onChoose }: { item: RankItem; keys: string; disabled: boolean; onChoose: () => void }) {
+  return (
+    <button
+      type="button"
+      data-slot="rank-card"
+      disabled={disabled}
+      onClick={onChoose}
+      className="flex min-h-36 min-w-0 cursor-pointer flex-col items-center justify-center gap-1 rounded-xl border bg-card p-5 text-center shadow-xs transition-colors outline-none hover:border-primary hover:bg-accent/50 focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:cursor-default disabled:opacity-60"
+    >
+      <span className="text-lg font-semibold break-words">{item.label}</span>
+      {item.sublabel && <span className="text-sm text-muted-foreground">{item.sublabel}</span>}
+      {item.meta && <span className="text-xs text-muted-foreground">{item.meta}</span>}
+      <kbd className={cn(KBD, "mt-2 hidden sm:inline")}>{keys}</kbd>
+    </button>
   );
 }
 
@@ -302,133 +325,102 @@ export function PairwiseRankPage({
   const estTotal = answered + analysis.remainingQuestions;
   const pairPct = analysis.totalPairs ? Math.round((analysis.determinedPairs / analysis.totalPairs) * 100) : 100;
 
+  const skipReset = skipped.size > 0 && (
+    <Button variant="link" className="h-auto p-0 text-xs" onClick={resetSkips}>
+      Reset {skipped.size} skip{skipped.size === 1 ? "" : "s"}
+    </Button>
+  );
+
   let questionBody: ReactNode;
   if (isLoading) {
     questionBody = <LoadingState label={`Loading ${nounPlural}…`} />;
   } else if (items.length < 2) {
-    questionBody = <p className="rank-empty">You need at least two {nounPlural} before there's anything to compare.</p>;
+    questionBody = <Notice>You need at least two {nounPlural} before there's anything to compare.</Notice>;
   } else if (analysis.complete) {
     questionBody = (
-      <p className="rank-empty">
-        ✔ Your answers fully determine the order of all {items.length} {nounPlural}. Nothing left to ask.
-      </p>
+      <Notice tone="success">
+        <span className="flex items-center gap-2">
+          <CircleCheck className="size-4 shrink-0 text-success" />
+          Your answers fully determine the order of all {items.length} {nounPlural}. Nothing left to ask.
+        </span>
+      </Notice>
     );
   } else if (blockedBySkips) {
-    questionBody = (
-      <p className="rank-empty">
-        Every remaining comparison has been skipped.{" "}
-        <button className="icon" onClick={resetSkips}>
-          Reset {skipped.size} skip{skipped.size === 1 ? "" : "s"}
-        </button>
-      </p>
-    );
+    questionBody = <Notice>Every remaining comparison has been skipped. {skipReset}</Notice>;
   } else if (question) {
-    const left = byId.get(question.a)!;
-    const right = byId.get(question.b)!;
     questionBody = (
-      <>
-        <p className="rank-question">
-          Which do you prefer?{" "}
-          <span className="meta">
-            (question {answered + 1} of ≈{estTotal}){busy && <> · <Spinner size="sm" label="Saving answer" /></>}
-          </span>
+      <div className="grid gap-3">
+        <p className="flex flex-wrap items-center gap-2">
+          <span className="font-medium">Which do you prefer?</span>
+          <span className="text-sm text-muted-foreground">Question {answered + 1} of about {estTotal}</span>
+          {busy && <Spinner size="sm" label="Saving answer" />}
         </p>
-        <div className="rank-cards">
-          <button className="rank-card" disabled={busy} onClick={() => answer(question.a, question.b)}>
-            <span className="rank-card-label">{left.label}</span>
-            {left.sublabel && <span className="rank-card-sub">{left.sublabel}</span>}
-            {left.meta && <span className="rank-card-meta">{left.meta}</span>}
-            <span className="rank-card-key">← / 1</span>
-          </button>
-          <span className="rank-vs">vs</span>
-          <button className="rank-card" disabled={busy} onClick={() => answer(question.b, question.a)}>
-            <span className="rank-card-label">{right.label}</span>
-            {right.sublabel && <span className="rank-card-sub">{right.sublabel}</span>}
-            {right.meta && <span className="rank-card-meta">{right.meta}</span>}
-            <span className="rank-card-key">→ / 2</span>
-          </button>
+        <div className="grid items-center gap-3 sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]">
+          <ChoiceCard item={byId.get(question.a)!} keys="← or 1" disabled={busy} onChoose={() => answer(question.a, question.b)} />
+          <span className="text-center text-sm text-muted-foreground">vs</span>
+          <ChoiceCard item={byId.get(question.b)!} keys="→ or 2" disabled={busy} onChoose={() => answer(question.b, question.a)} />
         </div>
-        <p className="rank-hint">
-          <kbd>←</kbd>/<kbd>→</kbd> choose · <kbd>S</kbd> skip ·{" "}
-          <button className="icon" onClick={skip} disabled={busy}>
-            Skip this pair
-          </button>
-          {skipped.size > 0 && (
-            <>
-              {" · "}
-              <button className="icon" onClick={resetSkips}>
-                reset {skipped.size} skip{skipped.size === 1 ? "" : "s"}
-              </button>
-            </>
-          )}
+        <p className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+          <span className="hidden sm:inline">Press <kbd className={KBD}>S</kbd> to skip</span>
+          <Button variant="link" className="h-auto p-0 text-xs" onClick={skip} disabled={busy}>Skip this pair</Button>
+          {skipReset}
         </p>
-      </>
+      </div>
     );
   }
 
   return (
-    <section className="rank-page">
+    <section className="grid gap-4">
       {tabs}
-      <header className="page-head">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <h1>{title}</h1>
-        <div style={{ display: "flex", gap: "0.5rem" }}>
-          <button className="rank-primary" disabled={!answered || busy} onClick={() => setPreview(true)}>
-            Preview suggested list
-          </button>
-          <button disabled={!answered || busy} onClick={() => setConfirmClear(true)}>
-            Clear all answers
-          </button>
+        <div className="flex gap-2">
+          <Button variant="outline" disabled={!answered || busy} onClick={() => setConfirmClear(true)}>Clear all answers</Button>
+          <Button disabled={!answered || busy} onClick={() => setPreview(true)}>Preview suggested list</Button>
         </div>
-      </header>
+      </div>
 
       {undoValid && session.undo && (
-        <div className="rank-banner">
-          <span>
-            List replaced — <strong>{session.undo.next.reduce((n, id, i) => (session.undo!.previous[i] === id ? n : n + 1), 0)}</strong>{" "}
-            {nounPlural} moved. Your answers are saved, so you can re-apply any time.
-          </span>
-          <span style={{ display: "flex", gap: "0.5rem" }}>
-            <button onClick={() => patch({ undo: null })}>Dismiss</button>
-            <BusyButton busy={pendingKey === "undo"} disabled={busy} onClick={undoOrder}>Undo</BusyButton>
-          </span>
-        </div>
+        <Notice tone="success">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span>
+              List replaced: <strong>{session.undo.next.reduce((n, id, i) => (session.undo!.previous[i] === id ? n : n + 1), 0)}</strong>{" "}
+              {nounPlural} moved. Your answers are saved, so you can re-apply any time.
+            </span>
+            <span className="flex gap-2">
+              <Button variant="ghost" size="sm" onClick={() => patch({ undo: null })}>Dismiss</Button>
+              <BusyButton variant="outline" size="sm" busy={pendingKey === "undo"} disabled={busy} onClick={undoOrder}>Undo</BusyButton>
+            </span>
+          </div>
+        </Notice>
       )}
 
-      <div className="rank-stats">
-        <span>
-          <strong>{answered}</strong> answered
-        </span>
-        <span>
-          {analysis.complete ? (
-            <strong>fully determined</strong>
-          ) : (
-            <>
-              <strong>≈{analysis.remainingQuestions}</strong> more for a fully-determined list
-            </>
-          )}
-        </span>
-        <span>
-          {analysis.determinedPairs.toLocaleString()} / {analysis.totalPairs.toLocaleString()} pairs ordered ({pairPct}%)
-        </span>
-        {answered > 0 && (
+      <div className="grid gap-1.5">
+        <div className="flex flex-wrap gap-x-4 gap-y-0.5 text-sm text-muted-foreground">
+          <span><strong className="text-foreground">{answered}</strong> answered</span>
           <span>
-            would move <strong>{analysis.movedCount}</strong> of {items.length}
+            {analysis.complete
+              ? <strong className="text-foreground">Fully determined</strong>
+              : <>About <strong className="text-foreground">{analysis.remainingQuestions}</strong> more for a fully determined list</>}
           </span>
-        )}
+          <span>{analysis.determinedPairs.toLocaleString()} of {analysis.totalPairs.toLocaleString()} pairs ordered ({pairPct}%)</span>
+          {answered > 0 && <span>Would move <strong className="text-foreground">{analysis.movedCount}</strong> of {items.length}</span>}
+        </div>
+        <div role="progressbar" aria-label="Ranking progress" aria-valuemin={0} aria-valuemax={100}
+             aria-valuenow={Math.round(analysis.progress * 100)} className="h-1.5 overflow-hidden rounded-full bg-muted">
+          <div className="h-full rounded-full bg-primary transition-[width]" style={{ width: `${analysis.progress * 100}%` }} />
+        </div>
       </div>
-      <progress className="rank-progress" value={analysis.progress} max={1} />
 
       {analysis.cycleCount > 0 && (
-        <div className="dup-warning">
-          <span>
-            {analysis.cycleCount} contradiction cycle{analysis.cycleCount === 1 ? "" : "s"} (e.g. A &gt; B &gt; C &gt; A).
-            Members are ordered by how many of their own cycle-mates they beat; the{" "}
-            {analysis.overridden.size} overridden answer{analysis.overridden.size === 1 ? "" : "s"} are flagged below.
-          </span>
-        </div>
+        <Notice tone="warning">
+          {analysis.cycleCount} contradiction cycle{analysis.cycleCount === 1 ? "" : "s"} (e.g. A &gt; B &gt; C &gt; A).
+          Members are ordered by how many of their own cycle-mates they beat; the{" "}
+          {analysis.overridden.size} overridden answer{analysis.overridden.size === 1 ? "" : "s"} are flagged below.
+        </Notice>
       )}
 
-      {error && <p className="err">{error}</p>}
+      {error && !preview && <Notice tone="error">{error}</Notice>}
 
       {questionBody}
 
@@ -442,24 +434,22 @@ export function PairwiseRankPage({
       />
 
       {preview && (
-        <div className="modal-backdrop" onClick={() => setPreview(false)}>
-          <div onClick={(e) => e.stopPropagation()}>
-            <div className="modal rank-preview">
-              <h2>Suggested order</h2>
-              <p className="meta">
-                Built from all {answered} answer{answered === 1 ? "" : "s"}.{" "}
-                <strong>{analysis.movedCount}</strong> of {items.length} {nounPlural} would move.
-              </p>
-              <OrderDiff previous={ids} next={analysis.order} byId={byId} />
-              <footer>
-                <button onClick={() => setPreview(false)}>Cancel</button>
-                <BusyButton className="rank-primary" busy={pendingKey === "apply"} busyLabel="Replacing…" disabled={busy || !analysis.movedCount} onClick={applyOrder}>
-                  Replace current list
-                </BusyButton>
-              </footer>
-            </div>
-          </div>
-        </div>
+        <FormDialog
+          title="Suggested order"
+          onClose={() => setPreview(false)}
+          onSubmit={() => void applyOrder()}
+          busy={pendingKey === "apply"}
+          error={error}
+          submitDisabled={busy || !analysis.movedCount}
+          submitLabel="Replace current list"
+          busyLabel="Replacing…"
+        >
+          <p className="text-sm text-muted-foreground">
+            Built from all {answered} answer{answered === 1 ? "" : "s"}.{" "}
+            <strong className="text-foreground">{analysis.movedCount}</strong> of {items.length} {nounPlural} would move.
+          </p>
+          <OrderDiff previous={ids} next={analysis.order} byId={byId} />
+        </FormDialog>
       )}
 
       {confirmClear && (

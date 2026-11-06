@@ -332,7 +332,7 @@ function computeOrder(
       const q = [start];
       while (q.length) {
         const x = q.pop()!;
-        for (const y of g.get(x) ?? []) if (!seen.has(y)) (seen.add(y), q.push(y));
+        for (const y of g.get(x) ?? []) if (!seen.has(y)) { seen.add(y); q.push(y); }
       }
       return seen;
     };

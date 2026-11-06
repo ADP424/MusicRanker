@@ -86,6 +86,18 @@ class TelevisionEpisodeComparison(Comparison, Base):
     __table_args__ = _pair_fks("television_episodes")
 
 
+class TelevisionShowEpisodeComparison(Comparison, Base):
+    """Episode pairs from *different* seasons, for the show-wide episode order.
+    Same-season pairs stay in `television_episode_comparison`, where both orders
+    read them."""
+
+    __tablename__ = "television_show_episode_comparison"
+    show_id: Mapped[int] = mapped_column(ForeignKey("television_shows.id", ondelete="CASCADE"), primary_key=True)
+    winner_id: Mapped[int] = mapped_column(primary_key=True)
+    loser_id: Mapped[int] = mapped_column(primary_key=True)
+    __table_args__ = _pair_fks("television_episodes")
+
+
 class BookComparison(Comparison, Base):
     __tablename__ = "book_comparison"
     winner_id: Mapped[int] = mapped_column(primary_key=True)

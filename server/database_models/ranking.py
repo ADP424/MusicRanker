@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import CheckConstraint, ForeignKey, ForeignKeyConstraint, Index, Numeric, Text
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, ForeignKeyConstraint, Index, Numeric, Text, func
 from sqlalchemy.orm import Mapped, declared_attr, mapped_column
 
-from .base import Base  # ← was missing
+from .base import Base
+from .mixins import utcnow
 
 
 class UserRank:
@@ -34,6 +36,11 @@ class UserRank:
     @declared_attr
     def notes(cls) -> Mapped[str | None]:
         return mapped_column(Text)  # private to the user
+
+    @declared_attr
+    def added_at(cls) -> Mapped[datetime | None]:
+        # When it went into the list (the activity feed). NULL for rows older than the column.
+        return mapped_column(DateTime(timezone=True), default=utcnow, server_default=func.now())
 
 
 def _order_index(name: str, *extra: str) -> Index:
@@ -122,12 +129,15 @@ class UserTelevisionEpisodeRank(UserRank, Base):
     show_id: Mapped[int] = mapped_column(ForeignKey("television_shows.id", ondelete="CASCADE"), nullable=False)
     season_id: Mapped[int] = mapped_column(ForeignKey("television_seasons.id", ondelete="CASCADE"), nullable=False)
     watches: Mapped[int] = mapped_column(server_default="1")
+    # A second order over the same rows: the whole show's episodes, best first.
+    show_rank: Mapped[Decimal | None] = mapped_column(Numeric)
     __table_args__ = (
         CheckConstraint("watches >= 1", name="chk_user_tv_episode_watches_min"),
         ForeignKeyConstraint(
             ["episode_id", "guild_id"], ["television_episodes.id", "television_episodes.guild_id"], ondelete="CASCADE"
         ),
         _order_index("user_television_episode_ranks", "season_id"),
+        Index("idx_user_television_episode_ranks_show_order", "user_id", "guild_id", "show_id", "show_rank"),
     )
 
 

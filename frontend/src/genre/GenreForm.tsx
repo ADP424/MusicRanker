@@ -1,14 +1,17 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 
-import { api } from "../api/client";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { api, Batch } from "../api/client";
 import { useUpdateGenreMediaTypes } from "../api/hooks";
-import { gk } from "../api/keys";
 import type { Genre } from "../api/types";
-import { useGuild } from "../guild/GuildProvider";
-import { BusyButton, InlineBusy } from "../components/Spinner";
+import {
+  ChipCheck, countSummary, diffIds, Field, FormDialog, FormGroup, FormSection, Notice,
+} from "../components/form/FormKit";
+import { InlineBusy } from "../components/Spinner";
 import { GenreChooser } from "./GenreChooser";
-import type { GenreDomain, GenreLike } from "./config";
+import { type GenreDomain, type GenreLike, useGenreKey } from "./config";
 
 const MEDIA_TYPE_LABELS: Record<"is_music" | "is_movie" | "is_game" | "is_television" | "is_book", string> = {
   is_music: "Music",
@@ -25,10 +28,8 @@ export function GenreForm(props: {
 }) {
   const { domain, initial, onClose } = props;
   const editing = initial !== undefined;
-  const qc = useQueryClient();
-  const guild = useGuild();
   const apiBase = domain.useApiBase();
-  const [parentsOpen, setParentsOpen] = useState(false);
+  const key = useGenreKey(domain);
 
   const [f, setF] = useState({
     name:     initial?.name ?? "",
@@ -37,7 +38,7 @@ export function GenreForm(props: {
   });
 
   const { data: parents, isLoading: parentsLoading } = useQuery({
-    queryKey: [domain.key, apiBase, initial?.id, "parents"],
+    queryKey: key(initial?.id, "parents"),
     queryFn: () => api.get<GenreLike[]>(`${apiBase}/${initial!.id}/parents`),
     enabled: editing,
   });
@@ -87,137 +88,90 @@ export function GenreForm(props: {
         ...(!editing && domain.mediaTypeFlag ? mediaTypes : {}),
       };
 
-      const genre = editing
-        ? await api.patch<GenreLike>(`${apiBase}/${initial.id}`, body)
-        : await api.post<GenreLike>(apiBase, body);
+      const b = new Batch();
+      if (editing) b.patch(`${apiBase}/${initial.id}`, body);
+      else b.post(apiBase, body);
+      const ref = editing ? initial.id : Batch.ref(0);
 
-      const before = new Set((parents ?? []).map((p) => p.id));
-      for (const id of parentIds)
-        if (!before.has(id)) await api.put(`${apiBase}/${genre.id}/parents/${id}`);
-      for (const id of before)
-        if (!parentIds.has(id)) await api.delete(`${apiBase}/${genre.id}/parents/${id}`);
+      diffIds(b, `${apiBase}/${ref}`, "parents", (parents ?? []).map((p) => p.id), parentIds);
+      if (isRoot) diffIds(b, `${apiBase}/${ref}`, "categories", initial?.category_ids ?? [], categoryIds);
 
-      if (isRoot) {
-        const beforeCategories = new Set(initial?.category_ids ?? []);
-        for (const id of categoryIds)
-          if (!beforeCategories.has(id)) await api.put(`${apiBase}/${genre.id}/categories/${id}`);
-        for (const id of beforeCategories)
-          if (!categoryIds.has(id)) await api.delete(`${apiBase}/${genre.id}/categories/${id}`);
-      }
-
-      return genre;
+      return (await b.run())[0] as GenreLike;
     },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: [domain.key, apiBase] });
-      qc.invalidateQueries({ queryKey: gk(guild.id, domain.key) });
-      onClose();
-    },
+    meta: { errorToast: false },
+    onSuccess: () => onClose(),
   });
 
+  const toggleIn = (set: Set<number>, id: number, on: boolean) => {
+    const next = new Set(set);
+    if (on) next.add(id); else next.delete(id);
+    return next;
+  };
+
   return (
-    <dialog open className="modal">
-      <form onSubmit={(e) => { e.preventDefault(); save.mutate(); }}>
-        <h2>{editing ? "Edit" : "New"} {domain.heading}</h2>
+    <FormDialog
+      title={`${editing ? "Edit" : "New"} ${domain.heading.toLowerCase()}`}
+      onClose={onClose}
+      onSubmit={() => save.mutate()}
+      busy={save.isPending}
+      error={save.error}
+      submitDisabled={parentsLoading}
+      submitLabel={editing ? "Save" : "Create"}
+      busyLabel={editing ? "Saving…" : "Creating…"}
+    >
+      <Field label="Name">
+        <Input required autoFocus={!editing} value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} />
+      </Field>
+      <Field label="Synonyms" optional hint="Comma-separated; searches and imports match these too">
+        <Input value={f.synonyms} placeholder={domain.synonymPlaceholder}
+               onChange={(e) => setF({ ...f, synonyms: e.target.value })} />
+      </Field>
+      <Field label="Notes" optional>
+        <Textarea rows={3} value={f.notes} onChange={(e) => setF({ ...f, notes: e.target.value })} />
+      </Field>
 
-        <label>Name
-          <input required value={f.name}
-                 onChange={(e) => setF({ ...f, name: e.target.value })} />
-        </label>
+      <FormSection
+        title={`Parent ${domain.noun}`}
+        summary={parentsLoading ? <InlineBusy label="Loading…" /> : countSummary(parentIds.size)}
+      >
+        <GenreChooser domain={domain} selected={parentIds} onChange={setParentIds} excludeId={initial?.id} />
+      </FormSection>
 
-        <label>Synonyms <small>(comma‑separated)</small>
-          <input value={f.synonyms}
-                 onChange={(e) => setF({ ...f, synonyms: e.target.value })}
-                 placeholder={domain.synonymPlaceholder} />
-        </label>
+      {isRoot && categories.length > 0 && (
+        <FormGroup title="Categories">
+          <div className="flex flex-wrap gap-1.5">
+            {categories.map((c) => (
+              <ChipCheck key={c.id} checked={categoryIds.has(c.id)}
+                         onChange={(on) => setCategoryIds(toggleIn(categoryIds, c.id, on))}>
+                {c.name}
+              </ChipCheck>
+            ))}
+          </div>
+        </FormGroup>
+      )}
 
-        <label>Notes
-          <textarea rows={3} value={f.notes}
-                    onChange={(e) => setF({ ...f, notes: e.target.value })} />
-        </label>
-
-        <fieldset>
-          <legend
-            className="collapsible-legend"
-            onClick={() => setParentsOpen((o) => !o)}
-          >
-            Parent {domain.noun}
-            <span className="collapse-arrow">{parentsOpen ? "▲" : "▼"}</span>
-          </legend>
-          {parentsOpen && (
-            <GenreChooser
-              domain={domain}
-              selected={parentIds}
-              onChange={setParentIds}
-              excludeId={initial?.id}
-            />
+      {domain.mediaTypeFlag && (
+        <FormGroup title={<span className="flex items-center gap-2">Media types {updateMediaTypes.isPending && <InlineBusy />}</span>}>
+          <div className="flex flex-wrap gap-1.5">
+            {(Object.keys(MEDIA_TYPE_LABELS) as Array<keyof typeof MEDIA_TYPE_LABELS>).map((flag) => (
+              <ChipCheck
+                key={flag}
+                checked={mediaTypes[flag]}
+                onChange={(on) => {
+                  setMediaTypes({ ...mediaTypes, [flag]: on });
+                  // Editing: each toggle saves at once. Creating: it goes with the form.
+                  if (editing) updateMediaTypes.mutate({ id: initial.id, [flag]: on });
+                }}
+              >
+                {MEDIA_TYPE_LABELS[flag]}
+              </ChipCheck>
+            ))}
+          </div>
+          {editing && updateMediaTypes.isError && (
+            <Notice tone="error">{(updateMediaTypes.error as Error).message}</Notice>
           )}
-          {!parentsOpen && (
-            <span className="collapsed-summary" onClick={() => setParentsOpen(true)}>
-              {parentsLoading ? <InlineBusy label="Loading parents…" /> : parentIds.size > 0 ? `${parentIds.size} selected` : "None selected"}
-            </span>
-          )}
-        </fieldset>
-
-        {isRoot && categories.length > 0 && (
-          <fieldset>
-            <legend>Categories</legend>
-            <div className="chips">
-              {categories.map((c) => (
-                <label key={c.id} className="chip">
-                  <input
-                    type="checkbox"
-                    checked={categoryIds.has(c.id)}
-                    onChange={(e) => {
-                      const next = new Set(categoryIds);
-                      e.target.checked ? next.add(c.id) : next.delete(c.id);
-                      setCategoryIds(next);
-                    }}
-                  />
-                  {c.name}
-                </label>
-              ))}
-            </div>
-          </fieldset>
-        )}
-
-        {domain.mediaTypeFlag && (
-          <fieldset>
-            <legend className="inline">Media types {updateMediaTypes.isPending && <InlineBusy />}</legend>
-            <div className="chips">
-              {(Object.keys(MEDIA_TYPE_LABELS) as Array<keyof typeof MEDIA_TYPE_LABELS>).map((flag) => (
-                <label key={flag} className="chip">
-                  <input
-                    type="checkbox"
-                    checked={mediaTypes[flag]}
-                    onChange={(e) => {
-                      const next = { ...mediaTypes, [flag]: e.target.checked };
-                      setMediaTypes(next);
-                      // While editing, each toggle is its own immediate save;
-                      // while creating, the choice is just held in state and
-                      // sent along with the rest of the form on submit.
-                      if (editing) {
-                        updateMediaTypes.mutate({ id: initial.id, [flag]: e.target.checked });
-                      }
-                    }}
-                  />
-                  {MEDIA_TYPE_LABELS[flag]}
-                </label>
-              ))}
-            </div>
-            {editing && updateMediaTypes.isError && (
-              <p className="err">{(updateMediaTypes.error as Error).message}</p>
-            )}
-          </fieldset>
-        )}
-
-        <footer>
-          <button type="button" onClick={onClose} disabled={save.isPending}>Cancel</button>
-          <BusyButton type="submit" busy={save.isPending} busyLabel={editing ? "Saving…" : "Creating…"} disabled={parentsLoading}>
-            {editing ? "Save" : "Create"}
-          </BusyButton>
-        </footer>
-        {save.isError && <p className="err">{(save.error as Error).message}</p>}
-      </form>
-    </dialog>
+        </FormGroup>
+      )}
+    </FormDialog>
   );
 }

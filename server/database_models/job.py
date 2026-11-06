@@ -58,6 +58,12 @@ class Job(Base):
     result: Mapped[dict | None] = mapped_column(JSONB)
     error: Mapped[str | None] = mapped_column(Text)
 
+    # Claims so far; a job interrupted by a restart is re-queued until MAX_ATTEMPTS.
+    attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    # Touched by the worker while it runs; a running job whose heartbeat is
+    # stale lost its worker (see maintenance.reap_jobs).
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

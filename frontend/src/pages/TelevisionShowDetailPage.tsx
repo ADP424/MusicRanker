@@ -1,534 +1,212 @@
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useMutation } from "@tanstack/react-query";
+import { Download, ListOrdered, Pencil, Plus, RefreshCw, Scale, Trash2 } from "lucide-react";
+import { useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
+import { toast } from "sonner";
 
+import { Button } from "@/components/ui/button";
+import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { api } from "../api/client";
 import {
-  useEntryMutations, useGuildApi, useRankedTelevisionSeasons, useTelevisionGenres, useTelevisionSeasons,
-  useTelevisionShow, useTelevisionShowEntry, useUpdateTelevisionShowEntry,
+  useGuildApi, useRankedTelevisionSeasons, useTelevisionGenres, useTelevisionSeasons, useTelevisionShow,
 } from "../api/hooks";
-import { gk, rk } from "../api/keys";
-import type { Genre, TelevisionSeason, TelevisionShow } from "../api/types";
-import { TV_SHOW_ROLES } from "../api/types";
-import { CatalogList } from "../components/CatalogList";
+import { rk } from "../api/keys";
+import type { RankedTelevisionSeason, TelevisionSeason } from "../api/types";
+import { CAST_ROLE_LABELS, TV_SHOW_ROLES } from "../api/types";
+import { AddAllButton } from "../components/AddAllButton";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { ChildList } from "../components/detail/ChildList";
+import { DetailHeader, ExternalLinks, Facts, fmtMinutes, RefLinks, Section } from "../components/detail/DetailKit";
+import { MyEntrySection } from "../components/detail/MyEntrySection";
+import { PeopleSection } from "../components/detail/PeopleSection";
+import { TaxonomySection } from "../components/detail/TaxonomySection";
+import { GuildHolders } from "../components/GuildHolders";
 import { LinksSection } from "../components/LinksSection";
-import { MemberPicker } from "../components/MemberPicker";
-import { SortableList } from "../components/SortableList";
-import { BusyButton, InlineBusy, LoadingState } from "../components/Spinner";
+import { LoadFailed } from "../components/LoadFailed";
+import { MediaHero } from "../components/MediaHero";
+import { LoadingState, Spinner } from "../components/Spinner";
 import { TelevisionSeasonForm } from "../components/TelevisionSeasonForm";
 import { TelevisionShowForm } from "../components/TelevisionShowForm";
 import { TmdbTelevisionSeasonImportDialog } from "../components/TmdbTelevisionSeasonImportDialog";
-import { TvPeopleSection } from "../components/TvPeopleSection";
-import { GenreChooser } from "../genre/GenreChooser";
 import { TELEVISION_GENRES } from "../genre/config";
+import { GenreChooser } from "../genre/GenreChooser";
 import { useCan } from "../guild/GuildProvider";
-
-export function fmtRuntime(minutes: number) {
-  const h = Math.floor(minutes / 60);
-  const m = minutes % 60;
-  if (h > 0) return `${h}:${String(m).padStart(2, "0")}`;
-  return `${m}m`;
-}
-
-// ── Genres section ───────────────────────────────────────────────────────────
-
-function ShowGenresSection({ showId, show }: { showId: number; show: TelevisionShow }) {
-  const qc = useQueryClient();
-  const { guildId, base } = useGuildApi();
-  const canEdit = useCan("catalog_edit");
-  const [editing, setEditing] = useState(false);
-  const [confirmUnlink, setConfirmUnlink] = useState<Genre | null>(null);
-  const { data: allGenres = [] } = useTelevisionGenres();
-
-  const [genreIds, setGenreIds] = useState<Set<number>>(new Set());
-  useEffect(() => { setGenreIds(new Set(show.genre_ids)); }, [show.genre_ids]);
-
-  const genreMap = Object.fromEntries(allGenres.map((g) => [g.id, g]));
-  const showGenres = show.genre_ids.map((id) => genreMap[id]).filter(Boolean);
-
-  const addGenre = useMutation({
-    mutationFn: (gid: number) => api.put(`${base}/television/shows/${showId}/genres/${gid}`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: gk(guildId, "television") }),
-  });
-  const removeGenre = useMutation({
-    mutationFn: (gid: number) => api.delete(`${base}/television/shows/${showId}/genres/${gid}`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: gk(guildId, "television") }),
-  });
-
-  function handleChange(next: Set<number>) {
-    const prev = genreIds;
-    for (const id of next) if (!prev.has(id)) addGenre.mutate(id);
-    for (const id of prev) {
-      if (!next.has(id)) {
-        const g = genreMap[id];
-        if (g) { setConfirmUnlink(g); return; }
-      }
-    }
-    setGenreIds(next);
-  }
-
-  return (
-    <section style={{ marginBottom: "1.5rem" }}>
-      <header className="page-head" style={{ marginBottom: "0.5rem" }}>
-        <span className="inline">
-          <h2 style={{ margin: 0 }}>Genres</h2>
-          {(addGenre.isPending || removeGenre.isPending) && <InlineBusy label="Saving…" />}
-        </span>
-        {canEdit && (
-          <button style={{ fontSize: 12 }} onClick={() => setEditing((o) => !o)}>
-            {editing ? "Done" : "Edit"}
-          </button>
-        )}
-      </header>
-
-      {editing && (
-        <div style={{ marginBottom: "0.75rem" }}>
-          <GenreChooser domain={TELEVISION_GENRES} selected={genreIds} onChange={handleChange} />
-        </div>
-      )}
-
-      {showGenres.length > 0 ? (
-        <ul className="sortable plain-list">
-          {showGenres.map((g) => (
-            <li key={g.id} className="sortable-item">
-              <div className="row" style={{ gridTemplateColumns: "1fr" }}>
-                <Link className="name" to={`/g/${guildId}/television/genres/${g.id}`}>{g.name}</Link>
-              </div>
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <p style={{ opacity: 0.5, margin: "0.25rem 0 0" }}>No genres linked.</p>
-      )}
-
-      {confirmUnlink && (
-        <ConfirmDialog
-          message={`Remove genre "${confirmUnlink.name}" from this show?`}
-          busy={removeGenre.isPending}
-          onConfirm={() => {
-            const id = confirmUnlink.id;
-            setGenreIds((prev) => { const next = new Set(prev); next.delete(id); return next; });
-            removeGenre.mutate(id, { onSettled: () => setConfirmUnlink(null) });
-          }}
-          onCancel={() => setConfirmUnlink(null)}
-        />
-      )}
-    </section>
-  );
-}
-
-// ── My list section ──────────────────────────────────────────────────────────
-// Shows carry only personal notes — watch counts live on episodes, not the show.
-
-function MyShowListSection({ showId }: { showId: number }) {
-  const canRank = useCan("rank");
-  const { data: entry, isLoading } = useTelevisionShowEntry(showId);
-  const update = useUpdateTelevisionShowEntry(showId);
-  const entryMutations = useEntryMutations("television/shows");
-  const [editing, setEditing] = useState(false);
-  const [notes, setNotes] = useState("");
-  const [confirmRemove, setConfirmRemove] = useState(false);
-
-  useEffect(() => {
-    if (entry) setNotes(entry.notes ?? "");
-  }, [entry]);
-
-  if (!canRank) return null;
-  const saving = update.isPending || entryMutations.add.isPending || entryMutations.remove.isPending;
-
-  return (
-    <section style={{ marginBottom: "1.5rem" }}>
-      <header className="page-head" style={{ marginBottom: "0.5rem" }}>
-        <span className="inline">
-          <h2 style={{ margin: 0 }}>My List</h2>
-          {saving && <InlineBusy label="Saving…" />}
-        </span>
-        {entry && (
-          <button style={{ fontSize: 12 }} onClick={() => setEditing((o) => !o)}>
-            {editing ? "Done" : "Edit"}
-          </button>
-        )}
-      </header>
-
-      {isLoading ? (<LoadingState compact />) : !entry ? (
-        <p style={{ opacity: 0.5, margin: "0.25rem 0 0" }}>
-          Not in your list. <BusyButton busy={entryMutations.add.isPending} busyLabel="Adding…"
-                                        onClick={() => entryMutations.add.mutate(showId)}>+ Add to my list</BusyButton>
-        </p>
-      ) : editing ? (
-        <div className="detail-section-form">
-          <label>My notes
-            <textarea rows={3} value={notes} onChange={(e) => setNotes(e.target.value)} />
-          </label>
-          <div style={{ marginTop: "0.5rem", display: "flex", gap: "0.5rem" }}>
-            <BusyButton busy={update.isPending} busyLabel="Saving…"
-                        onClick={() => update.mutate({ notes: notes.trim() === "" ? null : notes })}>Save notes</BusyButton>
-            <button className="danger" onClick={() => setConfirmRemove(true)}>✕ Remove from my list</button>
-          </div>
-        </div>
-      ) : (
-        entry.notes
-          ? <div className="detail-tags"><span className="detail-label">My notes</span><span>{entry.notes}</span></div>
-          : <p style={{ opacity: 0.5, margin: "0.25rem 0 0" }}>No personal notes yet.</p>
-      )}
-
-      {confirmRemove && (
-        <ConfirmDialog
-          message="Remove this show from your list? Your personal notes for it will be lost. (Your season and episode rankings are separate and won't be affected.)"
-          confirmLabel="Remove"
-          busy={entryMutations.remove.isPending}
-          onConfirm={() => entryMutations.remove.mutate(showId, { onSettled: () => { setConfirmRemove(false); setEditing(false); } })}
-          onCancel={() => setConfirmRemove(false)}
-        />
-      )}
-    </section>
-  );
-}
-
-// ── Main page ──────────────────────────────────────────────────────────────────
+import { usePageTitle } from "../shell/pageTitle";
 
 type SeasonImpact = { rankings_destroyed: number; episodes_destroyed: number; episode_rankings_destroyed: number };
 
+/** People credited on a season or episode, in a line, each once. */
+export function peopleLine(persons: { id: number; name: string }[]) {
+  return [...new Map(persons.map((p) => [p.id, p.name])).values()].join(", ");
+}
+
 export function TelevisionShowDetailPage() {
-  const { id } = useParams<{ id: string }>();
-  const sid = Number(id);
-  const qc = useQueryClient();
+  const sid = Number(useParams<{ id: string }>().id);
   const { guildId, userId: me, base } = useGuildApi();
   const canEdit = useCan("catalog_edit");
   const canDelete = useCan("catalog_delete");
-
-  const [editing, setEditing] = useState<{ season: TelevisionSeason } | "new" | null>(null);
-  const [editingShow, setEditingShow] = useState(false);
-  const [importingSeason, setImportingSeason] = useState<{ season?: TelevisionSeason } | null>(null);
-  const [confirmDelete, setConfirmDelete] = useState<{ season: TelevisionSeason; impact: SeasonImpact } | null>(null);
-  const [confirmRemoveFromList, setConfirmRemoveFromList] = useState<TelevisionSeason | null>(null);
-  const [expandedIds, setExpandedIds] = useState<Set<number>>(new Set());
+  const [dialog, setDialog] = useState<
+    { kind: "show" } | { kind: "season"; season?: TelevisionSeason } | { kind: "import"; season?: TelevisionSeason } | null
+  >(null);
+  const [deleting, setDeleting] = useState<{ season: TelevisionSeason; impact: SeasonImpact } | null>(null);
   const [viewingUser, setViewingUser] = useState(me);
-  const [view, setView] = useState<"mine" | "catalog">("mine");
-  const [impactFor, setImpactFor] = useState<number | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
 
-  const { data: show, isLoading: showLoading, isError: showError } = useTelevisionShow(sid);
+  const { data: show, isLoading, isError, error, refetch } = useTelevisionShow(sid);
   const { data: ranked = [], isLoading: rankedLoading } = useRankedTelevisionSeasons(sid, viewingUser);
   const { data: catalog = [], isLoading: catalogLoading } = useTelevisionSeasons(sid);
-  const isMine = viewingUser === me;
+  const { data: genres = [] } = useTelevisionGenres();
+  const genreNames = useMemo(() => new Map(genres.map((g) => [g.id, g.name])), [genres]);
 
-  const rankKey = rk(guildId, me, "television", "shows", sid, "seasons", "ranked");
-  const invalidateMine = () => {
-    qc.invalidateQueries({ queryKey: gk(guildId, "television", "shows", sid, "seasons") });
-    qc.invalidateQueries({ queryKey: rk(guildId, me, "television", "shows", sid, "seasons") });
-  };
-
-  const moveSeason = useMutation({
-    mutationFn: (v: { seasonId: number; position: number }) =>
-      api.put(`${base}/television/seasons/${v.seasonId}/position`, { position: v.position }),
-    onSettled: () => qc.invalidateQueries({ queryKey: rk(guildId, me, "television", "shows", sid, "seasons") }),
+  const impact = useMutation({
+    mutationFn: (season: TelevisionSeason) => api.get<SeasonImpact>(`${base}/television/seasons/${season.id}/impact`),
+    meta: { invalidates: false },
+    onSuccess: (data, season) => setDeleting({ season, impact: data }),
   });
+  const remove = useMutation({ mutationFn: (id: number) => api.delete(`${base}/television/seasons/${id}`) });
 
-  const addEntry = useMutation({
-    mutationFn: (seasonId: number) => api.put(`${base}/television/seasons/${seasonId}/entry`, {}),
-    onSuccess: invalidateMine,
-  });
-
-  const removeEntry = useMutation({
-    mutationFn: (seasonId: number) => api.delete(`${base}/television/seasons/${seasonId}/entry`),
-    onSuccess: invalidateMine,
-  });
-
-  const remove = useMutation({
-    mutationFn: (seasonId: number) => api.delete(`${base}/television/seasons/${seasonId}`),
-    onSettled: () => {
-      qc.invalidateQueries({ queryKey: gk(guildId, "television") });
-      qc.invalidateQueries({ queryKey: rk(guildId, me, "television") });
+  const sync = useMutation({
+    mutationFn: () => api.post<{ seasons_added: number; episodes_added: number; runtimes_updated: number }>(`${base}/television/tmdb-import/sync/${sid}`),
+    onSuccess: ({ seasons_added: s, episodes_added: e, runtimes_updated: r }) => {
+      const bits = [
+        s > 0 && `${s} new season${s === 1 ? "" : "s"}`,
+        e > 0 && `${e} new episode${e === 1 ? "" : "s"}`,
+        r > 0 && `${r} runtime${r === 1 ? "" : "s"} corrected`,
+      ].filter(Boolean);
+      toast.success(bits.length ? `Synced: ${bits.join(", ")}` : "Already up to date with TMDB");
     },
   });
 
-  async function confirmRemoval(season: TelevisionSeason) {
-    setImpactFor(season.id);
-    setActionError(null);
-    try {
-      const impact = await api.get<SeasonImpact>(`${base}/television/seasons/${season.id}/impact`);
-      setConfirmDelete({ season, impact });
-    } catch (e) {
-      setActionError((e as Error).message);
-    } finally {
-      setImpactFor(null);
-    }
-  }
+  usePageTitle(show?.name);
+  if (isLoading) return <LoadingState label="Loading show…" />;
+  if (isError || !show) return <LoadFailed what="show" error={error} onRetry={() => void refetch()} />;
 
-  function toggleExpand(seasonId: number) {
-    setExpandedIds((prev) => {
-      const next = new Set(prev);
-      next.has(seasonId) ? next.delete(seasonId) : next.add(seasonId);
-      return next;
-    });
-  }
-
-  if (showLoading) return <section><LoadingState label="Loading show…" /></section>;
-  if (showError || !show) return <section><p>Show not found.</p></section>;
-
-  const shownIds = view === "mine" ? ranked.map((r) => r.season.id) : catalog.map((s) => s.id);
-  const allExpanded = shownIds.length > 0 && expandedIds.size === shownIds.length;
-
-  const seasonLink = (s: TelevisionSeason) => (
-    <span className="name">
-      <Link to={`/g/${guildId}/television/seasons/${s.id}`} className="plain-link">
-        {s.name}{s.name_en && <span style={{ opacity: 0.6 }}> ({s.name_en})</span>}
-      </Link>
-    </span>
-  );
-  const seasonMeta = (s: TelevisionSeason) => (
-    <span className="meta">
-      {s.release_year} · {s.episode_count} episode{s.episode_count !== 1 ? "s" : ""}
-      {s.runtime_minutes > 0 && ` · ${fmtRuntime(s.runtime_minutes)}`}
-    </span>
-  );
-  const catalogActions = (s: TelevisionSeason) => (
-    <>
-      {canEdit ? <button className="icon" title="Edit season" onClick={() => setEditing({ season: s })}>✎</button> : <span />}
-      {canEdit ? <button className="icon" title="Import season credits from TMDB" onClick={() => setImportingSeason({ season: s })}>TMDB</button> : <span />}
-      {canDelete ? (
-        <BusyButton className="icon" title="Delete from catalog" busy={impactFor === s.id} busyLabel={null}
-                    onClick={() => void confirmRemoval(s)}>✕</BusyButton>
-      ) : <span />}
-    </>
-  );
-
-  const renderSeasonDetail = (s: TelevisionSeason) =>
-    expandedIds.has(s.id) ? (
-      <div className="album-detail-dropdown">
-        {s.persons.length > 0 && (
-          <div className="album-detail-row">
-            <span className="detail-label">People</span>
-            <span>{s.persons.map((p) => p.name).filter((n, i, a) => a.indexOf(n) === i).join(", ")}</span>
-          </div>
-        )}
-        {s.links.length > 0 && (
-          <div className="album-detail-row">
-            <span className="detail-label">Links</span>
-            <span>
-              {s.links.map((l, i) => (
-                <span key={l.id}>{i > 0 && ", "}<a href={l.url} target="_blank" rel="noreferrer">{l.label ?? l.url}</a></span>
-              ))}
-            </span>
-          </div>
-        )}
-        {s.notes && <div className="album-detail-row"><span className="detail-label">Notes</span><span>{s.notes}</span></div>}
-        {s.persons.length === 0 && s.links.length === 0 && !s.notes && (
-          <span style={{ opacity: 0.5 }}>No extra info.</span>
-        )}
-      </div>
-    ) : null;
-
-  const sortable = ranked.map((r) => ({ ...r.season, position: r.position }));
+  const related = show.soundtrack_albums.length > 0 || (show.source_books ?? []).length > 0 || show.notes;
 
   return (
-    <section>
-      <header className="page-head">
-        <h1>
-          {show.name}
-          {show.name_en && <span style={{ opacity: 0.6, fontWeight: "normal" }}> ({show.name_en})</span>}
-        </h1>
-        <div style={{ display: "flex", gap: "0.5rem" }}>
-          {canEdit && <button onClick={() => setEditingShow(true)}>✎ Edit</button>}
-          {canEdit && <button onClick={() => setEditing("new")}>+ Add Season</button>}
-          {canEdit && <button onClick={() => setImportingSeason({})}>Import Season from TMDB</button>}
+    <div className="grid gap-5">
+      <DetailHeader
+        title={show.name}
+        altTitle={show.name_en}
+        facts={[
+          show.release_year,
+          `${show.season_count} season${show.season_count === 1 ? "" : "s"}`,
+          `${show.episode_count} episode${show.episode_count === 1 ? "" : "s"}`,
+        ]}
+        actions={
+          <>
+            <Button variant="outline" size="sm" asChild>
+              <Link to="episodes"><ListOrdered className="size-4" /> Best episodes</Link>
+            </Button>
+            {canEdit && (
+              <Button variant="outline" size="sm" disabled={sync.isPending} title="Add new seasons and episodes, and correct runtimes" onClick={() => sync.mutate()}>
+                {sync.isPending ? <Spinner size="sm" /> : <RefreshCw className="size-4" />} Sync with TMDB
+              </Button>
+            )}
+            {canEdit && <Button variant="outline" size="sm" onClick={() => setDialog({ kind: "show" })}><Pencil className="size-4" /> Edit</Button>}
+          </>
+        }
+      />
+      <MediaHero image={show.image_url} overview={show.overview}
+                 external={show.tmdb_id ? { href: `https://www.themoviedb.org/tv/${show.tmdb_id}`, label: "TMDB" } : null}
+                 refresh={{ path: `television/shows/${show.id}/tmdb-refresh`, source: "TMDB" }} />
+      <GuildHolders vertical="television" id={show.id} />
+
+      <div className="grid gap-5 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
+        <div className="grid content-start gap-5">
+          <ChildList<TelevisionSeason, RankedTelevisionSeason>
+            title="Seasons"
+            noun={["season", "seasons"]}
+            field="season"
+            ranked={ranked}
+            rankedLoading={rankedLoading}
+            rankKey={rk(guildId, me, "television", "shows", sid, "seasons", "ranked")}
+            catalog={catalog}
+            catalogLoading={catalogLoading}
+            viewingUser={viewingUser}
+            onViewingUser={setViewingUser}
+            href={(s) => `television/seasons/${s.id}`}
+            entryPath={(s) => `television/seasons/${s.id}`}
+            meta={(s) => [
+              s.release_year,
+              `${s.episode_count} episode${s.episode_count === 1 ? "" : "s"}`,
+              s.runtime_minutes > 0 && fmtMinutes(s.runtime_minutes),
+            ].filter(Boolean).join(" · ")}
+            detail={(s) => (
+              <Facts items={[
+                ["People", s.persons.length > 0 && peopleLine(s.persons)],
+                ["Links", s.links.length > 0 && <ExternalLinks links={s.links} />],
+                ["Notes", s.notes],
+              ]} />
+            )}
+            catalogMenu={canEdit || canDelete ? (s) => (
+              <>
+                {canEdit && <DropdownMenuItem onSelect={() => setDialog({ kind: "season", season: s })}><Pencil /> Edit</DropdownMenuItem>}
+                {canEdit && <DropdownMenuItem onSelect={() => setDialog({ kind: "import", season: s })}><Download /> Import credits from TMDB</DropdownMenuItem>}
+                {canDelete && (
+                  <DropdownMenuItem variant="destructive" onSelect={() => impact.mutate(s)}><Trash2 /> Delete from catalog</DropdownMenuItem>
+                )}
+              </>
+            ) : undefined}
+            removeNote="Your episode rankings are separate and stay."
+            headerActions={
+              <>
+                {ranked.length >= 2 && viewingUser === me && (
+                  <Button variant="ghost" size="sm" asChild><Link to="rank"><Scale className="size-4" /> Rank</Link></Button>
+                )}
+                <AddAllButton path={`television/shows/${show.id}/seasons/add-all`} noun="seasons" />
+                {canEdit && <Button variant="outline" size="sm" onClick={() => setDialog({ kind: "season" })}><Plus className="size-4" /> Add</Button>}
+                {canEdit && <Button variant="outline" size="sm" onClick={() => setDialog({ kind: "import" })}><Download className="size-4" /> Import</Button>}
+              </>
+            }
+          />
+          <PeopleSection
+            path="television/shows" ownerId={show.id} persons={show.persons} roles={TV_SHOW_ROLES}
+            roleLabels={CAST_ROLE_LABELS} defaultRole="creator"
+            scanHref={`television/scan?scope=show:${show.id}&name=${encodeURIComponent(show.name)}`}
+            populateDown={{
+              label: "Populate down",
+              confirm: `Attach the show's people to all ${show.season_count} season(s) and ${show.episode_count} episode(s)? Creators stay on the show; anyone already credited is left as is.`,
+            }}
+          />
+          {related && (
+            <Section title="Related">
+              <Facts items={[
+                ["Soundtrack", <RefLinks items={show.soundtrack_albums} to={(id) => `music/albums/${id}`} />],
+                ["Based on", <RefLinks items={show.source_books ?? []} to={(id) => `books/${id}`} />],
+                ["Notes", show.notes],
+              ]} />
+            </Section>
+          )}
         </div>
-      </header>
-      {actionError && <p className="err">{actionError}</p>}
-      <div className="artist-detail-dropdown" style={{ marginBottom: "1.5rem" }}>
-        <div className="artist-detail-grid">
-          <div><span className="detail-label">Release year</span><span>{show.release_year}</span></div>
-          <div><span className="detail-label">Seasons</span><span>{show.season_count}</span></div>
-          <div><span className="detail-label">Episodes</span><span>{show.episode_count}</span></div>
+        <div className="grid content-start gap-5">
+          <MyEntrySection entryPath={`television/shows/${show.id}`} noun="show" />
+          <TaxonomySection path="television/shows" ownerId={show.id} ids={show.genre_ids} names={genreNames}
+                           linkTo={(id) => `television/genres/${id}`}
+                           chooser={(sel, change) => <GenreChooser domain={TELEVISION_GENRES} selected={sel} onChange={change} />} />
+          <LinksSection path="television/shows" section="television" ownerId={show.id} />
         </div>
-        {show.soundtrack_albums.length > 0 && (
-          <div className="detail-tags" style={{ marginTop: "0.5rem" }}>
-            <span className="detail-label">Soundtrack</span>
-            <span>
-              {show.soundtrack_albums.map((a, i) => (
-                <span key={a.id}>
-                  {i > 0 && ", "}
-                  <Link to={`/g/${guildId}/music/albums/${a.id}`}>
-                    {a.name}{a.name_en && <span style={{ opacity: 0.6 }}> ({a.name_en})</span>}
-                  </Link>
-                </span>
-              ))}
-            </span>
-          </div>
-        )}
-        {(show.source_books ?? []).length > 0 && (
-          <div className="detail-tags" style={{ marginTop: "0.5rem" }}>
-            <span className="detail-label">Based on</span>
-            <span>
-              {show.source_books.map((b, i) => (
-                <span key={b.id}>
-                  {i > 0 && ", "}
-                  <Link to={`/g/${guildId}/books/${b.id}`}>
-                    {b.name}{b.name_en && <span style={{ opacity: 0.6 }}> ({b.name_en})</span>}
-                  </Link>
-                </span>
-              ))}
-            </span>
-          </div>
-        )}
-        {show.notes && (
-          <div className="detail-tags" style={{ marginTop: "0.5rem" }}>
-            <span className="detail-label">Notes</span>
-            <span>{show.notes}</span>
-          </div>
-        )}
       </div>
 
-      <TvPeopleSection
-        path="television/shows"
-        ownerId={sid}
-        persons={show.persons}
-        roles={TV_SHOW_ROLES}
-        defaultRole="creator"
-        populateDown={{
-          label: "Populate down",
-          confirm: `Attach the show's people to all ${show.season_count} season(s) and ${show.episode_count} episode(s)? Creators stay on the show; anyone already credited is left as is.`,
-        }}
-      />
-      <ShowGenresSection showId={sid} show={show} />
-      <LinksSection path="television/shows" section="television" ownerId={sid} />
-      <MyShowListSection showId={sid} />
-
-      <header className="page-head" style={{ marginBottom: "0.5rem" }}>
-        <span className="inline">
-          <h2 style={{ margin: 0 }}>Seasons</h2>
-          <Link to={`/g/${guildId}/television/shows/${sid}/rank`} style={{ fontSize: 13 }}>Rank seasons →</Link>
-        </span>
-        <div className="inline">
-          <div className="view-toggle">
-            <button className={view === "mine" ? "view-toggle-active" : ""} onClick={() => setView("mine")}>Ranking</button>
-            <button className={view === "catalog" ? "view-toggle-active" : ""} onClick={() => setView("catalog")}>Catalog</button>
-          </div>
-          {view === "mine" && <MemberPicker value={viewingUser} onChange={setViewingUser} />}
-          <button onClick={() => setExpandedIds(allExpanded ? new Set() : new Set(shownIds))}>
-            {allExpanded ? "Collapse all" : "Expand all"}
-          </button>
-        </div>
-      </header>
-
-      {view === "mine" && (
-        <SortableList
-          items={sortable}
-          loading={rankedLoading}
-          loadingLabel="Loading seasons…"
-          empty={<p className="rank-empty">{isMine ? "No seasons ranked yet." : "This member hasn't ranked any seasons of this show yet."}</p>}
-          pendingId={moveSeason.isPending ? moveSeason.variables?.seasonId ?? null : null}
-          rowClassName="season-row"
-          disableDrag={!isMine}
-          onReorder={(next) => qc.setQueryData(rankKey, next.map((s, i) => ({ ...ranked[i], position: i + 1, season: s })))}
-          onMove={(seasonId, position) => moveSeason.mutate({ seasonId, position })}
-          renderDetail={renderSeasonDetail}
-          render={(s) => (
-            <>
-              {seasonLink(s)}
-              {seasonMeta(s)}
-              <button className="icon" title="Show details" onClick={() => toggleExpand(s.id)}>
-                {expandedIds.has(s.id) ? "▲" : "▼"}
-              </button>
-              {isMine
-                ? <button className="icon" title="Remove from my ranking" onClick={() => setConfirmRemoveFromList(s)}>✕ list</button>
-                : <span />}
-              {catalogActions(s)}
-            </>
-          )}
-        />
-      )}
-
-      {view === "catalog" && (
-        <CatalogList
-          items={catalog}
-          loading={catalogLoading}
-          loadingLabel="Loading seasons…"
-          empty={<p><small>No seasons in the catalog for this show yet.</small></p>}
-          rowClassName="tv-catalog-row"
-          renderDetail={renderSeasonDetail}
-          render={(s) => (
-            <>
-              {seasonLink(s)}
-              {seasonMeta(s)}
-              {s.in_my_list
-                ? <span className="meta">in your list</span>
-                : (
-                  <BusyButton busy={addEntry.isPending && addEntry.variables === s.id} busyLabel="Adding…"
-                              onClick={() => addEntry.mutate(s.id)}>+ Add to my list</BusyButton>
-                )}
-              <button className="icon" title="Show details" onClick={() => toggleExpand(s.id)}>
-                {expandedIds.has(s.id) ? "▲" : "▼"}
-              </button>
-              {catalogActions(s)}
-            </>
-          )}
-        />
-      )}
-
-      {confirmDelete && (
+      {deleting && (
         <ConfirmDialog
-          message={`Delete "${confirmDelete.season.name}" from the guild catalog? This also deletes its ${confirmDelete.impact.episodes_destroyed} episode(s). ${confirmDelete.impact.rankings_destroyed} season ranking(s) and ${confirmDelete.impact.episode_rankings_destroyed} episode ranking(s) will be destroyed.`}
+          message={`Delete “${deleting.season.name}” from the guild catalog? This also deletes its ${deleting.impact.episodes_destroyed} episode(s); ${deleting.impact.rankings_destroyed} season ranking(s) and ${deleting.impact.episode_rankings_destroyed} episode ranking(s) go with them.`}
           busy={remove.isPending}
-          onConfirm={() => remove.mutate(confirmDelete.season.id, { onSettled: () => setConfirmDelete(null) })}
-          onCancel={() => setConfirmDelete(null)}
+          onConfirm={() => remove.mutate(deleting.season.id, { onSettled: () => setDeleting(null) })}
+          onCancel={() => setDeleting(null)}
         />
       )}
-
-      {confirmRemoveFromList && (
-        <ConfirmDialog
-          message={`Remove "${confirmRemoveFromList.name}" from your list? Your personal notes for it will be lost. (Your episode rankings are separate and won't be affected.)`}
-          confirmLabel="Remove"
-          busy={removeEntry.isPending}
-          onConfirm={() => removeEntry.mutate(confirmRemoveFromList.id, { onSettled: () => setConfirmRemoveFromList(null) })}
-          onCancel={() => setConfirmRemoveFromList(null)}
-        />
+      {dialog && (
+        <>
+          {dialog.kind === "show" ? (
+            <TelevisionShowForm initial={show} onClose={() => setDialog(null)} />
+          ) : dialog.kind === "season" ? (
+            <TelevisionSeasonForm show={show} initial={dialog.season} onClose={() => setDialog(null)} />
+          ) : (
+            <TmdbTelevisionSeasonImportDialog show={show} season={dialog.season}
+                                              onClose={() => setDialog(null)} onSuccess={() => setDialog(null)} />
+          )}
+        </>
       )}
-
-      {editing && (
-        <div className="modal-backdrop" onClick={() => setEditing(null)}>
-          <div onClick={(e) => e.stopPropagation()}>
-            <TelevisionSeasonForm
-              show={show}
-              initial={editing === "new" ? undefined : editing.season}
-              onClose={() => setEditing(null)}
-            />
-          </div>
-        </div>
-      )}
-
-      {editingShow && (
-        <div className="modal-backdrop" onClick={() => setEditingShow(false)}>
-          <div onClick={(e) => e.stopPropagation()}>
-            <TelevisionShowForm
-              initial={show}
-              onClose={() => {
-                setEditingShow(false);
-                qc.invalidateQueries({ queryKey: gk(guildId, "television", "shows", sid) });
-              }}
-            />
-          </div>
-        </div>
-      )}
-
-      {importingSeason && (
-        <div className="modal-backdrop" onClick={() => setImportingSeason(null)}>
-          <div onClick={(e) => e.stopPropagation()}>
-            <TmdbTelevisionSeasonImportDialog
-              show={show}
-              season={importingSeason.season}
-              onClose={() => setImportingSeason(null)}
-              onSuccess={() => {
-                setImportingSeason(null);
-                qc.invalidateQueries({ queryKey: gk(guildId, "television") });
-                qc.invalidateQueries({ queryKey: rk(guildId, me, "television", "shows", sid, "seasons") });
-              }}
-            />
-          </div>
-        </div>
-      )}
-    </section>
+    </div>
   );
 }

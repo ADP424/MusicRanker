@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pydantic import BaseModel
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session as DbSession
@@ -18,7 +19,8 @@ from ..database_models import (
     BandRole, Genre, GuildMember, Person, UserAlbumRank, UserArtistRank,
 )
 from ..deps import GuildContext, guild_ctx
-from ..ranking import apply_order, check_reorder_ids, rank_at
+from ..ranking import apply_order, check_reorder_ids, next_rank, rank_at
+from .. import loading
 from .links import make_links_router
 
 router = APIRouter(prefix="/guilds/{guild_id}/artists", tags=["artists"])
@@ -36,14 +38,14 @@ links_router = make_links_router(
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 def _artist(db: DbSession, ctx: GuildContext, aid: int) -> Artist:
-    a = db.get(Artist, aid)
+    a = loading.get(db, Artist, aid, loading.ARTIST)
     if a is None or a.guild_id != ctx.guild_id:
         raise HTTPException(404, "Artist not found")
     return a
 
 
 def _album(db: DbSession, ctx: GuildContext, alid: int) -> Album:
-    a = db.get(Album, alid)
+    a = loading.get(db, Album, alid, loading.ALBUM)
     if a is None or a.guild_id != ctx.guild_id:
         raise HTTPException(404, "Album not found")
     return a
@@ -99,14 +101,14 @@ def _album_out(a: Album, mine: set[int]) -> AlbumOut:
 
 # ── catalog ──────────────────────────────────────────────────────────────────
 @router.get("", response_model=list[ArtistOut])
-def list_catalog(ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+def list_catalog(ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database, scope="function")):
     mine = _my_artist_ids(db, ctx)
-    rows = db.scalars(select(Artist).where(Artist.guild_id == ctx.guild_id).order_by(Artist.name)).all()
+    rows = db.scalars(select(Artist).where(Artist.guild_id == ctx.guild_id).order_by(Artist.name).options(*loading.ARTIST)).all()
     return [_artist_out(db, ctx, a, mine) for a in rows]
 
 
 @router.post("", response_model=ArtistOut, status_code=201)
-def create_artist(body: ArtistIn, ctx: GuildContext = Depends(CREATE), db: DbSession = Depends(get_database)):
+def create_artist(body: ArtistIn, ctx: GuildContext = Depends(CREATE), db: DbSession = Depends(get_database, scope="function")):
     if body.primary_genre is not None:
         g = db.get(Genre, body.primary_genre)
         if g is None or g.guild_id != ctx.guild_id or not g.is_music:
@@ -124,13 +126,13 @@ def _artist_scope(ctx: GuildContext, uid: int):
 
 @router.get("/comparisons", response_model=list[ComparisonOut])
 def list_artist_comparisons(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW),
-                            db: DbSession = Depends(get_database)):
+                            db: DbSession = Depends(get_database, scope="function")):
     return list_comparisons(db, ArtistComparison, scope=_artist_scope(ctx, _target_user(db, ctx, user_id)))
 
 
 @router.put("/comparisons", response_model=ComparisonOut)
 def upsert_artist_comparison(body: ComparisonIn, ctx: GuildContext = Depends(RANK),
-                             db: DbSession = Depends(get_database)):
+                             db: DbSession = Depends(get_database, scope="function")):
     _artist(db, ctx, body.winner_id)
     _artist(db, ctx, body.loser_id)
     return upsert_comparison(db, ArtistComparison, body.winner_id, body.loser_id,
@@ -139,19 +141,19 @@ def upsert_artist_comparison(body: ComparisonIn, ctx: GuildContext = Depends(RAN
 
 
 @router.delete("/comparisons", status_code=204)
-def clear_artist_comparisons(ctx: GuildContext = Depends(RANK), db: DbSession = Depends(get_database)):
+def clear_artist_comparisons(ctx: GuildContext = Depends(RANK), db: DbSession = Depends(get_database, scope="function")):
     clear_comparisons(db, ArtistComparison, scope=_artist_scope(ctx, ctx.user_id))
 
 
 @router.delete("/comparisons/{a}/{b}", status_code=204)
 def delete_artist_comparison(a: int, b: int, ctx: GuildContext = Depends(RANK),
-                             db: DbSession = Depends(get_database)):
+                             db: DbSession = Depends(get_database, scope="function")):
     delete_comparison(db, ArtistComparison, a, b, scope=_artist_scope(ctx, ctx.user_id))
 
 
 @router.get("/ranked", response_model=list[RankedArtistOut])
 def ranked(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW),
-           db: DbSession = Depends(get_database)):
+           db: DbSession = Depends(get_database, scope="function")):
     uid = _target_user(db, ctx, user_id)
     mine = _my_artist_ids(db, ctx)
     rows = db.scalars(
@@ -159,16 +161,17 @@ def ranked(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW),
         .where(UserArtistRank.user_id == uid, UserArtistRank.guild_id == ctx.guild_id)
         .order_by(UserArtistRank.rank, UserArtistRank.artist_id)
     ).all()
+    artists = loading.by_ids(db, Artist, (r.artist_id for r in rows), loading.ARTIST)
     return [
         RankedArtistOut(position=i, rank=r.rank,
                         notes=r.notes if uid == ctx.user_id else None,
-                        artist=_artist_out(db, ctx, db.get(Artist, r.artist_id), mine))
+                        artist=_artist_out(db, ctx, artists[r.artist_id], mine))
         for i, r in enumerate(rows, 1)
     ]
 
 
 @router.put("/reorder", status_code=204)
-def reorder(body: ReorderBody, ctx: GuildContext = Depends(RANK), db: DbSession = Depends(get_database)):
+def reorder(body: ReorderBody, ctx: GuildContext = Depends(RANK), db: DbSession = Depends(get_database, scope="function")):
     rows = db.scalars(
         select(UserArtistRank).where(UserArtistRank.user_id == ctx.user_id, UserArtistRank.guild_id == ctx.guild_id)
     ).all()
@@ -178,13 +181,13 @@ def reorder(body: ReorderBody, ctx: GuildContext = Depends(RANK), db: DbSession 
 
 # ── single artist ────────────────────────────────────────────────────────────
 @router.get("/{aid}", response_model=ArtistOut)
-def get_artist(aid: int, ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+def get_artist(aid: int, ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database, scope="function")):
     return _artist_out(db, ctx, _artist(db, ctx, aid), _my_artist_ids(db, ctx))
 
 
 @router.patch("/{aid}", response_model=ArtistOut)
 def update_artist(aid: int, body: ArtistPatch, ctx: GuildContext = Depends(EDIT),
-                  db: DbSession = Depends(get_database)):
+                  db: DbSession = Depends(get_database, scope="function")):
     a = _artist(db, ctx, aid)
     data = body.model_dump(exclude_unset=True)
     if data.get("primary_genre") is not None:
@@ -194,11 +197,12 @@ def update_artist(aid: int, body: ArtistPatch, ctx: GuildContext = Depends(EDIT)
     for k, v in data.items():
         setattr(a, k, v)
     a.updated_by_user_id = ctx.user_id
+    db.flush()  # runs the before-flush hook (a lone Unknown nationality takes the other)
     return _artist_out(db, ctx, a, _my_artist_ids(db, ctx))
 
 
 @router.get("/{aid}/impact")
-def delete_impact(aid: int, ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+def delete_impact(aid: int, ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database, scope="function")):
     """F1: hard delete takes every member's ranking with it. The confirm dialog
     shows this count before the user commits."""
     _artist(db, ctx, aid)
@@ -210,14 +214,24 @@ def delete_impact(aid: int, ctx: GuildContext = Depends(VIEW), db: DbSession = D
 
 
 @router.delete("/{aid}", status_code=204)
-def delete_artist(aid: int, ctx: GuildContext = Depends(DELETE), db: DbSession = Depends(get_database)):
+def delete_artist(aid: int, ctx: GuildContext = Depends(DELETE), db: DbSession = Depends(get_database, scope="function")):
     db.delete(_artist(db, ctx, aid))
 
 
 # ── my entry ─────────────────────────────────────────────────────────────────
+class ArtistEntryOut(BaseModel):
+    notes: str | None
+
+
+@router.get("/{aid}/entry", response_model=ArtistEntryOut | None)
+def get_entry(aid: int, ctx: GuildContext = Depends(RANK), db: DbSession = Depends(get_database, scope="function")):
+    row = db.get(UserArtistRank, {"user_id": ctx.user_id, "artist_id": aid})
+    return ArtistEntryOut(notes=row.notes) if row and row.guild_id == ctx.guild_id else None
+
+
 @router.put("/{aid}/entry", status_code=204)
 def upsert_entry(aid: int, body: EntryIn, ctx: GuildContext = Depends(RANK),
-                 db: DbSession = Depends(get_database)):
+                 db: DbSession = Depends(get_database, scope="function")):
     _artist(db, ctx, aid)
     row = db.get(UserArtistRank, {"user_id": ctx.user_id, "artist_id": aid})
     if row is None:
@@ -226,18 +240,19 @@ def upsert_entry(aid: int, body: EntryIn, ctx: GuildContext = Depends(RANK),
             rank=rank_at(db, UserArtistRank, user_id=ctx.user_id, guild_id=ctx.guild_id, position=body.position),
         )
         db.add(row)
-    row.notes = body.notes
+    if "notes" in body.model_fields_set:  # a bare PUT (add to list) keeps existing notes
+        row.notes = body.notes
 
 
 @router.delete("/{aid}/entry", status_code=204)
-def remove_entry(aid: int, ctx: GuildContext = Depends(RANK), db: DbSession = Depends(get_database)):
+def remove_entry(aid: int, ctx: GuildContext = Depends(RANK), db: DbSession = Depends(get_database, scope="function")):
     row = db.get(UserArtistRank, {"user_id": ctx.user_id, "artist_id": aid})
     if row:
         db.delete(row)
 
 
 @router.put("/{aid}/position", status_code=204)
-def move(aid: int, body: PositionBody, ctx: GuildContext = Depends(RANK), db: DbSession = Depends(get_database)):
+def move(aid: int, body: PositionBody, ctx: GuildContext = Depends(RANK), db: DbSession = Depends(get_database, scope="function")):
     row = db.get(UserArtistRank, {"user_id": ctx.user_id, "artist_id": aid})
     if row is None:
         raise HTTPException(404, "Not in your list")
@@ -247,7 +262,7 @@ def move(aid: int, body: PositionBody, ctx: GuildContext = Depends(RANK), db: Db
 
 # ── band members ─────────────────────────────────────────────────────────────
 @router.get("/{aid}/persons", response_model=list[PersonArtistRef])
-def artist_persons(aid: int, ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+def artist_persons(aid: int, ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database, scope="function")):
     _artist(db, ctx, aid)
     rows = db.scalars(select(ArtistPerson).where(ArtistPerson.artist_id == aid)).all()
     return sorted(
@@ -258,7 +273,7 @@ def artist_persons(aid: int, ctx: GuildContext = Depends(VIEW), db: DbSession = 
 
 @router.put("/{aid}/persons/{pid}/{role}", status_code=204)
 def link_person(aid: int, pid: int, role: BandRole, ctx: GuildContext = Depends(EDIT),
-                db: DbSession = Depends(get_database)):
+                db: DbSession = Depends(get_database, scope="function")):
     _artist(db, ctx, aid)
     p = db.get(Person, pid)
     if p is None or p.guild_id != ctx.guild_id:
@@ -269,7 +284,8 @@ def link_person(aid: int, pid: int, role: BandRole, ctx: GuildContext = Depends(
 
 @router.delete("/{aid}/persons/{pid}/{role}", status_code=204)
 def unlink_person(aid: int, pid: int, role: BandRole, ctx: GuildContext = Depends(EDIT),
-                  db: DbSession = Depends(get_database)):
+                  db: DbSession = Depends(get_database, scope="function")):
+    _artist(db, ctx, aid)
     link = db.get(ArtistPerson, (aid, pid, role))
     if link:
         db.delete(link)
@@ -277,7 +293,7 @@ def unlink_person(aid: int, pid: int, role: BandRole, ctx: GuildContext = Depend
 
 # ── this artist's discography (catalog) and my ranking of it ─────────────────
 @router.get("/{aid}/albums", response_model=list[AlbumOut])
-def artist_albums(aid: int, ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+def artist_albums(aid: int, ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database, scope="function")):
     _artist(db, ctx, aid)
     mine = set(db.scalars(
         select(UserAlbumRank.album_id).where(
@@ -287,14 +303,14 @@ def artist_albums(aid: int, ctx: GuildContext = Depends(VIEW), db: DbSession = D
     ))
     rows = db.scalars(
         select(Album).join(AlbumArtist, AlbumArtist.album_id == Album.id)
-        .where(AlbumArtist.artist_id == aid).order_by(Album.release_year, Album.name)
+        .where(AlbumArtist.artist_id == aid).order_by(Album.release_year, Album.name).options(*loading.ALBUM)
     ).all()
     return [_album_out(a, mine) for a in rows]
 
 
 @router.get("/{aid}/albums/ranked", response_model=list[RankedAlbumOut])
 def artist_albums_ranked(aid: int, user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW),
-                         db: DbSession = Depends(get_database)):
+                         db: DbSession = Depends(get_database, scope="function")):
     _artist(db, ctx, aid)
     uid = _target_user(db, ctx, user_id)
     rows = db.scalars(
@@ -303,17 +319,18 @@ def artist_albums_ranked(aid: int, user_id: int | None = Query(None), ctx: Guild
         .order_by(UserAlbumRank.rank, UserAlbumRank.album_id)
     ).all()
     mine = {r.album_id for r in rows} if uid == ctx.user_id else set()
+    albums = loading.by_ids(db, Album, (r.album_id for r in rows), loading.ALBUM)
     return [
         RankedAlbumOut(position=i, rank=r.rank, listens=r.listens,
                        notes=r.notes if uid == ctx.user_id else None,
-                       album=_album_out(db.get(Album, r.album_id), mine))
+                       album=_album_out(albums[r.album_id], mine))
         for i, r in enumerate(rows, 1)
     ]
 
 
 @router.put("/{aid}/albums/reorder", status_code=204)
 def reorder_albums(aid: int, body: ReorderBody, ctx: GuildContext = Depends(RANK),
-                   db: DbSession = Depends(get_database)):
+                   db: DbSession = Depends(get_database, scope="function")):
     _artist(db, ctx, aid)
     rows = db.scalars(
         select(UserAlbumRank).where(
@@ -326,14 +343,14 @@ def reorder_albums(aid: int, body: ReorderBody, ctx: GuildContext = Depends(RANK
 
 
 @router.get("/{aid}/albums/{alid}/entry", response_model=AlbumEntryOut | None)
-def get_album_entry(aid: int, alid: int, ctx: GuildContext = Depends(RANK), db: DbSession = Depends(get_database)):
+def get_album_entry(aid: int, alid: int, ctx: GuildContext = Depends(RANK), db: DbSession = Depends(get_database, scope="function")):
     row = db.get(UserAlbumRank, {"user_id": ctx.user_id, "artist_id": aid, "album_id": alid})
     return AlbumEntryOut(listens=row.listens, notes=row.notes) if row else None
 
 
 @router.put("/{aid}/albums/{alid}/entry", status_code=204)
 def upsert_album_entry(aid: int, alid: int, body: AlbumEntryIn, ctx: GuildContext = Depends(RANK),
-                       db: DbSession = Depends(get_database)):
+                       db: DbSession = Depends(get_database, scope="function")):
     _artist(db, ctx, aid)
     _album(db, ctx, alid)
     if not db.get(AlbumArtist, (alid, aid)):
@@ -353,7 +370,7 @@ def upsert_album_entry(aid: int, alid: int, body: AlbumEntryIn, ctx: GuildContex
 
 @router.delete("/{aid}/albums/{alid}/entry", status_code=204)
 def remove_album_entry(aid: int, alid: int, ctx: GuildContext = Depends(RANK),
-                       db: DbSession = Depends(get_database)):
+                       db: DbSession = Depends(get_database, scope="function")):
     row = db.get(UserAlbumRank, {"user_id": ctx.user_id, "artist_id": aid, "album_id": alid})
     if row:
         db.delete(row)
@@ -361,7 +378,7 @@ def remove_album_entry(aid: int, alid: int, ctx: GuildContext = Depends(RANK),
 
 @router.put("/{aid}/albums/{alid}/position", status_code=204)
 def move_album(aid: int, alid: int, body: PositionBody, ctx: GuildContext = Depends(RANK),
-               db: DbSession = Depends(get_database)):
+               db: DbSession = Depends(get_database, scope="function")):
     row = db.get(UserAlbumRank, {"user_id": ctx.user_id, "artist_id": aid, "album_id": alid})
     if row is None:
         raise HTTPException(404, "Not in your list")
@@ -377,14 +394,14 @@ def _album_scope(ctx: GuildContext, uid: int, aid: int):
 
 @router.get("/{aid}/albums/comparisons", response_model=list[ComparisonOut])
 def list_album_comparisons(aid: int, user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW),
-                           db: DbSession = Depends(get_database)):
+                           db: DbSession = Depends(get_database, scope="function")):
     _artist(db, ctx, aid)
     return list_comparisons(db, AlbumComparison, scope=_album_scope(ctx, _target_user(db, ctx, user_id), aid))
 
 
 @router.put("/{aid}/albums/comparisons", response_model=ComparisonOut)
 def upsert_album_comparison(aid: int, body: ComparisonIn, ctx: GuildContext = Depends(RANK),
-                            db: DbSession = Depends(get_database)):
+                            db: DbSession = Depends(get_database, scope="function")):
     _artist(db, ctx, aid)
     for album_id in (body.winner_id, body.loser_id):
         if not db.get(AlbumArtist, (album_id, aid)):
@@ -395,11 +412,40 @@ def upsert_album_comparison(aid: int, body: ComparisonIn, ctx: GuildContext = De
 
 
 @router.delete("/{aid}/albums/comparisons", status_code=204)
-def clear_album_comparisons(aid: int, ctx: GuildContext = Depends(RANK), db: DbSession = Depends(get_database)):
+def clear_album_comparisons(aid: int, ctx: GuildContext = Depends(RANK), db: DbSession = Depends(get_database, scope="function")):
     clear_comparisons(db, AlbumComparison, scope=_album_scope(ctx, ctx.user_id, aid))
 
 
 @router.delete("/{aid}/albums/comparisons/{a}/{b}", status_code=204)
 def delete_album_comparison(aid: int, a: int, b: int, ctx: GuildContext = Depends(RANK),
-                            db: DbSession = Depends(get_database)):
+                            db: DbSession = Depends(get_database, scope="function")):
     delete_comparison(db, AlbumComparison, a, b, scope=_album_scope(ctx, ctx.user_id, aid))
+
+
+# ── Bulk: add an artist's whole discography to your list ─────────────────────
+class AddedOut(BaseModel):
+    added: int
+
+
+@router.post("/{aid}/albums/add-all", response_model=AddedOut)
+def add_all_albums(aid: int, ctx: GuildContext = Depends(RANK), db: DbSession = Depends(get_database, scope="function")):
+    """Every album credited to the artist not yet in your list, appended oldest first."""
+    _artist(db, ctx, aid)
+    have = set(db.scalars(select(UserAlbumRank.album_id).where(
+        UserAlbumRank.user_id == ctx.user_id, UserAlbumRank.artist_id == aid)))
+    added = 0
+    for album in db.scalars(
+        select(Album).join(AlbumArtist, (AlbumArtist.album_id == Album.id) & (AlbumArtist.guild_id == Album.guild_id))
+        .where(AlbumArtist.artist_id == aid, Album.guild_id == ctx.guild_id)
+        .order_by(Album.release_year, Album.id)
+    ):
+        if album.id in have:
+            continue
+        db.add(UserAlbumRank(
+            user_id=ctx.user_id, guild_id=ctx.guild_id, artist_id=aid, album_id=album.id, listens=1,
+            rank=next_rank(db, UserAlbumRank, user_id=ctx.user_id, guild_id=ctx.guild_id,
+                           scope=UserAlbumRank.artist_id == aid),
+        ))
+        db.flush()
+        added += 1
+    return AddedOut(added=added)

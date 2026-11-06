@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session as DbSession
 from ..database import get_database
 from ..database_models import Job, JobStatus, User
 from ..deps import current_user
+from .. import jobs
 from ..jobs import queue_position
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
@@ -45,23 +46,16 @@ def _out(db: DbSession, job: Job) -> JobOut:
 
 
 @router.get("", response_model=list[JobOut])
-def my_jobs(user: User = Depends(current_user), db: DbSession = Depends(get_database)):
+def my_jobs(user: User = Depends(current_user), db: DbSession = Depends(get_database, scope="function")):
     rows = db.query(Job).filter(Job.user_id == user.id).order_by(Job.created_at.desc()).limit(25).all()
     return [_out(db, j) for j in rows]
 
 
 @router.get("/{job_id}", response_model=JobOut)
-def get_job(job_id: int, user: User = Depends(current_user), db: DbSession = Depends(get_database)):
+def get_job(job_id: int, user: User = Depends(current_user), db: DbSession = Depends(get_database, scope="function")):
     return _out(db, _mine(db, job_id, user))
 
 
 @router.post("/{job_id}/cancel", status_code=204)
-def cancel_job(job_id: int, user: User = Depends(current_user), db: DbSession = Depends(get_database)):
-    """Cooperative: the handler polls `cancel_requested` between units of work.
-    A job that has not been claimed yet is settled immediately so it never runs."""
-    job = _mine(db, job_id, user)
-    if job.status in (JobStatus.done, JobStatus.error, JobStatus.cancelled):
-        return
-    job.cancel_requested = True
-    if job.status is JobStatus.pending:
-        job.status, job.phase = JobStatus.cancelled, "finished"
+def cancel_job(job_id: int, user: User = Depends(current_user), db: DbSession = Depends(get_database, scope="function")):
+    jobs.request_cancel(db, _mine(db, job_id, user))

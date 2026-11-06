@@ -19,6 +19,7 @@ from ..database_models.ranking import UserGameRank
 from ..deps import GuildContext, guild_ctx
 from ..guild_junction_helpers import link_guild_scoped
 from ..ranking import apply_order, check_reorder_ids, rank_at
+from .. import loading
 from .links import make_links_router
 
 router = APIRouter(prefix="/guilds/{guild_id}/games", tags=["games"])
@@ -35,7 +36,7 @@ links_router = make_links_router(
 
 
 def _game(db: DbSession, ctx: GuildContext, gid: int) -> Game:
-    g = db.get(Game, gid)
+    g = loading.get(db, Game, gid, loading.GAME)
     if g is None or g.guild_id != ctx.guild_id:
         raise HTTPException(404, "Game not found")
     return g
@@ -71,14 +72,14 @@ def _out(g: Game, mine: set[int]) -> GameOut:
 
 # ── Catalog ──────────────────────────────────────────────────────────────────
 @router.get("", response_model=list[GameOut])
-def list_catalog(ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+def list_catalog(ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database, scope="function")):
     mine = _my_game_ids(db, ctx)
-    rows = db.scalars(select(Game).where(Game.guild_id == ctx.guild_id).order_by(Game.name)).all()
+    rows = db.scalars(select(Game).where(Game.guild_id == ctx.guild_id).order_by(Game.name).options(*loading.GAME)).all()
     return [_out(g, mine) for g in rows]
 
 
 @router.post("", response_model=GameOut, status_code=201)
-def create_game(body: GameIn, ctx: GuildContext = Depends(CREATE), db: DbSession = Depends(get_database)):
+def create_game(body: GameIn, ctx: GuildContext = Depends(CREATE), db: DbSession = Depends(get_database, scope="function")):
     g = Game(guild_id=ctx.guild_id, created_by_user_id=ctx.user_id, **body.model_dump())
     db.add(g)
     db.flush()
@@ -90,7 +91,7 @@ def create_game(body: GameIn, ctx: GuildContext = Depends(CREATE), db: DbSession
 # /{gid} — Starlette matches routes in registration order, so a param route
 # declared first would swallow these as gid="ranked" etc.
 @router.get("/ranked", response_model=list[RankedGameOut])
-def ranked(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+def ranked(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database, scope="function")):
     uid = _target_user(db, ctx, user_id)
     mine = _my_game_ids(db, ctx)
     rows = db.scalars(
@@ -98,16 +99,17 @@ def ranked(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW),
         .where(UserGameRank.user_id == uid, UserGameRank.guild_id == ctx.guild_id)
         .order_by(UserGameRank.rank, UserGameRank.game_id)
     ).all()
+    games = loading.by_ids(db, Game, (r.game_id for r in rows), loading.GAME)
     return [
         RankedGameOut(position=i, rank=r.rank, hours_played=r.hours_played,
                      notes=r.notes if uid == ctx.user_id else None,
-                     game=_out(db.get(Game, r.game_id), mine))
+                     game=_out(games[r.game_id], mine))
         for i, r in enumerate(rows, 1)
     ]
 
 
 @router.put("/reorder", status_code=204)
-def reorder(body: ReorderBody, ctx: GuildContext = Depends(RANK), db: DbSession = Depends(get_database)):
+def reorder(body: ReorderBody, ctx: GuildContext = Depends(RANK), db: DbSession = Depends(get_database, scope="function")):
     rows = db.scalars(
         select(UserGameRank).where(UserGameRank.user_id == ctx.user_id, UserGameRank.guild_id == ctx.guild_id)
     ).all()
@@ -121,12 +123,12 @@ def _scope(ctx: GuildContext, user_id: int):
 
 
 @router.get("/comparisons", response_model=list[ComparisonOut])
-def list_cmp(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+def list_cmp(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database, scope="function")):
     return list_comparisons(db, GameComparison, scope=_scope(ctx, _target_user(db, ctx, user_id)))
 
 
 @router.put("/comparisons", response_model=ComparisonOut)
-def upsert_cmp(body: ComparisonIn, ctx: GuildContext = Depends(RANK), db: DbSession = Depends(get_database)):
+def upsert_cmp(body: ComparisonIn, ctx: GuildContext = Depends(RANK), db: DbSession = Depends(get_database, scope="function")):
     _game(db, ctx, body.winner_id)
     _game(db, ctx, body.loser_id)
     return upsert_comparison(db, GameComparison, body.winner_id, body.loser_id,
@@ -134,22 +136,22 @@ def upsert_cmp(body: ComparisonIn, ctx: GuildContext = Depends(RANK), db: DbSess
 
 
 @router.delete("/comparisons", status_code=204)
-def clear_cmp(ctx: GuildContext = Depends(RANK), db: DbSession = Depends(get_database)):
+def clear_cmp(ctx: GuildContext = Depends(RANK), db: DbSession = Depends(get_database, scope="function")):
     clear_comparisons(db, GameComparison, scope=_scope(ctx, ctx.user_id))
 
 
 @router.delete("/comparisons/{a}/{b}", status_code=204)
-def delete_cmp(a: int, b: int, ctx: GuildContext = Depends(RANK), db: DbSession = Depends(get_database)):
+def delete_cmp(a: int, b: int, ctx: GuildContext = Depends(RANK), db: DbSession = Depends(get_database, scope="function")):
     delete_comparison(db, GameComparison, a, b, scope=_scope(ctx, ctx.user_id))
 
 
 @router.get("/{gid}", response_model=GameOut)
-def get_game(gid: int, ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+def get_game(gid: int, ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database, scope="function")):
     return _out(_game(db, ctx, gid), _my_game_ids(db, ctx))
 
 
 @router.patch("/{gid}", response_model=GameOut)
-def update_game(gid: int, body: GamePatch, ctx: GuildContext = Depends(EDIT), db: DbSession = Depends(get_database)):
+def update_game(gid: int, body: GamePatch, ctx: GuildContext = Depends(EDIT), db: DbSession = Depends(get_database, scope="function")):
     g = _game(db, ctx, gid)
     for k, v in body.model_dump(exclude_unset=True).items():
         setattr(g, k, v)
@@ -158,7 +160,7 @@ def update_game(gid: int, body: GamePatch, ctx: GuildContext = Depends(EDIT), db
 
 
 @router.get("/{gid}/impact")
-def delete_impact(gid: int, ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+def delete_impact(gid: int, ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database, scope="function")):
     _game(db, ctx, gid)
     return {"rankings_destroyed": db.scalar(
         select(func.count()).select_from(UserGameRank).where(UserGameRank.game_id == gid)
@@ -166,13 +168,13 @@ def delete_impact(gid: int, ctx: GuildContext = Depends(VIEW), db: DbSession = D
 
 
 @router.delete("/{gid}", status_code=204)
-def delete_game(gid: int, ctx: GuildContext = Depends(DELETE), db: DbSession = Depends(get_database)):
+def delete_game(gid: int, ctx: GuildContext = Depends(DELETE), db: DbSession = Depends(get_database, scope="function")):
     db.delete(_game(db, ctx, gid))
 
 
 # ── People & genres & platforms ───────────────────────────────────────────────
 @router.get("/{gid}/persons", response_model=list[GamePersonRef])
-def game_persons(gid: int, ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+def game_persons(gid: int, ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database, scope="function")):
     g = _game(db, ctx, gid)
     return sorted(
         (GamePersonRef(id=l.person.id, name=l.person.name, name_en=l.person.name_en, role=l.role) for l in g.person_links),
@@ -182,7 +184,7 @@ def game_persons(gid: int, ctx: GuildContext = Depends(VIEW), db: DbSession = De
 
 @router.put("/{gid}/persons/{person_id}/{role}", status_code=204)
 def link_person(gid: int, person_id: int, role: GameRole, ctx: GuildContext = Depends(EDIT),
-                db: DbSession = Depends(get_database)):
+                db: DbSession = Depends(get_database, scope="function")):
     _game(db, ctx, gid)
     person = db.get(Person, person_id)
     if person is None or person.guild_id != ctx.guild_id:
@@ -193,19 +195,20 @@ def link_person(gid: int, person_id: int, role: GameRole, ctx: GuildContext = De
 
 @router.delete("/{gid}/persons/{person_id}/{role}", status_code=204)
 def unlink_person(gid: int, person_id: int, role: GameRole, ctx: GuildContext = Depends(EDIT),
-                  db: DbSession = Depends(get_database)):
+                  db: DbSession = Depends(get_database, scope="function")):
+    _game(db, ctx, gid)
     link = db.get(GamePerson, (gid, person_id, role))
     if link:
         db.delete(link)
 
 
 @router.get("/{gid}/genres")
-def game_genres(gid: int, ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+def game_genres(gid: int, ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database, scope="function")):
     return [{"id": g.id, "name": g.name} for g in sorted(_game(db, ctx, gid).genres, key=lambda g: g.name)]
 
 
 @router.put("/{gid}/genres/{genre_id}", status_code=204)
-def add_genre(gid: int, genre_id: int, ctx: GuildContext = Depends(EDIT), db: DbSession = Depends(get_database)):
+def add_genre(gid: int, genre_id: int, ctx: GuildContext = Depends(EDIT), db: DbSession = Depends(get_database, scope="function")):
     g = _game(db, ctx, gid)
     genre = db.get(Genre, genre_id)
     if genre is None or genre.guild_id != ctx.guild_id:
@@ -217,7 +220,7 @@ def add_genre(gid: int, genre_id: int, ctx: GuildContext = Depends(EDIT), db: Db
 
 
 @router.delete("/{gid}/genres/{genre_id}", status_code=204)
-def remove_genre(gid: int, genre_id: int, ctx: GuildContext = Depends(EDIT), db: DbSession = Depends(get_database)):
+def remove_genre(gid: int, genre_id: int, ctx: GuildContext = Depends(EDIT), db: DbSession = Depends(get_database, scope="function")):
     g = _game(db, ctx, gid)
     genre = db.get(Genre, genre_id)
     if genre is not None and genre in g.genres:
@@ -225,12 +228,12 @@ def remove_genre(gid: int, genre_id: int, ctx: GuildContext = Depends(EDIT), db:
 
 
 @router.get("/{gid}/platforms")
-def game_platforms_list(gid: int, ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+def game_platforms_list(gid: int, ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database, scope="function")):
     return [{"id": p.id, "name": p.name} for p in sorted(_game(db, ctx, gid).platforms, key=lambda p: p.name)]
 
 
 @router.put("/{gid}/platforms/{platform_id}", status_code=204)
-def add_platform(gid: int, platform_id: int, ctx: GuildContext = Depends(EDIT), db: DbSession = Depends(get_database)):
+def add_platform(gid: int, platform_id: int, ctx: GuildContext = Depends(EDIT), db: DbSession = Depends(get_database, scope="function")):
     g = _game(db, ctx, gid)
     platform = db.get(GamePlatform, platform_id)
     if platform is None or platform.guild_id != ctx.guild_id:
@@ -240,7 +243,7 @@ def add_platform(gid: int, platform_id: int, ctx: GuildContext = Depends(EDIT), 
 
 
 @router.delete("/{gid}/platforms/{platform_id}", status_code=204)
-def remove_platform(gid: int, platform_id: int, ctx: GuildContext = Depends(EDIT), db: DbSession = Depends(get_database)):
+def remove_platform(gid: int, platform_id: int, ctx: GuildContext = Depends(EDIT), db: DbSession = Depends(get_database, scope="function")):
     g = _game(db, ctx, gid)
     platform = db.get(GamePlatform, platform_id)
     if platform is not None and platform in g.platforms:
@@ -249,13 +252,13 @@ def remove_platform(gid: int, platform_id: int, ctx: GuildContext = Depends(EDIT
 
 # ── The personal layer ───────────────────────────────────────────────────────
 @router.get("/{gid}/entry", response_model=GameEntryOut | None)
-def get_entry(gid: int, ctx: GuildContext = Depends(RANK), db: DbSession = Depends(get_database)):
+def get_entry(gid: int, ctx: GuildContext = Depends(RANK), db: DbSession = Depends(get_database, scope="function")):
     row = db.get(UserGameRank, {"user_id": ctx.user_id, "game_id": gid})
     return GameEntryOut(hours_played=row.hours_played, notes=row.notes) if row else None
 
 
 @router.put("/{gid}/entry", status_code=204)
-def upsert_entry(gid: int, body: GameEntryIn, ctx: GuildContext = Depends(RANK), db: DbSession = Depends(get_database)):
+def upsert_entry(gid: int, body: GameEntryIn, ctx: GuildContext = Depends(RANK), db: DbSession = Depends(get_database, scope="function")):
     _game(db, ctx, gid)
     row = db.get(UserGameRank, {"user_id": ctx.user_id, "game_id": gid})
     if row is None:
@@ -270,14 +273,14 @@ def upsert_entry(gid: int, body: GameEntryIn, ctx: GuildContext = Depends(RANK),
 
 
 @router.delete("/{gid}/entry", status_code=204)
-def remove_entry(gid: int, ctx: GuildContext = Depends(RANK), db: DbSession = Depends(get_database)):
+def remove_entry(gid: int, ctx: GuildContext = Depends(RANK), db: DbSession = Depends(get_database, scope="function")):
     row = db.get(UserGameRank, {"user_id": ctx.user_id, "game_id": gid})
     if row:
         db.delete(row)
 
 
 @router.put("/{gid}/position", status_code=204)
-def move(gid: int, body: PositionBody, ctx: GuildContext = Depends(RANK), db: DbSession = Depends(get_database)):
+def move(gid: int, body: PositionBody, ctx: GuildContext = Depends(RANK), db: DbSession = Depends(get_database, scope="function")):
     row = db.get(UserGameRank, {"user_id": ctx.user_id, "game_id": gid})
     if row is None:
         raise HTTPException(404, "Not in your list")

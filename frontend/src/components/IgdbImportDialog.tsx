@@ -1,11 +1,11 @@
-import { useQueryClient } from "@tanstack/react-query";
-import { useCallback, useMemo, useState } from "react";
+import { useMutation } from "@tanstack/react-query";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { api } from "../api/client";
 import { useGuildApi, useIgdbImport, useIgdbLookup } from "../api/hooks";
-import { rk } from "../api/keys";
 import type {
   GameRole,
+  IgdbImportOut,
   IgdbImportPersonIn,
   IgdbLookup,
   IgdbPerson,
@@ -14,158 +14,33 @@ import { GAME_ROLE_LABELS, GAME_ROLES } from "../api/types";
 import { GenreChooser } from "../genre/GenreChooser";
 import { GAME_GENRES, GAME_PLATFORMS } from "../genre/config";
 import { useCan } from "../guild/GuildProvider";
-import { BusyButton } from "./Spinner";
+import { Notice } from "./form/FormKit";
+import { importSummary, UnmappedMapper, useWorkLinks } from "./import/ImportExtras";
+import { ImportDialog, ImportFooter, ImportSearch, ImportSection, ImportTitle, plural } from "./import/ImportKit";
+import { ImportPersonRow, type ImportRowPerson } from "./import/ImportPersonRow";
+import { LookupSummary } from "./LookupSummary";
 
 /** IGDB company ids and person ids are separate id spaces — namespace by source. */
 const creditKey = (p: IgdbPerson) => `${p.source}:${p.igdb_id}`;
 
-/* ── single person row ───────────────────────────────── */
-
-function PersonRow({
-  person,
-  index,
-  checked,
-  role,
-  resolution,
-  onToggle,
-  onRoleChange,
-  onResolve,
-}: {
-  person: IgdbPerson;
-  index: number;
-  checked: boolean;
-  role: GameRole;
-  resolution: number | null | undefined;
-  onToggle: () => void;
-  onRoleChange: (r: GameRole) => void;
-  onResolve: (personId: number | null) => void;
-}) {
-  const verifiedMatch = person.db_matches.find((m) => m.filmography_overlap);
-  const unverifiedMatches = person.db_matches.filter(
-    (m) => !m.filmography_overlap,
-  );
-
-  // Overridden = verified match exists but user explicitly changed away from it
-  const isOverridden =
-    verifiedMatch != null &&
-    resolution !== undefined &&
-    resolution !== verifiedMatch.person_id;
-
-  return (
-    <div className={`tip-row${checked ? " tip-row--checked" : ""}`}>
-      <label className="tip-check">
-        <input type="checkbox" checked={checked} onChange={onToggle} />
-      </label>
-
-      <div className="tip-body">
-        <div className="tip-main">
-          <strong className="tip-name">{person.name}</strong>
-          <span className="tip-desc">{person.source}</span>
-          <select
-            className="tip-role-select"
-            value={role}
-            onChange={(e) => onRoleChange(e.target.value as GameRole)}
-          >
-            {GAME_ROLES.map((r) => (
-              <option key={r} value={r}>
-                {GAME_ROLE_LABELS[r]}
-              </option>
-            ))}
-          </select>
-          <span className="tip-nat">{person.nationality_guess}</span>
-        </div>
-
-        {person.top_credits.length > 0 && (
-          <div className="tip-credits">
-            {person.top_credits.slice(0, 3).join("  ·  ")}
-          </div>
-        )}
-
-        <div className="tip-suggestion">💡 {person.suggestion_reason}</div>
-
-        {/* Verified match, not overridden — compact green badge with override button */}
-        {verifiedMatch && !isOverridden && (
-          <div className="tip-match tip-match--ok">
-            ✓ Matched: {verifiedMatch.person_name} (#{verifiedMatch.person_id})
-            <button
-              type="button"
-              className="tip-override"
-              onClick={() => onResolve(null)}
-            >
-              Not this person
-            </button>
-          </div>
-        )}
-
-        {/* Verified match overridden — show all candidates as radio group */}
-        {verifiedMatch && isOverridden && (
-          <div className="tip-match tip-match--warn">
-            <p>⚠ Match overridden — select alternative:</p>
-            {person.db_matches.map((m) => (
-              <div key={m.person_id} className="tip-conflict-option">
-                <label>
-                  <input
-                    type="radio"
-                    name={`resolve-${index}`}
-                    checked={resolution === m.person_id}
-                    onChange={() => onResolve(m.person_id)}
-                  />
-                  Use <strong>{m.person_name}</strong> (#{m.person_id})
-                  {!m.has_game_entries && " — no games"}
-                  {m.has_game_entries && !m.filmography_overlap && " — different game catalog, name match only"}
-                </label>
-                {!m.filmography_overlap && (
-                  <div className="tip-artist-summary">{m.artist_summary}</div>
-                )}
-              </div>
-            ))}
-            <label className="tip-conflict-option">
-              <input
-                type="radio"
-                name={`resolve-${index}`}
-                checked={resolution === null}
-                onChange={() => onResolve(null)}
-              />
-              Create new person
-            </label>
-          </div>
-        )}
-
-        {/* No verified match, unverified matches exist */}
-        {!verifiedMatch && unverifiedMatches.length > 0 && (
-          <div className="tip-match tip-match--warn">
-            <p>⚠ Name match only — not verified against this game's credits:</p>
-            {unverifiedMatches.map((m) => (
-              <div key={m.person_id} className="tip-conflict-option">
-                <label>
-                  <input
-                    type="radio"
-                    name={`resolve-${index}`}
-                    checked={resolution === m.person_id}
-                    onChange={() => onResolve(m.person_id)}
-                  />
-                  Use existing <strong>{m.person_name}</strong> (#{m.person_id})
-                  {m.has_game_entries
-                    ? " — has game credits, but a different catalog"
-                    : " — no game entries"}
-                </label>
-                <div className="tip-artist-summary">{m.artist_summary}</div>
-              </div>
-            ))}
-            <label className="tip-conflict-option">
-              <input
-                type="radio"
-                name={`resolve-${index}`}
-                checked={resolution === null || resolution === undefined}
-                onChange={() => onResolve(null)}
-              />
-              Create new person
-            </label>
-          </div>
-        )}
-      </div>
-    </div>
-  );
+/** The IGDB credit shape -> the shared row's. */
+function toRow(p: IgdbPerson): ImportRowPerson<GameRole> {
+  return {
+    name: p.name,
+    description: p.source === "company" ? "Studio" : "Person",
+    suggested_role: p.suggested_role,
+    suggestion_reason: p.suggestion_reason,
+    top_credits: p.top_credits,
+    nationality_guess: p.nationality_guess,
+    roleLocked: false,
+    matches: p.db_matches.map((m) => ({
+      person_id: m.person_id,
+      person_name: m.person_name,
+      has_entries: m.has_game_entries,
+      filmography_overlap: m.filmography_overlap,
+      summaries: [m.artist_summary],
+    })),
+  };
 }
 
 /* ── main component ──────────────────────────────────── */
@@ -173,12 +48,15 @@ function PersonRow({
 export function IgdbImportDialog({
   onClose,
   onSuccess,
+  mergeInto,
 }: {
   onClose: () => void;
   onSuccess?: (gameId: number) => void;
+  /** Add the credits to this game instead of creating one. */
+  mergeInto?: { id: number; name: string; release_year: number; igdb_id: number | null };
 }) {
-  const [title, setTitle] = useState("");
-  const [year, setYear] = useState("");
+  const [title, setTitle] = useState(mergeInto?.name ?? "");
+  const [year, setYear] = useState(mergeInto ? String(mergeInto.release_year) : "");
   const [lookup, setLookup] = useState<IgdbLookup | null>(null);
   const [checked, setChecked] = useState<Set<number>>(new Set());
   const [roles, setRoles] = useState<GameRole[]>([]);
@@ -190,28 +68,36 @@ export function IgdbImportDialog({
   const [error, setError] = useState<string | null>(null);
   const [addToList, setAddToList] = useState(true);
 
-  const qc = useQueryClient();
-  const { guildId, userId, base } = useGuildApi();
+  const { guildId, base } = useGuildApi();
   const canRank = useCan("rank");
   const lookupMut = useIgdbLookup();
   const importMut = useIgdbImport();
+  const mergeMut = useMutation({
+    meta: { errorToast: false },
+    mutationFn: ({ id, body }: { id: number; body: unknown }) =>
+      api.post<{ people_linked: number } & Pick<IgdbImportOut, "created_people" | "reused_people">>(`${base}/games/igdb-import/credits/${id}`, body),
+  });
+  const links = useWorkLinks(mergeInto ? undefined : lookup?.title);
 
   /* ── search ──────────────────────────────────────── */
 
-  const handleSearch = useCallback(() => {
+  const handleSearch = useCallback((igdbId?: number) => {
     setError(null);
     lookupMut.mutate(
-      { title: title.trim(), year: year ? parseInt(year, 10) : undefined },
+      { title: title.trim(), year: year ? parseInt(year, 10) : undefined, igdb_id: igdbId },
       {
         onSuccess(data) {
           setLookup(data);
-          setChecked(new Set());
+          // Developers are what IGDB is good for; tick them, and anyone already matched.
+          setChecked(new Set(data.people.flatMap((p, i) =>
+            p.suggested_role === "developer" || p.db_matches.some((m) => m.filmography_overlap) ? [i] : [])));
           setRoles(data.people.map((p) => p.suggested_role));
           const res: Record<string, number | null> = {};
           for (const p of data.people) {
             const k = creditKey(p);
             if (k in res) continue;
-            const v = p.db_matches.find((m) => m.filmography_overlap);
+            const v = p.db_matches.find((m) => m.filmography_overlap)
+              ?? (p.db_matches.length === 1 ? p.db_matches[0] : undefined);
             if (v) res[k] = v.person_id;
           }
           setResolutions(res);
@@ -226,6 +112,12 @@ export function IgdbImportDialog({
       },
     );
   }, [title, year, lookupMut]);
+
+  // Once, on open: the lookup for the game we're adding credits to.
+  useEffect(() => {
+    if (mergeInto) handleSearch(mergeInto.igdb_id ?? undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount only
+  }, []);
 
   /* ── people toggles ──────────────────────────────── */
 
@@ -257,12 +149,11 @@ export function IgdbImportDialog({
 
   // IGDB's first_release_date is genuinely absent for a lot of older/indie
   // titles; fall back to the year the user typed rather than posting 0.
-  const releaseYear = useMemo(() => {
-    const fromLookup = parseInt((lookup?.release_date ?? "").slice(0, 4), 10);
-    if (!Number.isNaN(fromLookup) && fromLookup > 0) return fromLookup;
-    const typed = parseInt(year, 10);
-    return Number.isNaN(typed) ? 0 : typed;
-  }, [lookup, year]);
+  const lookupYear = useMemo(() => {
+    const y = parseInt((lookup?.release_date ?? "").slice(0, 4), 10);
+    return Number.isNaN(y) || y <= 0 ? 0 : y;
+  }, [lookup]);
+  const releaseYear = lookupYear || (parseInt(year, 10) || 0);
 
   const handleImport = useCallback(() => {
     if (!lookup) return;
@@ -280,20 +171,42 @@ export function IgdbImportDialog({
       })
       .filter((x): x is IgdbImportPersonIn => x !== null);
 
+    if (mergeInto) {
+      mergeMut.mutate(
+        {
+          id: mergeInto.id,
+          body: {
+            igdb_id: lookup.igdb_id, summary: lookup.summary, cover_url: lookup.cover_url,
+            people, genre_ids: [...selectedGenres], platform_ids: [...selectedPlatforms],
+          },
+        },
+        {
+          onSuccess(result) {
+            importSummary(`${result.people_linked} credit${result.people_linked === 1 ? "" : "s"} for ${mergeInto.name}`, result);
+            onClose();
+          },
+          onError: (e) => setError(e.message),
+        },
+      );
+      return;
+    }
+
     importMut.mutate(
       {
+        igdb_id: lookup.igdb_id,
         title: lookup.title,
         release_year: releaseYear,
+        summary: lookup.summary,
+        cover_url: lookup.cover_url,
         people,
         genre_ids: [...selectedGenres],
+        add_to_list: addToList && canRank,
         platform_ids: [...selectedPlatforms],
       },
       {
         async onSuccess(result) {
-          if (addToList && canRank) {
-            await api.put(`${base}/games/${result.game_id}/entry`, {});
-            qc.invalidateQueries({ queryKey: rk(guildId, userId, "games") });
-          }
+          await links.commit("game", result.game_id);
+          importSummary(lookup.title, result);
           onSuccess?.(result.game_id);
           onClose();
         },
@@ -302,7 +215,7 @@ export function IgdbImportDialog({
     );
   }, [
     lookup, checked, roles, resolutions, selectedGenres, selectedPlatforms,
-    releaseYear, importMut, onClose, onSuccess, addToList, canRank, base, qc, guildId, userId,
+    releaseYear, importMut, mergeMut, mergeInto, links, onClose, onSuccess, addToList, canRank,
   ]);
 
   const unmappedGenres = useMemo(
@@ -323,146 +236,80 @@ export function IgdbImportDialog({
 
   /* ── render ──────────────────────────────────────── */
 
-  const importing = importMut.isPending || importMut.isSuccess;
+  const importing = importMut.isPending || importMut.isSuccess || mergeMut.isPending;
 
   return (
-    <div className="modal tmdb-import-panel">
-      <h2>Import Game from IGDB</h2>
-
-      {error && <p className="tip-error">{error}</p>}
-
-      {/* search form */}
-      {!lookup && (
-        <form
-          className="tip-search"
-          onSubmit={(e) => {
-            e.preventDefault();
-            handleSearch();
-          }}
-        >
-          <label>
-            Title
-            <input
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              placeholder="Game title"
-              autoFocus
-            />
-          </label>
-          <label>
-            Year
-            <input
-              value={year}
-              onChange={(e) => setYear(e.target.value)}
-              placeholder="optional"
-              type="number"
-              min={1970}
-              max={2099}
-            />
-          </label>
-          <BusyButton type="submit" busy={lookupMut.isPending} busyLabel="Searching IGDB…" disabled={!title.trim()}>Search IGDB</BusyButton>
-          <button type="button" onClick={onClose}>Cancel</button>
-        </form>
-      )}
-
-      {/* results */}
-      {lookup && (
+    <ImportDialog title={mergeInto ? `Import credits from IGDB · ${mergeInto.name}` : "Import a game from IGDB"}
+                  onClose={onClose} error={error} reviewing={!!lookup}>
+      {!lookup ? (
+        <ImportSearch source="IGDB" title={title} onTitle={setTitle} year={year} onYear={setYear}
+                      placeholder="Game title, or igdb:1234" minYear={1950}
+                      busy={lookupMut.isPending} onSearch={() => handleSearch()} onCancel={onClose} />
+      ) : (
         <>
-          {/* game header */}
-          <div className="tip-movie-header">
-            <h3>
-              {lookup.title}
-              {releaseYear ? ` (${releaseYear})` : ""}
-            </h3>
-            {lookup.ambiguous && (
-              <span className="tip-warn">
-                ⚠ Multiple matches — showing highest-rated
-              </span>
-            )}
-            <button
-              type="button"
-              className="icon"
-              onClick={() => {
-                setLookup(null);
-                setError(null);
-              }}
-              title="New search"
-            >
-              ↩
-            </button>
-          </div>
-
-          {releaseYear === 0 && (
-            <p className="tip-warn">
-              ⚠ IGDB has no release date for this title — enter a year above and re-search to import.
-            </p>
+          <ImportTitle title={lookup.title} year={releaseYear || null} ambiguous={lookup.ambiguous}
+                       onNewSearch={() => { setLookup(null); setError(null); }} />
+          <LookupSummary image={lookup.cover_url} overview={lookup.summary}
+                         candidates={lookup.candidates} busy={lookupMut.isPending}
+                         onPick={(c) => c.igdb_id && handleSearch(c.igdb_id)}
+                         existing={!mergeInto && lookup.existing_game_id ? { to: `/g/${guildId}/games/${lookup.existing_game_id}`, label: "Open it" } : null} />
+          {!lookupYear && !mergeInto && (
+            <Notice tone={releaseYear >= 1950 ? "info" : "warning"}>
+              <div className="flex flex-wrap items-center gap-2">
+                IGDB has no release date for this title. Year:
+                <input type="number" min={1950} max={2099} aria-label="Release year" className="h-7 w-24 py-0"
+                       value={year} onChange={(e) => setYear(e.target.value)} />
+              </div>
+            </Notice>
           )}
 
-          {/* people */}
-          <section className="tip-section">
-            <div className="tip-section-head">
-              <h3>
-                Credits ({lookup.people.length} total, {checkedCount}{" "}
-                selected)
-              </h3>
-              <button type="button" onClick={checkAll}>Check All</button>
-              <button type="button" onClick={uncheckAll}>Uncheck All</button>
-            </div>
-
-            <div className="tip-people-list">
+          <ImportSection title="Credits" count={`${checkedCount} of ${lookup.people.length} selected`}
+                         onAll={checkAll} onNone={uncheckAll}
+                         hint="Developers and anyone already in the catalog are ticked. Publishers aren't credited.">
+            <div className="grid gap-1.5">
               {lookup.people.map((p, i) => (
-                <PersonRow
+                <ImportPersonRow
                   key={creditKey(p)}
-                  person={p}
-                  index={i}
+                  person={toRow(p)}
+                  groupName={creditKey(p)}
                   checked={checked.has(i)}
                   role={roles[i] ?? p.suggested_role}
                   resolution={resolutions[creditKey(p)]}
+                  roleOptions={GAME_ROLES}
+                  roleLabels={GAME_ROLE_LABELS}
+                  credits="game credits"
                   onToggle={() => togglePerson(i)}
                   onRoleChange={(r) => setRole(i, r)}
                   onResolve={(pid) => setResolution(creditKey(p), pid)}
                 />
               ))}
             </div>
-          </section>
+          </ImportSection>
 
-          {/* genres */}
-          <section className="tip-section">
-            <h3>Genres</h3>
+          <ImportSection title="Genres" count={`${selectedGenres.size} selected`}>
             <GenreChooser domain={GAME_GENRES} selected={selectedGenres} onChange={setSelectedGenres} />
-            {unmappedGenres.length > 0 && (
-              <p className="tip-warn">
-                Unmapped IGDB genres: {unmappedGenres.join(", ")}
-              </p>
-            )}
-          </section>
+            <UnmappedMapper source="IGDB" noun="genres" names={unmappedGenres} domain={GAME_GENRES}
+                            onMapped={(id) => setSelectedGenres((prev) => new Set(prev).add(id))} />
+          </ImportSection>
 
-          {/* platforms */}
-          <section className="tip-section">
-            <h3>Platforms</h3>
+          <ImportSection title="Platforms" count={`${selectedPlatforms.size} selected`}>
             <GenreChooser domain={GAME_PLATFORMS} selected={selectedPlatforms} onChange={setSelectedPlatforms} />
-            {unmappedPlatforms.length > 0 && (
-              <p className="tip-warn">
-                Unmapped IGDB platforms: {unmappedPlatforms.join(", ")}
-              </p>
-            )}
-          </section>
+            <UnmappedMapper source="IGDB" noun="platforms" names={unmappedPlatforms} domain={GAME_PLATFORMS}
+                            onMapped={(id) => setSelectedPlatforms((prev) => new Set(prev).add(id))} />
+          </ImportSection>
 
-          {/* footer */}
-          <footer className="tip-footer">
-            {canRank && (
-              <label className="checkbox-label tip-add-to-list">
-                <input type="checkbox" checked={addToList} onChange={(e) => setAddToList(e.target.checked)} />
-                Add to my list
-              </label>
-            )}
-            <button type="button" onClick={onClose} disabled={importing}>Cancel</button>
-            <BusyButton type="button" className="tip-primary" busy={importing} busyLabel="Importing…" disabled={releaseYear === 0} onClick={handleImport}>
-              Import Game + {checkedCount} people
-            </BusyButton>
-          </footer>
+          {links.section}
+
+          <ImportFooter
+            addToList={!mergeInto && canRank ? { checked: addToList, onChange: setAddToList } : null}
+            onCancel={onClose}
+            importing={importing}
+            disabled={releaseYear < 1950 && !mergeInto}
+            onImport={handleImport}
+            label={mergeInto ? `Add ${plural(checkedCount, "credit")}` : `Import with ${plural(checkedCount, "credit")}`}
+          />
         </>
       )}
-    </div>
+    </ImportDialog>
   );
 }

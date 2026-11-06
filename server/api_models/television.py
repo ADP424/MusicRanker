@@ -50,6 +50,9 @@ class TelevisionShowOut(ORMSchema):
     name_en: str | None
     release_year: int
     notes: str | None
+    tmdb_id: int | None = None
+    overview: str | None = None
+    image_url: str | None = None
     persons: list[TelevisionPersonRef] = []
     genre_ids: list[int] = []
     links: list[LinkOut] = []
@@ -111,6 +114,8 @@ class TelevisionSeasonOut(ORMSchema):
     release_year: int
     notes: str | None
     season_rank: Decimal | None
+    overview: str | None = None
+    image_url: str | None = None
     persons: list[TelevisionPersonRef] = []
     links: list[LinkOut] = []
     episodes: list[EpisodeRef] = []
@@ -171,6 +176,9 @@ class TelevisionEpisodeOut(ORMSchema):
     release_year: int
     notes: str | None
     episode_rank: Decimal | None
+    episode_number: int | None = None
+    overview: str | None = None
+    image_url: str | None = None
     persons: list[TelevisionPersonRef] = []
     genre_ids: list[int] = []
     links: list[LinkOut] = []

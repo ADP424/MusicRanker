@@ -1,6 +1,8 @@
+import { Pencil } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
 import type { GenreLike } from "./config";
 import { edgeKey, type CycleReport } from "./cycles";
+import { cn } from "@/lib/utils";
 
 // ─── Layout ────────────────────────────────────────────────────────────────
 
@@ -158,7 +160,8 @@ export function GenreTree({
   /** Computed once by the caller (shared with the List-view warning banner) —
    *  don't recompute it here. */
   cycles: CycleReport;
-  onEdit: (g: GenreLike) => void;
+  /** Omit for read-only viewers: no edit affordance is drawn. */
+  onEdit?: (g: GenreLike) => void;
 }) {
   const { nodes, edges, width, height } = useMemo(
     () => computeLayout(genres, cycles.backEdges),
@@ -222,7 +225,7 @@ export function GenreTree({
 
   return (
     <div
-      className="genre-tree-canvas"
+      className="relative w-full cursor-grab select-none overflow-hidden rounded-md border active:cursor-grabbing h-[80vh]"
       onMouseDown={onMouseDown}
       onMouseMove={onMouseMove}
       onMouseUp={onMouseUp}
@@ -275,22 +278,27 @@ export function GenreTree({
           return (
             <div
               key={n.id}
-              className={
-                "genre-node" +
-                (isSelected ? " genre-node-selected" : "") +
-                (isDimmed ? " genre-node-dimmed" : "") +
-                (isCyclic ? " genre-node-cyclic" : "")
-              }
+              className={cn(
+                "flex cursor-pointer items-center gap-1 rounded-md border bg-card px-2 text-xs select-none hover:border-foreground hover:bg-muted",
+                isSelected && "border-foreground bg-accent font-semibold",
+                isDimmed && "opacity-30",
+                isCyclic && "border-dashed border-warning",
+              )}
               style={{ position: "absolute", left: n.x, top: n.y, width: NODE_W, height: NODE_H }}
               onClick={(e) => onNodeClick(n.id, e)}
               title={tip || undefined}
             >
-              <span className="genre-node-name">{n.genre.name}</span>
-              <button
-                className="genre-node-edit icon"
-                onClick={(e) => { e.stopPropagation(); onEdit(n.genre); }}
-                title="Edit"
-              >✎</button>
+              <span className="min-w-0 flex-1 truncate">{n.genre.name}</span>
+              {onEdit && (
+                <button
+                  type="button"
+                  data-slot="node-edit"
+                  className="shrink-0 cursor-pointer rounded p-0.5 text-muted-foreground hover:text-foreground"
+                  onClick={(e) => { e.stopPropagation(); onEdit(n.genre); }}
+                  title="Edit"
+                  aria-label={`Edit ${n.genre.name}`}
+                ><Pencil className="size-3" /></button>
+              )}
             </div>
           );
         })}

@@ -1,14 +1,16 @@
 import { useMemo } from "react";
 import { NavLink, useParams } from "react-router-dom";
 import {
-  useArtistCatalog, useComparisonMutations, useComparisons, useGuildApi, useRankedBooks, useRankedMovies,
-  useRankedGames, useRankedTelevisionEpisodes, useRankedTelevisionSeasons, useRankedTelevisionShows, useReorder,
-  useTelevisionSeason, useTelevisionShow, useArtist,
+  useComparisonMutations, useComparisons, useGuildApi, useRankedAlbums, useRankedArtists, useRankedBooks,
+  useRankedMovies, useRankedGames, useRankedTelevisionEpisodes, useRankedTelevisionSeasons,
+  useRankedShowEpisodes, useRankedTelevisionShows, useReorder, useTelevisionSeasons, useTelevisionSeason, useTelevisionShow, useArtist,
 } from "../api/hooks";
-import { api } from "../api/client";
-import { useQuery } from "@tanstack/react-query";
-import type { Album } from "../api/types";
 import { PairwiseRankPage, type RankItem } from "./PairwiseRankPage";
+
+/** The Overview / Rank tabs above a scoped ranking; NavLink marks the current one `.active`. */
+const RANK_TABS = "flex flex-wrap gap-1 border-b [&>a]:-mb-px [&>a]:border-b-2 [&>a]:border-transparent [&>a]:px-3 [&>a]:py-1.5 "
+  + "[&>a]:text-sm [&>a]:text-muted-foreground [&>a]:no-underline [&>a:hover]:text-foreground "
+  + "[&>a.active]:border-primary [&>a.active]:font-medium [&>a.active]:text-foreground";
 
 function mins(m: number) {
   const h = Math.floor(m / 60);
@@ -35,13 +37,14 @@ function useAnswers(path: string) {
 // ── Artists ────────────────────────────────────────────────────────────────────
 
 export function ArtistsRankPage() {
-  const { data: artists = [], isLoading } = useArtistCatalog();
+  // Your list, not the catalog: the reorder endpoint takes exactly the ids you've ranked.
+  const { data: ranked = [], isLoading } = useRankedArtists();
   const answers = useAnswers("artists");
   const reorder = useReorder("artists", "artists");
 
   const items: RankItem[] = useMemo(
-    () => artists.map((a) => ({ id: a.id, label: a.name, sublabel: a.name_en, meta: a.core_nationality })),
-    [artists],
+    () => ranked.map(({ artist: a }) => ({ id: a.id, label: a.name, sublabel: a.name_en, meta: a.core_nationality })),
+    [ranked],
   );
 
   return (
@@ -66,30 +69,26 @@ export function ArtistsRankPage() {
 export function ArtistAlbumsRankPage() {
   const { id } = useParams<{ id: string }>();
   const aid = Number(id);
-  const { guildId, base } = useGuildApi();
+  const { guildId } = useGuildApi();
 
   const { data: artist } = useArtist(aid);
-  const { data: albums = [], isLoading } = useQuery({
-    queryKey: ["g", guildId, "artists", aid, "albums"],
-    queryFn: () => api.get<Album[]>(`${base}/artists/${aid}/albums`),
-    enabled: !Number.isNaN(aid),
-  });
+  const { data: ranked = [], isLoading } = useRankedAlbums(aid);
   const answers = useAnswers(`artists/${aid}/albums`);
   const reorder = useReorder(`artists/${aid}/albums`, "artists");
 
   const items: RankItem[] = useMemo(
     () =>
-      albums.map((a) => ({
+      ranked.map(({ album: a }) => ({
         id: a.id,
         label: a.name,
         sublabel: a.name_en,
         meta: `${a.release_year} · ${secs(a.runtime_seconds)}`,
       })),
-    [albums],
+    [ranked],
   );
 
   const tabs = (
-    <div className="page-tabs">
+    <div className={RANK_TABS}>
       <NavLink to={`/g/${guildId}/music/artists/${aid}`} end>
         Overview
       </NavLink>
@@ -286,7 +285,7 @@ export function TelevisionSeasonsRankPage() {
   );
 
   const tabs = (
-    <div className="page-tabs">
+    <div className={RANK_TABS}>
       <NavLink to={`/g/${guildId}/television/shows/${sid}`} end>
         Overview
       </NavLink>
@@ -337,7 +336,7 @@ export function TelevisionEpisodesRankPage() {
   );
 
   const tabs = (
-    <div className="page-tabs">
+    <div className={RANK_TABS}>
       <NavLink to={`/g/${guildId}/television/seasons/${seid}`} end>
         Overview
       </NavLink>
@@ -353,6 +352,59 @@ export function TelevisionEpisodesRankPage() {
       nounPlural="episodes"
       items={items}
       isLoading={seasonLoading || isLoading || answers.isLoading}
+      comparisons={answers.comparisons}
+      onAnswer={answers.onAnswer}
+      onDeleteAnswer={answers.onDeleteAnswer}
+      onClearAnswers={answers.onClearAnswers}
+      onApply={(ids) => reorder.mutateAsync(ids)}
+      tabs={tabs}
+    />
+  );
+}
+
+// ── Episodes across the whole show ─────────────────────────────────────────────
+
+export function TelevisionShowEpisodesRankPage() {
+  const { id } = useParams<{ id: string }>();
+  const sid = Number(id);
+  const { guildId } = useGuildApi();
+
+  const { data: show, isLoading: showLoading } = useTelevisionShow(sid);
+  const { data: seasons = [] } = useTelevisionSeasons(sid);
+  const { data: ranked = [], isLoading } = useRankedShowEpisodes(sid);
+  const answers = useAnswers(`television/shows/${sid}/episodes`);
+  const reorder = useReorder(`television/shows/${sid}/episodes`, "television");
+
+  const items: RankItem[] = useMemo(() => {
+    const seasonName = new Map(seasons.map((s) => [s.id, s.name]));
+    return ranked.map((r) => ({
+      id: r.episode.id,
+      label: r.episode.name,
+      sublabel: r.episode.name_en,
+      meta: `${seasonName.get(r.episode.season_id) ?? "Season ?"} · ${r.episode.release_year} · ${mins(r.episode.runtime_minutes)}`,
+    }));
+  }, [ranked, seasons]);
+
+  const tabs = (
+    <div className={RANK_TABS}>
+      <NavLink to={`/g/${guildId}/television/shows/${sid}`} end>
+        Overview
+      </NavLink>
+      <NavLink to={`/g/${guildId}/television/shows/${sid}/episodes`} end>
+        All episodes
+      </NavLink>
+      <NavLink to={`/g/${guildId}/television/shows/${sid}/episodes/rank`}>Rank episodes</NavLink>
+    </div>
+  );
+
+  return (
+    <PairwiseRankPage
+      title={show ? `Rank every ${show.name} episode` : "Rank episodes"}
+      scopeKey={`tv-show-episodes:${sid}`}
+      noun="episode"
+      nounPlural="episodes"
+      items={items}
+      isLoading={showLoading || isLoading || answers.isLoading}
       comparisons={answers.comparisons}
       onAnswer={answers.onAnswer}
       onDeleteAnswer={answers.onDeleteAnswer}

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import timedelta
 
-from fastapi import Depends, HTTPException, Request
+from fastapi import Depends, HTTPException, Request, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session as DbSession
 
@@ -13,10 +13,10 @@ from .database_models import GuildMember, User
 from .database_models.guild_role import GuildRole
 from .database_models.mixins import utcnow
 from .database_models.user import Session as AuthSession
-from .security import SESSION_COOKIE, token_hash
+from .security import SECURE_COOKIES, SESSION_COOKIE, SESSION_TTL, token_hash
 
 
-def current_session(request: Request, db: DbSession = Depends(get_database)) -> AuthSession:
+def current_session(request: Request, response: Response, db: DbSession = Depends(get_database, scope="function")) -> AuthSession:
     raw = request.cookies.get(SESSION_COOKIE)
     if not raw:
         raise HTTPException(401, "Not authenticated")
@@ -26,8 +26,16 @@ def current_session(request: Request, db: DbSession = Depends(get_database)) -> 
     if not sess.user.is_active:
         raise HTTPException(403, "Account disabled")
     # Sliding expiry, but only write once a day to avoid a UPDATE per request.
-    if utcnow() - sess.last_seen_at > timedelta(hours=24):
-        sess.last_seen_at = utcnow()
+    # The cookie's max-age is renewed alongside, or the browser would still
+    # drop it SESSION_TTL after login.
+    now = utcnow()
+    if now - sess.last_seen_at > timedelta(hours=24):
+        sess.last_seen_at = now
+        sess.expires_at = now + SESSION_TTL
+        response.set_cookie(
+            SESSION_COOKIE, raw, httponly=True, samesite="lax",
+            secure=SECURE_COOKIES, path="/", max_age=int(SESSION_TTL.total_seconds()),
+        )
     return sess
 
 
@@ -60,7 +68,7 @@ def guild_ctx(*required: Capability):
     def dep(
         guild_id: int,
         user: User = Depends(current_user),
-        db: DbSession = Depends(get_database),
+        db: DbSession = Depends(get_database, scope="function"),
     ) -> GuildContext:
         member = db.get(GuildMember, (guild_id, user.id))
         if member is None:
@@ -70,4 +78,5 @@ def guild_ctx(*required: Capability):
             ctx.require(cap)
         return ctx
 
+    dep.required_caps = frozenset(required)  # read by the authorization tests
     return dep

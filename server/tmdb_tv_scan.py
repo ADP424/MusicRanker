@@ -1,7 +1,5 @@
-"""Show-centric scan for missing television person links.
-
-The television counterpart of `tmdb_scan.py`, over the show -> season ->
-episode tree.  Per local show:
+"""The television side of the TMDB person scan (`tmdb_person_scan.py`), over
+the show -> season -> episode tree.  Per local show:
 
     Phase 1  local show -> tmdb tv id              (search; cached ~forever)
     Phase 2  /tv/{id}, each season + its aggregate_credits, and the credits of
@@ -27,12 +25,10 @@ import does.  Seasons are found by `season_number`, falling back to title.
 
 from __future__ import annotations
 
-import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Optional
 
-from . import database
 from .database_models import (
     CastRole,
     Person,
@@ -43,29 +39,12 @@ from .database_models import (
     TelevisionShow,
     TelevisionShowPerson,
 )
-from .scan_common import (
-    Candidate,
-    JobRegistry,
-    ScanJob,
-    ScanStats,
-    Unresolved,
-    fetch_all,
-    identify,
-    index_people,
-    run_job,
-    sort_candidates,
-)
-from .tmdb_client import (
-    TTL_CREDITS,
-    TTL_NEGATIVE,
-    TTL_SEARCH,
-    WORKERS,
-    TmdbClient,
-    get_sidecar,
-)
+from .scan_common import Unresolved
+from .tmdb_client import TTL_CREDITS, TTL_NEGATIVE, TTL_SEARCH, TmdbClient
 from .tmdb_common import norm as _norm
 from .tmdb_tv_import import (
     DIRECTOR_JOBS,
+    MAIN_CAST_SHARE,
     _aired,
     _creators,
     _Credit,
@@ -115,6 +94,7 @@ class LShow:
     name: str
     name_en: Optional[str]
     release_year: Optional[int]
+    tmdb_id: Optional[int] = None
     seasons: list = field(default_factory=list)
     episodes: list = field(default_factory=list)
 
@@ -154,7 +134,8 @@ def _load_db(db, guild_id: int) -> _Db:
     shows = {
         r[0]: LShow(*r)
         for r in db.query(
-            TelevisionShow.id, TelevisionShow.name, TelevisionShow.name_en, TelevisionShow.release_year
+            TelevisionShow.id, TelevisionShow.name, TelevisionShow.name_en, TelevisionShow.release_year,
+            TelevisionShow.tmdb_id,
         ).filter(TelevisionShow.guild_id == guild_id)
     }
     seasons = {
@@ -294,6 +275,7 @@ class _Placed:
 @dataclass
 class _ShowFetch:
     show: LShow
+    tmdb_id: Optional[int] = None
     error: Optional[str] = None
     # tmdb person id -> (name, norms, popularity) for everyone credited anywhere
     people: dict[int, tuple[str, set[str], float]] = field(default_factory=dict)
@@ -340,7 +322,7 @@ def _locate_episode(e: LEpisode, sn: Optional[int], payloads: dict[int, dict]) -
 
 
 def _fetch_show(client: TmdbClient, s: LShow, linked: set[str], in_scope: bool) -> Optional[_ShowFetch]:
-    tid = _resolve_show_id(client, s, linked, allow_network=in_scope)
+    tid = s.tmdb_id or _resolve_show_id(client, s, linked, allow_network=in_scope)
     if tid is None:
         return None
     get = lambda path: client.get(path, ttl=TTL_CREDITS, allow_network=in_scope)  # noqa: E731
@@ -348,7 +330,7 @@ def _fetch_show(client: TmdbClient, s: LShow, linked: set[str], in_scope: bool) 
     if details is None:
         return None
 
-    out = _ShowFetch(s)
+    out = _ShowFetch(s, tmdb_id=tid)
     meta = [m for m in details.get("seasons") or [] if m.get("season_number") is not None]
     local_sn = {ls.id: _season_for(meta, ls) for ls in s.seasons}
     wanted = sorted(
@@ -371,13 +353,13 @@ def _fetch_show(client: TmdbClient, s: LShow, linked: set[str], in_scope: bool) 
     if not in_scope:
         return out  # evidence only: who's in this show is all we need
 
-    # Show level: creators + on every aired episode of every regular season.
+    # Show level: creators + on at least MAIN_CAST_SHARE of the aired episodes of every regular season.
     scopes = [(len(_aired(payloads[n].get("episodes") or [])), tallies[n]) for n in payloads if n != 0]
-    show_level = _dedupe(_creators(details) + _every_episode(scopes, level="show"))
+    show_level = _dedupe(_creators(details) + _every_episode(scopes, level="show", share=MAIN_CAST_SHARE))
     above = {(cr.tmdb_id, _kind(cr)) for cr in show_level}
     out.placed += [_Placed(SHOW, s.id, (), cr) for cr in show_level]
 
-    # Season level: on every episode of that season, unless offered above.
+    # Season level: on at least MAIN_CAST_SHARE of that season's episodes, unless offered above.
     season_above: dict[int, set] = {}
     for ls in s.seasons:
         n = local_sn[ls.id]
@@ -393,7 +375,7 @@ def _fetch_show(client: TmdbClient, s: LShow, linked: set[str], in_scope: bool) 
             )
             continue
         eps = payloads[n].get("episodes") or []
-        credits = _every_episode([(len(_aired(eps)) or len(eps), tallies[n])], level="season")
+        credits = _every_episode([(len(_aired(eps)) or len(eps), tallies[n])], level="season", share=MAIN_CAST_SHARE)
         credits = [cr for cr in credits if (cr.tmdb_id, _kind(cr)) not in above]
         season_above[n] = {(cr.tmdb_id, _kind(cr)) for cr in credits}
         out.placed += [_Placed(SEASON, ls.id, ((SHOW, s.id),), cr) for cr in credits]
@@ -428,41 +410,7 @@ def _fetch_show(client: TmdbClient, s: LShow, linked: set[str], in_scope: bool) 
 
 
 # ──────────────────────────────────────────────────────────────
-#  Credit index (only people whose name matches someone local)
-# ──────────────────────────────────────────────────────────────
-@dataclass(slots=True)
-class _TPerson:
-    ext_id: int
-    name: str
-    popularity: float = 0.0
-    norms: set = field(default_factory=set)
-    works: set = field(default_factory=set)  # local show ids
-    placed: list = field(default_factory=list)
-
-
-class _CreditIndex:
-    def __init__(self, interesting_norms: set[str]):
-        self._keep = interesting_norms
-        self.people: dict[int, _TPerson] = {}
-
-    def ingest(self, f: _ShowFetch) -> None:
-        for tmdb_id, (name, norms, pop) in f.people.items():
-            if not (norms & self._keep):
-                continue
-            tp = self.people.get(tmdb_id)
-            if tp is None:
-                tp = self.people[tmdb_id] = _TPerson(tmdb_id, name)
-            tp.norms |= norms
-            tp.popularity = max(tp.popularity, pop)
-            tp.works.add(f.show.id)
-        for pl in f.placed:
-            tp = self.people.get(pl.credit.tmdb_id)
-            if tp is not None:
-                tp.placed.append(pl)
-
-
-# ──────────────────────────────────────────────────────────────
-#  Phase 3: matching
+#  Labels for the candidates built in tmdb_person_scan
 # ──────────────────────────────────────────────────────────────
 def _labels(snap: _Db, shows: dict[int, LShow], level: str, eid: int) -> tuple[str, Optional[int], Optional[str]]:
     """-> (name, year, context)"""
@@ -475,115 +423,3 @@ def _labels(snap: _Db, shows: dict[int, LShow], level: str, eid: int) -> tuple[s
     e = snap.episodes[eid]
     season = snap.seasons.get(e.season_id)
     return e.name, e.release_year, f"{shows[e.show_id].name} · {season.name if season else '?'}"
-
-
-def _match(snap: _Db, index: _CreditIndex, by_norm, suppressed: set) -> list[Candidate]:
-    pname = {pid: name for pid, name, _ in snap.people}
-    shows = {s.id: s for s in snap.shows}
-    out: dict[str, Candidate] = {}
-
-    for tp, pid, match, overlap in identify(index.people.values(), by_norm, snap.works):
-        for pl in tp.placed:
-            cr: _Credit = pl.credit
-            slot = slot_of(cr.role)
-            if slot in snap.slots.get((pl.level, pl.entity_id), {}).get(pid, ()):
-                continue
-            if any(slot in snap.slots.get(a, {}).get(pid, ()) for a in pl.ancestors):
-                continue  # a parent already carries it
-            name, year, context = _labels(snap, shows, pl.level, pl.entity_id)
-            roles = [cr.role] + [r for r in ACTING if r is not cr.role] if slot == "cast" else [cr.role]
-            c = Candidate(
-                person_id=pid,
-                person_name=pname[pid],
-                entity_kind=pl.level,
-                entity_id=pl.entity_id,
-                entity_name=name,
-                entity_year=year,
-                context=context,
-                credit_type=cr.credit_type,
-                slot=slot,
-                character=cr.character or None,
-                billing_order=cr.billing_order,
-                job=cr.job,
-                episode_count=cr.episode_count,
-                suggested_role=cr.role.value,
-                roles=[r.value for r in roles],
-                suggestion_reason=cr.reason,
-                match=match,
-                overlap=overlap,
-                source_person_id=tp.ext_id,
-                source_popularity=tp.popularity,
-                suppressed=(SCOPES[pl.level], pid, pl.entity_id, slot) in suppressed,
-            )
-            out.setdefault(c.key, c)  # a cast + guest double-billing is one link
-    return sort_candidates(list(out.values()))
-
-
-# ──────────────────────────────────────────────────────────────
-#  Entry point for BackgroundTasks
-# ──────────────────────────────────────────────────────────────
-REGISTRY = JobRegistry()
-
-
-def run_scan(job_id: str, guild_id: int, show_ids: Optional[list[int]], force_refresh: bool) -> None:
-    """See `scan_common.run_job`; `database.SessionLocal` is looked up at call
-    time for the reason given in `tmdb_scan.run_scan`."""
-
-    def body(job: ScanJob) -> None:
-        with database.SessionLocal() as db:
-            snap = _load_db(db, guild_id)
-
-        by_norm, pnorms = index_people(snap.people, _norm)
-        linked: dict[int, set[str]] = defaultdict(set)
-        for pid, show_ids_of in snap.works.items():
-            for sid in show_ids_of:
-                linked[sid] |= pnorms[pid]
-
-        all_ids = {s.id for s in snap.shows}
-        scope = (set(show_ids) & all_ids) if show_ids else all_ids
-
-        sidecar = get_sidecar()
-        client = TmdbClient(sidecar, force_refresh=force_refresh)
-        index = _CreditIndex(set(by_norm))
-        unresolved: list[Unresolved] = []
-        resolved = 0
-
-        fetched = fetch_all(
-            job,
-            snap.shows,
-            lambda s: _fetch_show(client, s, linked[s.id], s.id in scope),
-            lambda s: s.name,
-            WORKERS,
-        )
-        for s, f in fetched:
-            if f is None or f.error:
-                if s.id in scope:
-                    reason = f.error if f else "TMDB has no show with this title and year"
-                    unresolved.append(Unresolved(SHOW, s.id, s.name, s.release_year, reason))
-                continue
-            resolved += 1
-            unresolved += f.unresolved
-            index.ingest(f)  # ingest incrementally; never hold every payload
-
-        if job.cancel.is_set():
-            return
-
-        job.mark(phase="matching")
-        candidates = _match(snap, index, by_norm, sidecar.scoped_rejections(SCOPES.values()))
-        job.mark(
-            status="done",
-            phase="finished",
-            candidates=candidates,
-            unresolved=unresolved,
-            finished_at=time.time(),
-            stats=ScanStats(
-                items_total=len(snap.shows),
-                items_in_scope=len(scope),
-                items_resolved=resolved,
-                items_unresolved=sum(1 for u in unresolved if u.entity_kind == SHOW),
-                network_calls=client.network_calls,
-                cache_hits=client.cache_hits,
-            ),
-        )
-
-    run_job(REGISTRY, job_id, guild_id, body)

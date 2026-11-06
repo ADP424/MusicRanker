@@ -1,0 +1,9 @@
+.git
+.env
+**/__pycache__
+**/node_modules
+frontend/dist
+*.sqlite3*
+tmdb_cache.json
+server/snapshots
+.pytest_cache

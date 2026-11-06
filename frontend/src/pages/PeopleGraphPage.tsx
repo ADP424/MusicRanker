@@ -1,23 +1,28 @@
 import * as d3 from "d3-force";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { usePersonGraph, useGuildApi } from "../api/hooks";
-import type { GraphHub, GraphHubKind, GraphPerson } from "../api/types";
+import type { GraphHub, GraphHubKind, GraphHubRelation, GraphPerson } from "../api/types";
 import {
   BAND_ROLE_LABELS, BAND_ROLES, BOOK_ROLE_LABELS, BOOK_ROLES, CAST_ROLE_LABELS, GAME_ROLE_LABELS, GAME_ROLES, MOVIE_ROLES,
 } from "../api/types";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
+import { cn } from "@/lib/utils";
 import { LoadingState } from "../components/Spinner";
 
 // ─── Constants ─────────────────────────────────────────────────────────────
 
 const PERSON_R = 18;
-const HUB_R = 12; // artist/album/book/movie/game/show/episode hub nodes
+const HUB_R = 12; // artist/album/book/movie/game/show/season/episode hub nodes
 const PERSON_COLOR = "#6b8cba";
 const EDGE_COLOR_DEFAULT = "rgba(150,150,150,0.18)";
 const EDGE_COLOR_HL = "rgba(150,150,150,0.75)";
 const EDGE_COLOR_DIM = "rgba(150,150,150,0.05)";
 
-// A filter group is one vertical; TV covers both shows and episodes.
+// A filter group is one vertical; TV covers shows, seasons and episodes.
 type Group = "music" | "books" | "movies" | "games" | "television";
 
 interface HubConfig {
@@ -34,6 +39,7 @@ const HUBS: Record<GraphHubKind, HubConfig> = {
   movie: { label: "Movie", color: "#c47c3e", group: "movies", path: (h) => `movies/${h.id}` },
   game: { label: "Game", color: "#9b6bc4", group: "games", path: (h) => `games/${h.id}` },
   show: { label: "TV show", color: "#3fa3a3", group: "television", path: (h) => `television/shows/${h.id}` },
+  season: { label: "TV season", color: "#5b8fd6", group: "television", path: (h) => `television/seasons/${h.id}` },
   episode: { label: "TV episode", color: "#b89a3a", group: "television", path: (h) => `television/episodes/${h.id}` },
 };
 const HUB_KINDS = Object.keys(HUBS) as GraphHubKind[];
@@ -66,7 +72,7 @@ const GROUPS: Record<Group, GroupConfig> = {
     roles: GAME_ROLES.map((r) => [r, GAME_ROLE_LABELS[r]]),
   },
   television: {
-    label: "TV people", short: "TV", color: HUBS.show.color, kinds: ["show", "episode"],
+    label: "TV people", short: "TV", color: HUBS.show.color, kinds: ["show", "season", "episode"],
     roles: ["creator", "director", "composer", "lead_actor", "actor", "cameo_actor"].map((r) => [r, ALL_CAST_LABELS[r]]),
   },
 };
@@ -79,19 +85,43 @@ function roleLabel(kind: GraphHubKind, role: string): string {
 const personUid = (id: number) => `p-${id}`;
 const hubUid = (kind: GraphHubKind, id: number) => `${kind}-${id}`;
 const personLabel = (p: GraphPerson) => (p.name_en ? `${p.name} (${p.name_en})` : p.name);
-const hubLabel = (h: GraphHub) => (h.kind === "episode" && h.show_name ? `${h.show_name} — ${h.name}` : h.name);
+const hubLabel = (h: GraphHub) =>
+  (h.kind === "season" || h.kind === "episode") && h.show_name ? `${h.show_name} — ${h.name}` : h.name;
+
+// Hub-to-hub links: the tree ones are drawn dashed, the cross-media ones dotted.
+const RELATION_LABEL: Record<GraphHubRelation, string> = {
+  album_artist: "album", season_show: "season", episode_season: "episode",
+  adaptation: "adaptation", soundtrack: "soundtrack",
+};
+const CROSS_MEDIA: GraphHubRelation[] = ["adaptation", "soundtrack"];
 
 // ─── Filters ───────────────────────────────────────────────────────────────
 
 type Filters = Record<Group, { on: boolean; roles: Set<string> }>;
 
-const EMPTY_FILTERS: Filters = {
-  music: { on: false, roles: new Set() },
-  books: { on: false, roles: new Set() },
-  movies: { on: false, roles: new Set() },
-  games: { on: false, roles: new Set() },
-  television: { on: false, roles: new Set() },
-};
+// URL shape: ?off=books,games&roles=movies:director|composer;music:vocals&detail=1
+function filtersFromParams(params: URLSearchParams): Filters {
+  const off = new Set((params.get("off") ?? "").split(",").filter(Boolean));
+  const roles = new Map(
+    (params.get("roles") ?? "").split(";").filter(Boolean).map((part) => {
+      const [g, rs = ""] = part.split(":");
+      return [g, new Set(rs.split("|").filter(Boolean))] as const;
+    }),
+  );
+  return Object.fromEntries(
+    GROUP_KEYS.map((g) => [g, { on: !off.has(g), roles: roles.get(g) ?? new Set<string>() }]),
+  ) as Filters;
+}
+
+function filtersToParams(filters: Filters, params: URLSearchParams): URLSearchParams {
+  const next = new URLSearchParams(params);
+  const off = GROUP_KEYS.filter((g) => !filters[g].on);
+  const roles = GROUP_KEYS.filter((g) => filters[g].roles.size > 0)
+    .map((g) => `${g}:${[...filters[g].roles].join("|")}`);
+  if (off.length) next.set("off", off.join(",")); else next.delete("off");
+  if (roles.length) next.set("roles", roles.join(";")); else next.delete("roles");
+  return next;
+}
 
 function personGroupRoles(person: GraphPerson, group: Group): string[] {
   return GROUPS[group].kinds.flatMap((k) => person.roles[k] ?? []);
@@ -122,6 +152,7 @@ interface SimNode extends d3.SimulationNodeDatum {
 interface SimLink extends d3.SimulationLinkDatum<SimNode> {
   source: SimNode;
   target: SimNode;
+  relation?: GraphHubRelation; // hub-to-hub links only
 }
 
 const nodeColor = (kind: NodeKind) => (kind === "person" ? PERSON_COLOR : HUBS[kind].color);
@@ -135,6 +166,13 @@ interface SearchResult {
   label: string;
   kind: NodeKind;
   id_: number;
+}
+
+// Canvas text can't use CSS variables, so read the theme at draw time.
+function labelColor(dimmed: boolean): string {
+  const dark = document.documentElement.classList.contains("dark");
+  if (dimmed) return dark ? "#555" : "#bbb";
+  return dark ? "#d4d4d8" : "#3f3f46";
 }
 
 // ─── Hit-test helper ──────────────────────────────────────────────────────
@@ -169,8 +207,19 @@ export function PeopleGraphPage() {
   const [selected, setSelected] = useState<string | null>(null); // uid
   const [, forceRedraw] = useState(0);
 
-  // Filters
-  const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
+  // Filters live in the URL so a refresh or Back keeps them.
+  const [params, setParams] = useSearchParams();
+  const filters = useMemo(() => filtersFromParams(params), [params]);
+  const setFilters = (update: (prev: Filters) => Filters) =>
+    setParams((p) => filtersToParams(update(filtersFromParams(p)), p), { replace: true });
+  // Off by default: season/episode edges that only repeat a role held higher up.
+  const showDetail = params.get("detail") === "1";
+  const onlyMine = params.get("mine") === "1";
+  const setShowDetail = (on: boolean) => setParams((p) => {
+    const next = new URLSearchParams(p);
+    if (on) next.set("detail", "1"); else next.delete("detail");
+    return next;
+  }, { replace: true });
 
   // Search
   const [searchQuery, setSearchQuery] = useState("");
@@ -186,9 +235,11 @@ export function PeopleGraphPage() {
   }
 
   function toggleRole(group: Group, role: string) {
-    const next = new Set(filters[group].roles);
-    if (next.has(role)) next.delete(role); else next.add(role);
-    setGroupRoles(group, next);
+    setFilters((prev) => {
+      const next = new Set(prev[group].roles);
+      if (next.has(role)) next.delete(role); else next.add(role);
+      return { ...prev, [group]: { ...prev[group], roles: next } };
+    });
   }
 
   // Derived lookup maps
@@ -205,18 +256,44 @@ export function PeopleGraphPage() {
   // Filtered persons
   const filteredPersons = useMemo(() => {
     if (!data) return [];
-    return data.persons.filter((p) => personPassesFilter(p, filters));
-  }, [data, filters]);
+    let persons = data.persons.filter((p) => personPassesFilter(p, filters));
+    if (onlyMine) {
+      const mine = new Set(data.mine.map((m) => hubUid(m.kind, m.id)));
+      const credited = new Set(data.edges.filter((e) => mine.has(hubUid(e.kind, e.target_id))).map((e) => e.person_id));
+      persons = persons.filter((p) => credited.has(p.id));
+    }
+    return persons;
+  }, [data, filters, onlyMine]);
 
   const filteredPersonUids = useMemo(
     () => new Set(filteredPersons.map((p) => personUid(p.id))),
     [filteredPersons],
   );
 
+  // "Only what I've ranked": credits on anything else aren't drawn.
+  const mineUids = useMemo(
+    () => (onlyMine && data ? new Set(data.mine.map((m) => hubUid(m.kind, m.id))) : null),
+    [onlyMine, data],
+  );
+
+  // Person edges as displayed: without the detail toggle, a season/episode
+  // edge loses the roles its parent already carries, and goes if none remain.
+  const visibleEdges = useMemo(() => {
+    if (!data) return [];
+    return data.edges.flatMap((e) => {
+      if (mineUids && !mineUids.has(hubUid(e.kind, e.target_id))) return [];
+      if (showDetail || e.inherited.length === 0) return [e];
+      const roles = e.roles.filter((r) => !e.inherited.includes(r));
+      return roles.length ? [{ ...e, roles }] : [];
+    });
+  }, [data, showDetail, mineUids]);
+
   // Build sim nodes + links from filtered data. Every hub with at least one
-  // visible person shows up, even if it doesn't connect two people; albums
-  // hang off their visible artists rather than linking to people directly.
-  const { simNodes, simLinks } = useMemo(() => {
+  // visible person shows up, even if it doesn't connect two people. Albums hang
+  // off their visible artists, episodes off seasons off shows (adding the
+  // parents so the tree stays connected), and adaptation / soundtrack links
+  // join hubs that are already on screen.
+  const full = useMemo(() => {
     if (!data) return { simNodes: [], simLinks: [] };
 
     const nodeMap = new Map<string, SimNode>();
@@ -239,20 +316,66 @@ export function PeopleGraphPage() {
 
     const simLinks: SimLink[] = [];
 
-    for (const edge of data.edges) {
+    for (const edge of visibleEdges) {
       const pUid = personUid(edge.person_id);
       if (!filteredPersonUids.has(pUid)) continue;
       simLinks.push({ source: nodeMap.get(pUid)!, target: hubNode(edge.kind, edge.target_id) });
     }
 
-    for (const { album_id, artist_id } of data.album_artists) {
-      const artist = nodeMap.get(hubUid("artist", artist_id));
+    const byRelation = (r: GraphHubRelation) => data.hub_links.filter((l) => l.relation === r);
+    for (const l of byRelation("album_artist")) {
+      const artist = nodeMap.get(hubUid("artist", l.to_id));
       if (!artist) continue; // none of the artist's people are visible
-      simLinks.push({ source: artist, target: hubNode("album", album_id) });
+      simLinks.push({ source: hubNode("album", l.from_id), target: artist, relation: l.relation });
+    }
+    // Episodes first, so a season pulled in by an episode then gets its show.
+    for (const relation of ["episode_season", "season_show"] as const) {
+      for (const l of byRelation(relation)) {
+        const child = nodeMap.get(hubUid(l.from_kind, l.from_id));
+        if (!child) continue;
+        simLinks.push({ source: child, target: hubNode(l.to_kind, l.to_id), relation });
+      }
+    }
+    for (const relation of CROSS_MEDIA) {
+      for (const l of byRelation(relation)) {
+        const a = nodeMap.get(hubUid(l.from_kind, l.from_id));
+        const b = nodeMap.get(hubUid(l.to_kind, l.to_id));
+        if (a && b) simLinks.push({ source: a, target: b, relation });
+      }
     }
 
     return { simNodes: Array.from(nodeMap.values()), simLinks };
-  }, [filteredPersons, filteredPersonUids, data, hubByUid]);
+  }, [filteredPersons, filteredPersonUids, data, hubByUid, visibleEdges]);
+
+  // Focus mode: only what's within `hops` links of one node. A whole guild is
+  // thousands of nodes; this is how you read one corner of it.
+  const focus = params.get("focus");
+  const hops = Math.min(4, Math.max(1, Number(params.get("hops")) || 2));
+  const setFocus = (uid: string | null, n = hops) => setParams((p) => {
+    const next = new URLSearchParams(p);
+    if (uid) { next.set("focus", uid); next.set("hops", String(n)); } else { next.delete("focus"); next.delete("hops"); }
+    return next;
+  }, { replace: true });
+  const { simNodes, simLinks } = useMemo(() => {
+    if (!focus || !full.simNodes.some((n) => n.uid === focus)) return full;
+    const near = new Map<string, string[]>();
+    for (const l of full.simLinks) {
+      (near.get(l.source.uid) ?? near.set(l.source.uid, []).get(l.source.uid)!).push(l.target.uid);
+      (near.get(l.target.uid) ?? near.set(l.target.uid, []).get(l.target.uid)!).push(l.source.uid);
+    }
+    const keep = new Set([focus]);
+    let frontier = [focus];
+    for (let i = 0; i < hops && frontier.length; i++) {
+      const next: string[] = [];
+      for (const uid of frontier) for (const o of near.get(uid) ?? []) if (!keep.has(o)) { keep.add(o); next.push(o); }
+      frontier = next;
+    }
+    return {
+      simNodes: full.simNodes.filter((n) => keep.has(n.uid)),
+      simLinks: full.simLinks.filter((l) => keep.has(l.source.uid) && keep.has(l.target.uid)),
+    };
+  }, [full, focus, hops]);
+  const focusNode = focus ? full.simNodes.find((n) => n.uid === focus) ?? null : null;
 
   // ─── D3 simulation ──────────────────────────────────────────────────────
 
@@ -294,7 +417,9 @@ export function PeopleGraphPage() {
       ctx.lineTo(tx, ty);
       ctx.strokeStyle = dm ? EDGE_COLOR_DIM : hl ? EDGE_COLOR_HL : EDGE_COLOR_DEFAULT;
       ctx.lineWidth = hl ? 1.5 : 1;
+      ctx.setLineDash(!link.relation ? [] : CROSS_MEDIA.includes(link.relation) ? [1.5, 3] : [5, 4]);
       ctx.stroke();
+      ctx.setLineDash([]);
     }
 
     // Draw nodes
@@ -318,7 +443,7 @@ export function PeopleGraphPage() {
       ctx.stroke();
 
       // Labels
-      ctx.fillStyle = isDimmed ? "#666" : "#ccc";
+      ctx.fillStyle = labelColor(isDimmed);
       const isHub = node.kind !== "person";
       const fontSize = isHub ? 9 : (isSelected ? 11 : 10);
       ctx.font = `${isSelected ? "bold " : ""}${fontSize}px sans-serif`;
@@ -556,52 +681,65 @@ export function PeopleGraphPage() {
     [selected, simNodes], // simNodes change triggers re-eval
   );
 
-  // For a selected person: list the visible hub nodes they connect to
+  // For a selected person: their credits. TV credits roll up to one entry per
+  // show ("S1–S3 · 4 episodes"), the way the person page lists them; the rest
+  // are listed when their hub is on screen.
   const personConnections = useMemo(() => {
     if (!selectedNode || selectedNode.kind !== "person" || !data) return [];
     const personId = selectedNode.id_;
     const visibleHubs = new Set(nodesRef.current.filter((n) => n.kind !== "person").map((n) => n.uid));
-    return data.edges
-      .filter((e) => e.person_id === personId && visibleHubs.has(hubUid(e.kind, e.target_id)))
-      .map((e) => {
-        const uid = hubUid(e.kind, e.target_id);
-        const hub = hubByUid.get(uid);
-        return { uid, label: hub ? hubLabel(hub) : String(e.target_id), kind: e.kind, roles: e.roles };
-      });
+    const out: Connection[] = [];
+    const shows = new Map<number, { name: string; seasons: Set<number>; episodes: number; roles: string[] }>();
+    for (const e of data.edges) {
+      if (e.person_id !== personId) continue;
+      const uid = hubUid(e.kind, e.target_id);
+      const hub = hubByUid.get(uid);
+      if (e.kind === "show" || e.kind === "season" || e.kind === "episode") {
+        const showId = e.kind === "show" ? e.target_id : hub?.show_id;
+        if (showId == null) continue;
+        const entry = shows.get(showId) ?? { name: "", seasons: new Set(), episodes: 0, roles: [] };
+        if (e.kind === "show") entry.name = hub?.name ?? entry.name;
+        else entry.name ||= hub?.show_name ?? "";
+        if (e.kind === "season" && hub?.season_number != null) entry.seasons.add(hub.season_number);
+        if (e.kind === "episode") entry.episodes += 1;
+        for (const r of e.roles) if (!entry.roles.includes(r)) entry.roles.push(r);
+        shows.set(showId, entry);
+      } else if (visibleHubs.has(uid)) {
+        out.push({ uid, label: hub ? hubLabel(hub) : String(e.target_id), kind: e.kind, roles: e.roles });
+      }
+    }
+    for (const [showId, s] of shows) {
+      const parts = [
+        s.seasons.size ? seasonRanges([...s.seasons]) : null,
+        s.episodes ? `${s.episodes} episode${s.episodes === 1 ? "" : "s"}` : null,
+      ].filter(Boolean);
+      out.push({ uid: hubUid("show", showId), label: s.name, kind: "show", roles: s.roles, detail: parts.join(" · ") });
+    }
+    return out;
+    // simNodes: re-read nodesRef (what is on screen) whenever the graph is rebuilt.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedNode, data, hubByUid, simNodes]);
 
-  // For a selected hub: list its visible neighbours — people (with their roles),
-  // plus albums for an artist or artists for an album.
+  // For a selected hub: list its visible neighbours — people (with their roles)
+  // and linked hubs (albums/artists, the TV tree, adaptations, soundtracks).
   const hubConnections = useMemo(() => {
     if (!selectedNode || selectedNode.kind === "person" || !data) return [];
     const { kind, id_, uid } = selectedNode;
     const rolesByPerson = new Map(
-      data.edges.filter((e) => e.kind === kind && e.target_id === id_).map((e) => [personUid(e.person_id), e.roles]),
+      visibleEdges.filter((e) => e.kind === kind && e.target_id === id_).map((e) => [personUid(e.person_id), e.roles]),
     );
-    const out: Array<{ uid: string; label: string; kind: NodeKind; roles: string[] }> = [];
+    const out: Connection[] = [];
     for (const link of simLinks) {
       const other = link.source.uid === uid ? link.target : link.target.uid === uid ? link.source : null;
-      if (other) out.push({ uid: other.uid, label: other.label, kind: other.kind, roles: rolesByPerson.get(other.uid) ?? [] });
+      if (!other) continue;
+      out.push({
+        uid: other.uid, label: other.label, kind: other.kind,
+        roles: rolesByPerson.get(other.uid) ?? [],
+        detail: link.relation && CROSS_MEDIA.includes(link.relation) ? RELATION_LABEL[link.relation] : undefined,
+      });
     }
     return out;
-  }, [selectedNode, data, simLinks]);
-
-  // ─── Legend ──────────────────────────────────────────────────────────────
-
-  const Legend = () => (
-    <div style={{ display: "flex", gap: "1rem", fontSize: "0.78rem", opacity: 0.7, flexWrap: "wrap" }}>
-      {([["Person", PERSON_COLOR], ...HUB_KINDS.map((k) => [HUBS[k].label, HUBS[k].color])] as const).map(([label, color]) => (
-        <span key={label} style={{ display: "flex", alignItems: "center", gap: "0.3rem" }}>
-          <span style={{ display: "inline-block", width: 10, height: 10, borderRadius: "50%", background: color }} />
-          {label}
-        </span>
-      ))}
-    </div>
-  );
-
-  const Dot = ({ color, size = 7 }: { color: string; size?: number }) => (
-    <span style={{ display: "inline-block", width: size, height: size, borderRadius: "50%", flexShrink: 0, background: color }} />
-  );
+  }, [selectedNode, data, simLinks, visibleEdges]);
 
   // ─── Render ──────────────────────────────────────────────────────────────
 
@@ -618,33 +756,62 @@ export function PeopleGraphPage() {
     : data && data.persons.length === 0 ? "No people to display."
     : null;
 
+  const connectionList = (conns: Connection[], roleKind: (c: Connection) => GraphHubKind | null) =>
+    conns.length === 0 ? (
+      <p className="text-sm text-muted-foreground">No visible connections.</p>
+    ) : (
+      <div className="flex flex-wrap gap-x-5 gap-y-1.5 text-sm">
+        {conns.map((c) => {
+          const rk = roleKind(c);
+          return (
+            <span key={c.uid} className="flex items-center gap-1.5">
+              {c.kind !== "person" && (
+                <>
+                  <Dot color={HUBS[c.kind].color} />
+                  <span className="text-xs text-muted-foreground">{HUBS[c.kind].label.toLowerCase()}</span>
+                </>
+              )}
+              <button className="cursor-pointer font-medium hover:underline" onClick={() => selectNode(c.uid)}>
+                {c.label}
+              </button>
+              {c.detail && <span className="text-xs text-muted-foreground">({c.detail})</span>}
+              {rk && c.roles.length > 0 && (
+                <span className="text-xs text-muted-foreground">{c.roles.map((r) => roleLabel(rk, r)).join(", ")}</span>
+              )}
+            </span>
+          );
+        })}
+      </div>
+    );
+
   return (
-    <section>
+    <section className="grid gap-3">
       {/* Filter + search bar — hidden until data is ready */}
-      <div style={{ display: overlayMessage ? "none" : "flex", gap: "1.5rem", flexWrap: "wrap", marginBottom: "0.75rem", alignItems: "flex-start", fontSize: "0.875rem" }}>
+      <div className={cn("flex flex-wrap items-start gap-x-6 gap-y-3 text-sm", overlayMessage && "hidden")}>
         {/* Per-vertical people filters */}
         {GROUP_KEYS.map((g) => {
           const { on, roles } = filters[g];
           const offered = GROUPS[g].roles.filter(([r]) => existingRoles[g].has(r));
           return (
-            <div key={g}>
-              <label style={{ display: "flex", alignItems: "center", gap: "0.4rem", fontWeight: 500, cursor: "pointer" }}>
-                <input type="checkbox" checked={on} onChange={(e) => setGroupOn(g, e.target.checked)} />
+            <div key={g} className="grid gap-1.5">
+              <label className="flex cursor-pointer items-center gap-2 font-medium">
+                <Checkbox checked={on} onCheckedChange={(v) => setGroupOn(g, v === true)} />
+                <Dot color={GROUPS[g].color} />
                 {GROUPS[g].label}
               </label>
               {on && offered.length > 0 && (
-                <div style={{ marginLeft: "1.4rem", marginTop: "0.3rem", display: "flex", flexDirection: "column", gap: "0.2rem" }}>
+                <div className="ml-6 grid gap-1">
                   {offered.map(([role, label]) => (
-                    <label key={role} style={{ display: "flex", alignItems: "center", gap: "0.4rem", cursor: "pointer", opacity: 0.85 }}>
-                      <input type="checkbox" checked={roles.has(role)} onChange={() => toggleRole(g, role)} />
+                    <label key={role} className="flex cursor-pointer items-center gap-2 text-muted-foreground">
+                      <Checkbox checked={roles.has(role)} onCheckedChange={() => toggleRole(g, role)} />
                       {label}
                     </label>
                   ))}
                   {roles.size > 0 && (
-                    <button onClick={() => setGroupRoles(g, new Set())}
-                      style={{ alignSelf: "flex-start", marginTop: "0.2rem", fontSize: "0.78rem", opacity: 0.55, background: "none", border: "none", cursor: "pointer", padding: 0 }}>
+                    <Button variant="link" size="sm" className="h-auto justify-start p-0 text-xs"
+                            onClick={() => setGroupRoles(g, new Set())}>
                       clear roles
-                    </button>
+                    </Button>
                   )}
                 </div>
               )}
@@ -652,25 +819,41 @@ export function PeopleGraphPage() {
           );
         })}
 
+        <label className="flex cursor-pointer items-center gap-2" title="Show season and episode credits that only repeat a role the person already has on the show or season">
+          <Switch checked={showDetail} onCheckedChange={setShowDetail} />
+          Season &amp; episode detail
+        </label>
+
+        <label className="flex cursor-pointer items-center gap-2" title="Only people credited on something in your own lists">
+          <Switch checked={onlyMine} onCheckedChange={(on) => setParams((p) => {
+            const next = new URLSearchParams(p);
+            if (on) next.set("mine", "1"); else next.delete("mine");
+            return next;
+          }, { replace: true })} />
+          Only what I've ranked
+        </label>
+
         {/* Search */}
-        <div style={{ position: "relative", marginLeft: "auto" }}>
-          {/* Type filter pills */}
-          <div style={{ display: "flex", gap: "0.3rem", marginBottom: "0.3rem", justifyContent: "flex-end" }}>
+        <div className="relative ml-auto grid gap-1.5">
+          <div className="flex justify-end gap-1">
             {SEARCH_KINDS.map((k) => (
               <button key={k} onClick={() => setSearchKind(k)}
+                className={cn(
+                  "cursor-pointer rounded-full border px-2 py-0.5 text-xs transition-opacity",
+                  searchKind === k ? "text-white opacity-100" : "opacity-60 hover:opacity-90",
+                )}
                 style={{
-                  fontSize: "0.72rem", padding: "0.15rem 0.5rem", borderRadius: 10,
-                  border: `1px solid ${kindColor(k) ?? "#8884"}`,
-                  background: searchKind === k ? (kindColor(k) ?? "#8884") : "transparent",
-                  color: searchKind === k ? "#fff" : undefined,
-                  cursor: "pointer", opacity: searchKind === k ? 1 : 0.6,
+                  borderColor: kindColor(k) ?? "var(--border)",
+                  background: searchKind === k ? (kindColor(k) ?? "var(--muted-foreground)") : "transparent",
                 }}>
                 {kindLabel(k)}
               </button>
             ))}
           </div>
-          <input
+          <Input
             type="search"
+            className="w-56"
+            aria-label="Search the graph"
             placeholder={`Search ${kindLabel(searchKind).toLowerCase()}…`}
             value={searchQuery}
             onChange={(e) => { setSearchQuery(e.target.value); setSearchOpen(true); }}
@@ -680,19 +863,12 @@ export function PeopleGraphPage() {
               if (e.key === "Escape") { setSearchQuery(""); setSearchOpen(false); }
               if (e.key === "Enter" && searchResults.length > 0) handleSearchSelect(searchResults[0]);
             }}
-            style={{ fontSize: "0.875rem", padding: "0.3rem 0.6rem", borderRadius: 4, border: "1px solid #8884", width: 200 }}
           />
           {searchOpen && searchResults.length > 0 && (
-            <div style={{
-              position: "absolute", top: "100%", left: 0, right: 0, zIndex: 100,
-              background: "Canvas", border: "1px solid #8884", borderRadius: 4,
-              boxShadow: "0 4px 12px #0003", marginTop: 2,
-            }}>
+            <div className="absolute top-full right-0 left-0 z-50 mt-1 overflow-hidden rounded-md border bg-popover shadow-md">
               {searchResults.map((r) => (
                 <div key={r.uid} onMouseDown={() => handleSearchSelect(r)}
-                  style={{ padding: "0.4rem 0.6rem", cursor: "pointer", fontSize: "0.875rem", display: "flex", alignItems: "center", gap: "0.5rem" }}
-                  onMouseEnter={(e) => (e.currentTarget.style.background = "#8882")}
-                  onMouseLeave={(e) => (e.currentTarget.style.background = "")}>
+                  className="flex cursor-pointer items-center gap-2 px-2.5 py-1.5 hover:bg-accent">
                   <Dot color={nodeColor(r.kind)} />
                   {r.label}
                 </div>
@@ -700,93 +876,112 @@ export function PeopleGraphPage() {
             </div>
           )}
         </div>
+      </div>
 
-        {/* Count + legend */}
-        <span style={{ opacity: 0.45, alignSelf: "center" }}>
-          {filteredPersons.length} / {data?.persons.length ?? 0} people
+      {focusNode && (
+        <div className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/40 px-3 py-1.5 text-sm">
+          Showing what's within
+          {[1, 2, 3, 4].map((n) => (
+            <Button key={n} size="sm" variant={n === hops ? "default" : "outline"} className="h-7 px-2.5"
+                    onClick={() => setFocus(focus, n)}>
+              {n}
+            </Button>
+          ))}
+          link{hops === 1 ? "" : "s"} of <strong>{focusNode.label}</strong>
+          <Button variant="link" size="sm" className="ml-auto h-auto p-0" onClick={() => setFocus(null)}>Show everything</Button>
+        </div>
+      )}
+
+      <div className={cn("flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground", overlayMessage && "hidden")}>
+        <span>
+          {simNodes.filter((n) => n.kind === "person").length} / {data?.persons.length ?? 0} people
+          {!focusNode && " · select a node and choose Focus here to explore its neighbourhood"}
         </span>
-        <Legend />
+        {([["Person", PERSON_COLOR], ...HUB_KINDS.map((k) => [HUBS[k].label, HUBS[k].color])] as const).map(([label, color]) => (
+          <span key={label} className="flex items-center gap-1.5"><Dot color={color} size={9} />{label}</span>
+        ))}
+        <span className="flex items-center gap-1.5"><LineSample dash="5 4" />part of</span>
+        <span className="flex items-center gap-1.5"><LineSample dash="1.5 3" />adaptation / soundtrack</span>
       </div>
 
       {/* Canvas — always mounted so ResizeObserver attaches before data loads */}
-      <div ref={containerRef} className="genre-tree-canvas" style={{ height: "78vh", cursor: dragging.current ? "grabbing" : "grab", position: "relative" }}
+      <div ref={containerRef} className="relative w-full cursor-grab select-none overflow-hidden rounded-md border active:cursor-grabbing h-[72vh]"
+        style={{ cursor: dragging.current ? "grabbing" : "grab" }}
         onMouseDown={onMouseDown} onMouseMove={onMouseMove} onMouseUp={onMouseUp} onMouseLeave={onMouseUp} onWheel={onWheel}>
-        <canvas ref={canvasRef} onClick={onCanvasClick} style={{ display: "block" }} />
+        <canvas ref={canvasRef} onClick={onCanvasClick} className="block" />
         {overlayMessage && (
-          <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
-            {isLoading ? <LoadingState label="Loading graph…" /> : <span style={{ opacity: 0.5 }}>{overlayMessage}</span>}
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+            {isLoading ? <LoadingState label="Loading graph…" /> : <span className="text-muted-foreground">{overlayMessage}</span>}
           </div>
         )}
       </div>
 
       {/* Info panel — person selected */}
       {selectedPerson && (
-        <div style={{ marginTop: "1rem", padding: "0.75rem 1rem", border: "1px solid #8884", borderRadius: 6, fontSize: "0.875rem" }}>
-          <div style={{ display: "flex", alignItems: "baseline", gap: "1rem", marginBottom: "0.5rem" }}>
-            <strong style={{ fontSize: "1rem" }}>{selectedPerson.name}{selectedPerson.name_en && <span style={{ opacity: 0.6, fontWeight: "normal" }}> ({selectedPerson.name_en})</span>}</strong>
-            <Link to={`/g/${guildId}/people/${selectedPerson.id}`} style={{ opacity: 0.6, fontSize: "0.8rem" }}>view profile →</Link>
-            <button onClick={() => centerOn(selected!)}
-              style={{ marginLeft: "auto", opacity: 0.5, background: "none", border: "none", cursor: "pointer", fontSize: "0.78rem" }}>
-              center
-            </button>
+        <div className="grid gap-2 rounded-lg border bg-card p-4">
+          <div className="flex items-baseline gap-3">
+            <strong className="text-base">
+              {selectedPerson.name}
+              {selectedPerson.name_en && <span className="font-normal text-muted-foreground"> ({selectedPerson.name_en})</span>}
+            </strong>
+            <Link to={`/g/${guildId}/people/${selectedPerson.id}`} className="text-xs text-muted-foreground hover:underline">
+              view profile →
+            </Link>
+            <Button variant="ghost" size="sm" className="ml-auto" onClick={() => setFocus(selected)}>Focus here</Button>
+            <Button variant="ghost" size="sm" onClick={() => centerOn(selected!)}>Center</Button>
           </div>
-          {personConnections.length === 0 ? (
-            <p style={{ opacity: 0.5, margin: 0 }}>No visible connections.</p>
-          ) : (
-            <div style={{ display: "flex", flexWrap: "wrap", gap: "0.4rem 1.2rem" }}>
-              {personConnections.map((conn) => (
-                <span key={conn.uid} style={{ display: "flex", gap: "0.4rem", alignItems: "center" }}>
-                  <Dot color={HUBS[conn.kind].color} />
-                  <span style={{ opacity: 0.55, fontSize: "0.78rem" }}>{HUBS[conn.kind].label.toLowerCase()}</span>
-                  <button onClick={() => selectNode(conn.uid)}
-                    style={{ fontWeight: 500, background: "none", border: "none", cursor: "pointer", padding: 0, fontSize: "inherit" }}>
-                    {conn.label}
-                  </button>
-                  <span style={{ opacity: 0.55, fontSize: "0.78rem" }}>{conn.roles.map((r) => roleLabel(conn.kind, r)).join(", ")}</span>
-                </span>
-              ))}
-            </div>
-          )}
+          {connectionList(personConnections, (c) => (c.kind === "person" ? null : c.kind))}
         </div>
       )}
 
       {/* Info panel — hub selected */}
       {selectedHubNode && selectedHub && (
-        <div style={{ marginTop: "1rem", padding: "0.75rem 1rem", border: "1px solid #8884", borderRadius: 6, fontSize: "0.875rem" }}>
-          <div style={{ display: "flex", alignItems: "baseline", gap: "1rem", marginBottom: "0.5rem" }}>
-            <span style={{ alignSelf: "center", display: "flex" }}><Dot color={HUBS[selectedHub.kind].color} size={9} /></span>
-            <strong style={{ fontSize: "1rem" }}>{selectedHubNode.label}</strong>
-            <Link to={`/g/${guildId}/${HUBS[selectedHub.kind].path(selectedHub)}`} style={{ opacity: 0.6, fontSize: "0.8rem" }}>
+        <div className="grid gap-2 rounded-lg border bg-card p-4">
+          <div className="flex items-center gap-3">
+            <Dot color={HUBS[selectedHub.kind].color} size={9} />
+            <strong className="text-base">{selectedHubNode.label}</strong>
+            <Link to={`/g/${guildId}/${HUBS[selectedHub.kind].path(selectedHub)}`} className="text-xs text-muted-foreground hover:underline">
               view {HUBS[selectedHub.kind].label.toLowerCase()} →
             </Link>
-            <button onClick={() => centerOn(selected!)}
-              style={{ marginLeft: "auto", opacity: 0.5, background: "none", border: "none", cursor: "pointer", fontSize: "0.78rem" }}>
-              center
-            </button>
+            <Button variant="ghost" size="sm" className="ml-auto" onClick={() => setFocus(selected)}>Focus here</Button>
+            <Button variant="ghost" size="sm" onClick={() => centerOn(selected!)}>Center</Button>
           </div>
-          {hubConnections.length === 0 ? (
-            <p style={{ opacity: 0.5, margin: 0 }}>No visible connections.</p>
-          ) : (
-            <div style={{ display: "flex", flexWrap: "wrap", gap: "0.4rem 1.2rem" }}>
-              {hubConnections.map((conn) => (
-                <span key={conn.uid} style={{ display: "flex", gap: "0.4rem", alignItems: "center" }}>
-                  {conn.kind !== "person" && (
-                    <>
-                      <Dot color={HUBS[conn.kind].color} />
-                      <span style={{ opacity: 0.55, fontSize: "0.78rem" }}>{HUBS[conn.kind].label.toLowerCase()}</span>
-                    </>
-                  )}
-                  <button onClick={() => selectNode(conn.uid)}
-                    style={{ fontWeight: 500, background: "none", border: "none", cursor: "pointer", padding: 0, fontSize: "inherit" }}>
-                    {conn.label}
-                  </button>
-                  <span style={{ opacity: 0.55, fontSize: "0.78rem" }}>{conn.roles.map((r) => roleLabel(selectedHub.kind, r)).join(", ")}</span>
-                </span>
-              ))}
-            </div>
-          )}
+          {connectionList(hubConnections, () => selectedHub.kind)}
         </div>
       )}
     </section>
   );
+}
+
+interface Connection {
+  uid: string;
+  label: string;
+  kind: NodeKind;
+  roles: string[];
+  detail?: string;
+}
+
+function Dot({ color, size = 7 }: { color: string; size?: number }) {
+  return <span className="inline-block shrink-0 rounded-full" style={{ width: size, height: size, background: color }} />;
+}
+
+function LineSample({ dash }: { dash: string }) {
+  return (
+    <svg width="22" height="6" aria-hidden>
+      <line x1="0" y1="3" x2="22" y2="3" stroke="currentColor" strokeWidth="1.5" strokeDasharray={dash} />
+    </svg>
+  );
+}
+
+// [1, 2, 3, 5] -> "S1–S3, S5"
+function seasonRanges(nums: number[]): string {
+  const sorted = [...new Set(nums)].sort((a, b) => a - b);
+  const parts: string[] = [];
+  for (let i = 0; i < sorted.length; i++) {
+    let j = i;
+    while (j + 1 < sorted.length && sorted[j + 1] === sorted[j] + 1) j++;
+    parts.push(i === j ? `S${sorted[i]}` : `S${sorted[i]}–S${sorted[j]}`);
+    i = j;
+  }
+  return parts.join(", ");
 }

@@ -7,8 +7,16 @@ from .base import ORMSchema
 
 
 class TmdbLookupIn(ORMSchema):
+    title: str = ""  # or a pasted TMDB link
+    year: int | None = None
+    tmdb_id: int | None = None  # skip the search: this exact movie
+
+
+class TmdbCandidateOut(ORMSchema):
+    tmdb_id: int
     title: str
     year: int | None = None
+    poster_url: str | None = None
 
 
 class DbPersonMatchOut(ORMSchema):
@@ -55,6 +63,11 @@ class TmdbLookupOut(ORMSchema):
     release_date: str | None = None
     runtime: int
     overview: str | None = None
+    poster_url: str | None = None
+    # A movie already in the catalog with this TMDB id (or the same title and year).
+    existing_movie_id: int | None = None
+    # The other search results, best first (empty when looked up by id).
+    candidates: list[TmdbCandidateOut] = []
     people: list[TmdbPersonOut]
     genres: list[TmdbGenreOut]
     ambiguous: bool
@@ -69,12 +82,17 @@ class TmdbImportPersonIn(ORMSchema):
 
 
 class TmdbImportIn(ORMSchema):
+    tmdb_id: int | None = None
     title: str
     original_title: str | None = None
+    overview: str | None = None
+    poster_url: str | None = None
     runtime_minutes: int
     release_year: int
     people: list[TmdbImportPersonIn] = []
     genre_ids: list[int] = []
+    #: Also put the movie at the bottom of the importing user's list.
+    add_to_list: bool = False
 
 
 class TmdbImportPersonResult(ORMSchema):
@@ -82,6 +100,22 @@ class TmdbImportPersonResult(ORMSchema):
     name: str
     nationality: str
     created: bool
+
+
+class TmdbCreditsIn(ORMSchema):
+    """Credits (and genres, and any blank metadata) for a movie already in the catalog."""
+
+    tmdb_id: int | None = None
+    overview: str | None = None
+    poster_url: str | None = None
+    people: list[TmdbImportPersonIn] = []
+    genre_ids: list[int] = []
+
+
+class TmdbCreditsOut(ORMSchema):
+    people_linked: int
+    created_people: list[TmdbImportPersonResult]
+    reused_people: list[TmdbImportPersonResult]
 
 
 class TmdbImportOut(ORMSchema):

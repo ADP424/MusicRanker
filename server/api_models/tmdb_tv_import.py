@@ -9,8 +9,9 @@ from .base import ORMSchema
 
 
 class TmdbTvLookupIn(ORMSchema):
-    title: str
+    title: str = ""  # or a pasted TMDB link
     year: int | None = None
+    tmdb_id: int | None = None  # skip the search: this exact show
     include_episodes: bool = True
     include_specials: bool = False
     season_numbers: list[int] | None = None
@@ -49,6 +50,13 @@ class TmdbTvPersonOut(ORMSchema):
     parent_person_id: int | None = None
 
 
+class TmdbTvCandidateOut(ORMSchema):
+    tmdb_id: int
+    title: str
+    year: int | None = None
+    poster_url: str | None = None
+
+
 class TmdbTvGenreOut(ORMSchema):
     tmdb_id: int
     tmdb_name: str
@@ -64,6 +72,7 @@ class TmdbTvEpisodeOut(ORMSchema):
     release_year: int
     runtime: int
     overview: str | None = None
+    still_url: str | None = None
     #: At the show and season steps this holds only the episode's director(s)
     #: and composer(s) — the credits that are always automatic. The full cast
     #: and crew of an episode comes from the per-episode lookup.
@@ -76,6 +85,8 @@ class TmdbTvSeasonOut(ORMSchema):
     air_date: str | None = None
     release_year: int
     episode_count: int
+    overview: str | None = None
+    poster_url: str | None = None
     episodes: list[TmdbTvEpisodeOut] = []
     #: Season lookup only: everyone credited on *every* episode of the season.
     people: list[TmdbTvPersonOut] = []
@@ -90,11 +101,16 @@ class TmdbTvLookupOut(ORMSchema):
     first_air_date: str | None = None
     release_year: int
     overview: str | None = None
+    poster_url: str | None = None
+    #: A show already in the catalog with this TMDB id (or the same title and year).
+    existing_show_id: int | None = None
+    # The other search results, best first (empty when looked up by id).
+    candidates: list[TmdbTvCandidateOut] = []
     episode_run_time: int
     number_of_seasons: int
     number_of_episodes: int
-    #: The creators, plus everyone credited on every single episode of the
-    #: included seasons (`episodes_counted` aired episodes).
+    #: The creators, plus everyone credited on at least MAIN_CAST_SHARE of the
+    #: episodes of every included season (`episodes_counted` aired episodes).
     people: list[TmdbTvPersonOut]
     episodes_counted: int
     genres: list[TmdbTvGenreOut]
@@ -113,6 +129,9 @@ class TmdbTvImportPersonIn(ORMSchema):
 class TmdbTvImportEpisodeIn(ORMSchema):
     name: str
     name_en: str | None = None
+    episode_number: int | None = Field(default=None, ge=0)
+    overview: str | None = None
+    still_url: str | None = None
     runtime_minutes: int = Field(default=0, ge=0)
     release_year: int
     notes: str | None = None
@@ -129,6 +148,8 @@ class TmdbTvImportSeasonIn(ORMSchema):
     season_number: int | None = Field(default=None, ge=0)
     release_year: int
     notes: str | None = None
+    overview: str | None = None
+    poster_url: str | None = None
     people: list[TmdbTvImportPersonIn] = []
     episodes: list[TmdbTvImportEpisodeIn] = []
     #: Whole-show import only: also put this season and all its imported
@@ -137,10 +158,13 @@ class TmdbTvImportSeasonIn(ORMSchema):
 
 
 class TmdbTvImportIn(ORMSchema):
+    tmdb_id: int | None = None
     name: str
     name_en: str | None = None
     release_year: int
     notes: str | None = None
+    overview: str | None = None
+    poster_url: str | None = None
     people: list[TmdbTvImportPersonIn] = []
     genre_ids: list[int] = []
     seasons: list[TmdbTvImportSeasonIn] = []
@@ -149,6 +173,8 @@ class TmdbTvImportIn(ORMSchema):
     #: Put the show in the importing user's personal list (seasons opt in
     #: individually via their own `add_to_list`).
     add_to_list: bool = False
+    #: Credit each imported episode's whole cast, guest stars and crew. One TMDB call per episode.
+    full_episode_cast: bool = False
 
 
 class TmdbTvImportPersonResult(ORMSchema):
@@ -156,6 +182,16 @@ class TmdbTvImportPersonResult(ORMSchema):
     name: str
     nationality: str
     created: bool
+
+
+class TmdbTvSyncOut(ORMSchema):
+    """What a re-sync with TMDB changed."""
+
+    seasons_added: int
+    episodes_added: int
+    runtimes_updated: int
+    created_people: list[TmdbTvImportPersonResult] = []
+    reused_people: list[TmdbTvImportPersonResult] = []
 
 
 class TmdbTvImportOut(ORMSchema):
@@ -199,6 +235,8 @@ class TmdbTvSeasonImportIn(ORMSchema):
     #: Copy the season's people (all of them, after this import) onto every one
     #: of its episodes.
     populate_down: bool = False
+    #: Credit each ticked episode's whole cast, guest stars and crew. One TMDB call per episode.
+    full_episode_cast: bool = False
 
 
 class TmdbTvSeasonImportOut(ORMSchema):

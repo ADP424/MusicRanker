@@ -1,401 +1,178 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { Pencil, Plus, Search, X } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { api } from "../api/client";
-import { gk, rk } from "../api/keys";
-import { useAlbumEntry, useArtistCatalog, useGuildApi, useMusicGenres, useUpdateAlbumEntry } from "../api/hooks";
-import type { Album, Genre, NamedRef } from "../api/types";
+import { useGuildApi, useMusicGenres } from "../api/hooks";
+import { gk } from "../api/keys";
+import type { Album } from "../api/types";
 import { AlbumForm } from "../components/AlbumForm";
-import { AlbumSoundtracksSection } from "../components/AlbumSoundtracksSection";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { DetailHeader, Empty, Section } from "../components/detail/DetailKit";
+import { LinkedWorksSection } from "../components/detail/LinkedWorksSection";
+import { MyEntrySection } from "../components/detail/MyEntrySection";
+import { TaxonomySection } from "../components/detail/TaxonomySection";
 import { LinksSection } from "../components/LinksSection";
-import { GenreChooser } from "../genre/GenreChooser";
+import { LoadFailed } from "../components/LoadFailed";
+import { LoadingState } from "../components/Spinner";
 import { MUSIC_GENRES } from "../genre/config";
+import { GenreChooser } from "../genre/GenreChooser";
 import { useCan } from "../guild/GuildProvider";
-import { BusyButton, InlineBusy, LoadingState } from "../components/Spinner";
+import { usePageTitle } from "../shell/pageTitle";
+import { albumRuntime } from "./ArtistDetailPage";
 
-function fmtRuntime(seconds: number) {
-  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
-}
+interface Hit { id: number; name: string; name_en: string | null }
 
-// ── Artists section ────────────────────────────────────────────────────────────
-
-function AlbumArtistsSection({ albumId, album }: { albumId: number; album: Album }) {
-  const qc = useQueryClient();
-  const { guildId, userId, base } = useGuildApi();
-  const canEdit = useCan("catalog_edit");
-  const [editing, setEditing] = useState(false);
-  const [confirmUnlink, setConfirmUnlink] = useState<NamedRef | null>(null);
-  const [search, setSearch] = useState("");
-
-  const { data: allArtists = [], isLoading: artistsLoading } = useArtistCatalog();
-  const linkedIds = new Set(album.artists.map((a) => a.id));
-
-  const filteredArtists = allArtists.filter((a) =>
-    !search.trim() || a.name.toLowerCase().includes(search.trim().toLowerCase()) || !!a.name_en?.toLowerCase().includes(search.trim().toLowerCase())
-  );
-
-  const invalidate = () => {
-    qc.invalidateQueries({ queryKey: gk(guildId, "albums") });
-    qc.invalidateQueries({ queryKey: gk(guildId, "artists") });
-    // Linking carries my rank over to the new artist; unlinking drops it.
-    qc.invalidateQueries({ queryKey: rk(guildId, userId, "artists") });
-  };
-
-  const link = useMutation({
-    mutationFn: (artistId: number) => api.put(`${base}/albums/${albumId}/artists/${artistId}`),
-    onSuccess: invalidate,
-  });
-
-  const unlink = useMutation({
-    mutationFn: (artist: NamedRef) => api.delete(`${base}/albums/${albumId}/artists/${artist.id}`),
-    onSuccess: invalidate,
-  });
-
-  return (
-    <section style={{ marginBottom: "1.5rem" }}>
-      <header className="page-head" style={{ marginBottom: "0.5rem" }}>
-        <span className="inline">
-          <h2 style={{ margin: 0 }}>Artists</h2>
-          {(link.isPending || unlink.isPending) && <InlineBusy label="Saving…" />}
-        </span>
-        {canEdit && (
-          <button style={{ fontSize: 12 }} onClick={() => setEditing((o) => !o)}>
-            {editing ? "Done" : "Edit"}
-          </button>
-        )}
-      </header>
-
-      {editing && (
-        <>
-          <input
-            className="genre-search"
-            type="search"
-            placeholder="Search artists…"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            style={{ marginBottom: "0.4rem" }}
-          />
-          {artistsLoading ? (
-            <LoadingState compact label="Loading artists…" />
-          ) : (
-            <div className="chips" style={{ marginBottom: "0.75rem" }}>
-              {filteredArtists.map((a) => (
-                <label key={a.id} className="chip">
-                  <input
-                    type="checkbox"
-                    checked={linkedIds.has(a.id)}
-                    onChange={(e) => {
-                      if (e.target.checked) link.mutate(a.id);
-                      else setConfirmUnlink(a);
-                    }}
-                  />
-                  {a.name}{a.name_en && <span style={{ opacity: 0.6 }}> ({a.name_en})</span>}
-                </label>
-              ))}
-            </div>
-          )}
-        </>
-      )}
-
-      {album.artists.length > 0 ? (
-        <ul className="sortable plain-list">
-          {album.artists.map((a) => (
-            <li key={a.id} className="sortable-item">
-              <div className="row" style={{ gridTemplateColumns: "1fr" }}>
-                <Link className="name" to={`/g/${guildId}/music/artists/${a.id}`}>
-                  {a.name}{a.name_en && <span style={{ opacity: 0.6 }}> ({a.name_en})</span>}
-                </Link>
-              </div>
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <p style={{ opacity: 0.5, margin: "0.25rem 0 0" }}>No artists linked.</p>
-      )}
-
-      {confirmUnlink && (
-        <ConfirmDialog
-          message={`Remove "${confirmUnlink.name}" from this album?`}
-          confirmLabel="Remove"
-          busy={unlink.isPending}
-          onConfirm={() => unlink.mutate(confirmUnlink, { onSettled: () => setConfirmUnlink(null) })}
-          onCancel={() => setConfirmUnlink(null)}
-        />
-      )}
-    </section>
-  );
-}
-
-// ── Genres section ─────────────────────────────────────────────────────────────
-
-function AlbumGenresSection({ albumId, album }: { albumId: number; album: Album }) {
-  const qc = useQueryClient();
+/** The album's artists; editors add more from the guild search. Unlinking an
+ *  artist drops the album from everyone's ranking of that artist's discography. */
+function AlbumArtistsSection({ album }: { album: Album }) {
   const { guildId, base } = useGuildApi();
   const canEdit = useCan("catalog_edit");
   const [editing, setEditing] = useState(false);
-  const [confirmUnlink, setConfirmUnlink] = useState<Genre | null>(null);
-  const { data: allGenres = [] } = useMusicGenres();
+  const [q, setQ] = useState("");
+  const [term, setTerm] = useState("");
+  const [unlinking, setUnlinking] = useState<Hit | null>(null);
+  useEffect(() => {
+    const t = setTimeout(() => setTerm(q.trim()), 200);
+    return () => clearTimeout(t);
+  }, [q]);
 
-  const [genreIds, setGenreIds] = useState<Set<number>>(new Set());
-  useEffect(() => { setGenreIds(new Set(album.genre_ids)); }, [album.genre_ids]);
-
-  const genreMap = Object.fromEntries(allGenres.map((g) => [g.id, g]));
-  const albumGenres = album.genre_ids.map((id) => genreMap[id]).filter(Boolean);
-
-  const addGenre = useMutation({
-    mutationFn: (gid: number) => api.put(`${base}/albums/${albumId}/genres/${gid}`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: gk(guildId, "albums") }),
+  const hits = useQuery({
+    queryKey: gk(guildId, "search", "artist", term),
+    queryFn: () => api.get<Hit[]>(`${base}/search?kinds=artist&limit=10&q=${encodeURIComponent(term)}`),
+    enabled: editing && term.length > 0,
+    placeholderData: (prev) => prev,
   });
-  const removeGenre = useMutation({
-    mutationFn: (gid: number) => api.delete(`${base}/albums/${albumId}/genres/${gid}`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: gk(guildId, "albums") }),
-  });
-
-  function handleChange(next: Set<number>) {
-    const prev = genreIds;
-    for (const id of next) if (!prev.has(id)) addGenre.mutate(id);
-    for (const id of prev) {
-      if (!next.has(id)) {
-        const g = genreMap[id];
-        if (g) { setConfirmUnlink(g); return; }
-      }
-    }
-    setGenreIds(next);
-  }
+  const link = useMutation({ mutationFn: (id: number) => api.put(`${base}/albums/${album.id}/artists/${id}`) });
+  const unlink = useMutation({ mutationFn: (id: number) => api.delete(`${base}/albums/${album.id}/artists/${id}`) });
+  const linked = new Set(album.artists.map((a) => a.id));
 
   return (
-    <section style={{ marginBottom: "1.5rem" }}>
-      <header className="page-head" style={{ marginBottom: "0.5rem" }}>
-        <span className="inline">
-          <h2 style={{ margin: 0 }}>Genres</h2>
-          {(addGenre.isPending || removeGenre.isPending) && <InlineBusy label="Saving…" />}
-        </span>
-        {canEdit && (
-          <button style={{ fontSize: 12 }} onClick={() => setEditing((o) => !o)}>
-            {editing ? "Done" : "Edit"}
-          </button>
-        )}
-      </header>
-
-      {editing && (
-        <div style={{ marginBottom: "0.75rem" }}>
-          <GenreChooser domain={MUSIC_GENRES} selected={genreIds} onChange={handleChange} />
+    <Section
+      title={album.artists.length === 1 ? "Artist" : "Artists"}
+      busy={link.isPending || unlink.isPending}
+      actions={canEdit && (
+        <Button variant={editing ? "default" : "outline"} size="sm" onClick={() => setEditing((e) => !e)}>
+          {editing ? "Done" : <><Pencil className="size-4" /> Edit</>}
+        </Button>
+      )}
+    >
+      {album.artists.length === 0 ? <Empty>No artists linked.</Empty> : (
+        <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm">
+          {album.artists.map((a) => (
+            <span key={a.id} className="inline-flex items-center gap-1">
+              <Link to={`/g/${guildId}/music/artists/${a.id}`} className="font-medium hover:underline">
+                {a.name}{a.name_en && <span className="font-normal text-muted-foreground"> ({a.name_en})</span>}
+              </Link>
+              {editing && album.artists.length > 1 && (
+                <button type="button" aria-label={`Unlink ${a.name}`} data-slot="icon"
+                        className="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+                        onClick={() => setUnlinking(a)}>
+                  <X className="size-3.5" />
+                </button>
+              )}
+            </span>
+          ))}
         </div>
       )}
-
-      {albumGenres.length > 0 ? (
-        <ul className="sortable plain-list">
-          {albumGenres.map((g) => (
-            <li key={g.id} className="sortable-item">
-              <div className="row" style={{ gridTemplateColumns: "1fr" }}>
-                <Link className="name" to={`/g/${guildId}/music/genres/${g.id}`}>{g.name}</Link>
-              </div>
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <p style={{ opacity: 0.5, margin: "0.25rem 0 0" }}>No genres linked.</p>
-      )}
-
-      {confirmUnlink && (
-        <ConfirmDialog
-          message={`Remove genre "${confirmUnlink.name}" from this album?`}
-          busy={removeGenre.isPending}
-          onConfirm={() => {
-            const id = confirmUnlink.id;
-            setGenreIds((prev) => { const next = new Set(prev); next.delete(id); return next; });
-            removeGenre.mutate(id, { onSettled: () => setConfirmUnlink(null) });
-          }}
-          onCancel={() => setConfirmUnlink(null)}
-        />
-      )}
-    </section>
-  );
-}
-
-// ── My list section ──────────────────────────────────────────────────────────
-
-function MyAlbumListSection({ artistId, albumId }: { artistId: number; albumId: number }) {
-  const qc = useQueryClient();
-  const { guildId, userId, base } = useGuildApi();
-  const canRank = useCan("rank");
-  const { data: entry, isLoading } = useAlbumEntry(artistId, albumId);
-  const update = useUpdateAlbumEntry(artistId, albumId);
-  const [editing, setEditing] = useState(false);
-  const [notes, setNotes] = useState("");
-  const [confirmRemove, setConfirmRemove] = useState(false);
-
-  useEffect(() => {
-    if (entry) setNotes(entry.notes ?? "");
-  }, [entry]);
-
-  const invalidate = () => {
-    qc.invalidateQueries({ queryKey: gk(guildId, "artists", artistId, "albums") });
-    qc.invalidateQueries({ queryKey: rk(guildId, userId, "artists", artistId, "albums") });
-  };
-  const add = useMutation({
-    mutationFn: () => api.put(`${base}/artists/${artistId}/albums/${albumId}/entry`, {}),
-    onSuccess: invalidate,
-  });
-  const remove = useMutation({
-    mutationFn: () => api.delete(`${base}/artists/${artistId}/albums/${albumId}/entry`),
-    onSuccess: invalidate,
-  });
-
-  if (!canRank) return null;
-  const saving = update.isPending || add.isPending || remove.isPending;
-
-  return (
-    <section style={{ marginBottom: "1.5rem" }}>
-      <header className="page-head" style={{ marginBottom: "0.5rem" }}>
-        <span className="inline">
-          <h2 style={{ margin: 0 }}>My List</h2>
-          {saving && <InlineBusy label="Saving…" />}
-        </span>
-        {entry && (
-          <button style={{ fontSize: 12 }} onClick={() => setEditing((o) => !o)}>
-            {editing ? "Done" : "Edit"}
-          </button>
-        )}
-      </header>
-
-      {isLoading ? (
-        <LoadingState compact />
-      ) : !entry ? (
-        <p style={{ opacity: 0.5, margin: "0.25rem 0 0" }}>
-          Not in your list. <BusyButton busy={add.isPending} busyLabel="Adding…" onClick={() => add.mutate()}>+ Add to my list</BusyButton>
-        </p>
-      ) : (
-        <>
-          <div className="artist-detail-grid">
-            <div>
-              <span className="detail-label">Listens</span>
-              <span className="listens-ctrl">
-                <button className="icon" title="Remove one listen" disabled={entry.listens <= 1}
-                        onClick={() => update.mutate({ listens: entry.listens - 1 })}>−</button>
-                <input
-                  type="number" min={1} className="listens-input" value={entry.listens}
-                  onChange={(e) => {
-                    const n = Number(e.target.value);
-                    if (Number.isFinite(n) && n >= 1) update.mutate({ listens: n });
-                  }}
-                />
-                <button className="icon" title="Add one listen"
-                        onClick={() => update.mutate({ listens: entry.listens + 1 })}>+</button>
-              </span>
-            </div>
+      {editing && (
+        <div className="grid gap-2">
+          <div className="relative">
+            <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
+            <Input type="search" className="pl-8" placeholder="Find an artist in the catalog…" aria-label="Find an artist"
+                   value={q} onChange={(e) => setQ(e.target.value)} />
           </div>
-
-          {editing ? (
-            <div className="detail-section-form" style={{ marginTop: "0.75rem" }}>
-              <label>My notes
-                <textarea rows={3} value={notes} onChange={(e) => setNotes(e.target.value)} />
-              </label>
-              <div style={{ marginTop: "0.5rem", display: "flex", gap: "0.5rem" }}>
-                <BusyButton busy={update.isPending} busyLabel="Saving…"
-                            onClick={() => update.mutate({ notes: notes.trim() === "" ? null : notes })}>Save notes</BusyButton>
-                <button className="danger" onClick={() => setConfirmRemove(true)}>✕ Remove from my list</button>
-              </div>
-            </div>
-          ) : (
-            entry.notes && (
-              <div className="detail-tags" style={{ marginTop: "0.5rem" }}>
-                <span className="detail-label">My notes</span>
-                <span>{entry.notes}</span>
-              </div>
-            )
+          {term && (
+            <ul className="divide-y rounded-md border text-sm">
+              {(hits.data ?? []).length === 0 && !hits.isFetching && <li className="px-3 py-2 text-muted-foreground">No artist matches.</li>}
+              {(hits.data ?? []).filter((h) => !linked.has(h.id)).map((h) => (
+                <li key={h.id} className="flex items-center gap-2 px-3 py-1.5">
+                  <span className="min-w-0 flex-1 truncate">{h.name}{h.name_en && <span className="text-muted-foreground"> ({h.name_en})</span>}</span>
+                  <Button size="sm" variant="outline" disabled={link.isPending} onClick={() => link.mutate(h.id)}>
+                    <Plus className="size-3.5" /> Add
+                  </Button>
+                </li>
+              ))}
+            </ul>
           )}
-        </>
+        </div>
       )}
-
-      {confirmRemove && (
+      {unlinking && (
         <ConfirmDialog
-          message="Remove this album from your list? Your listen count and personal notes for it will be lost."
+          message={`Remove ${unlinking.name} from this album? It also leaves everyone's ranking of ${unlinking.name}'s albums.`}
           confirmLabel="Remove"
-          busy={remove.isPending}
-          onConfirm={() => remove.mutate(undefined, { onSettled: () => { setConfirmRemove(false); setEditing(false); } })}
-          onCancel={() => setConfirmRemove(false)}
+          busy={unlink.isPending}
+          onConfirm={() => unlink.mutate(unlinking.id, { onSettled: () => setUnlinking(null) })}
+          onCancel={() => setUnlinking(null)}
         />
       )}
-    </section>
+    </Section>
   );
 }
-
-// ── Main page ──────────────────────────────────────────────────────────────────
 
 export function AlbumDetailPage() {
-  const { id } = useParams<{ id: string }>();
-  const albumId = Number(id);
-  const qc = useQueryClient();
+  const albumId = Number(useParams<{ id: string }>().id);
   const { guildId, base } = useGuildApi();
   const canEdit = useCan("catalog_edit");
   const [editing, setEditing] = useState(false);
+  const { data: genres = [] } = useMusicGenres();
+  const genreNames = useMemo(() => new Map(genres.map((g) => [g.id, g.name])), [genres]);
 
-  const { data: album, isLoading, isError } = useQuery({
+  const { data: album, isLoading, isError, error, refetch } = useQuery({
     queryKey: gk(guildId, "albums", albumId),
     queryFn: () => api.get<Album>(`${base}/albums/${albumId}`),
     enabled: !isNaN(albumId),
   });
 
-  if (isLoading) return <section><LoadingState label="Loading album…" /></section>;
-  if (isError || !album) return <section><p>Album not found.</p></section>;
+  usePageTitle(album?.name);
+  if (isLoading) return <LoadingState label="Loading album…" />;
+  if (isError || !album) return <LoadFailed what="album" error={error} onRetry={() => void refetch()} />;
 
-  const firstArtistId = album.artists[0]?.id ?? 0;
+  const firstArtist = album.artists[0];
 
   return (
-    <section>
-      {album.artists.length > 0 ? (
-        <Link to={`/g/${guildId}/music/artists/${firstArtistId}`} className="back-link">
-          ← {album.artists[0].name}
+    <div className="grid gap-5">
+      {firstArtist && (
+        <Link to={`/g/${guildId}/music/artists/${firstArtist.id}`} className="text-sm text-muted-foreground hover:underline">
+          ← {firstArtist.name}
         </Link>
-      ) : (
-        <Link to={`/g/${guildId}/music`} className="back-link">← All artists</Link>
       )}
-      <header className="page-head">
-        <h1>
-          {album.name}{album.name_en && <span style={{ opacity: 0.6, fontWeight: "normal" }}> ({album.name_en})</span>}
-        </h1>
-        {canEdit && <button onClick={() => setEditing(true)}>✎ Edit</button>}
-      </header>
+      <DetailHeader
+        title={album.name}
+        altTitle={album.name_en}
+        facts={[album.release_year, albumRuntime(album.runtime_seconds), album.alias && `also “${album.alias}”`]}
+        actions={canEdit && firstArtist && <Button variant="outline" size="sm" onClick={() => setEditing(true)}><Pencil className="size-4" /> Edit</Button>}
+      />
 
-      <div className="artist-detail-dropdown" style={{ marginBottom: "1.5rem" }}>
-        <div className="artist-detail-grid">
-          <div><span className="detail-label">Release year</span><span>{album.release_year}</span></div>
-          <div><span className="detail-label">Runtime</span><span>{fmtRuntime(album.runtime_seconds)}</span></div>
-          {album.alias && (
-            <div><span className="detail-label">Alias</span><span>{album.alias}</span></div>
-          )}
+      <div className="grid gap-5 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
+        <div className="grid content-start gap-5">
+          <AlbumArtistsSection album={album} />
+          <LinkedWorksSection title="Soundtrack for" path={`albums/${album.id}/soundtracks`}
+                              emptyText="Not the soundtrack of anything in the catalog."
+                              linked={{ movie: album.soundtrack_movies, television_show: album.soundtrack_television_shows, game: album.soundtrack_games }} />
+          {album.notes && <Section title="Notes"><p className="text-sm whitespace-pre-line">{album.notes}</p></Section>}
         </div>
-        {album.notes && (
-          <div className="detail-tags" style={{ marginTop: "0.5rem" }}>
-            <span className="detail-label">Notes</span>
-            <span>{album.notes}</span>
-          </div>
-        )}
+        <div className="grid content-start gap-5">
+          {/* Albums rank within an artist's discography: the list entry is the first artist's. */}
+          {firstArtist && (
+            <MyEntrySection entryPath={`artists/${firstArtist.id}/albums/${album.id}`} noun="album"
+                            counter={{ key: "listens", label: "Listens" }} />
+          )}
+          <TaxonomySection path="albums" ownerId={album.id} ids={album.genre_ids} names={genreNames}
+                           linkTo={(id) => `music/genres/${id}`}
+                           chooser={(sel, change) => <GenreChooser domain={MUSIC_GENRES} selected={sel} onChange={change} />} />
+          <LinksSection path="albums" section="albums" ownerId={album.id} />
+        </div>
       </div>
 
-      <AlbumArtistsSection albumId={albumId} album={album} />
-      <AlbumGenresSection albumId={albumId} album={album} />
-      <AlbumSoundtracksSection album={album} />
-      <LinksSection path="albums" section="albums" ownerId={albumId} />
-      {album.artists.length > 0 && <MyAlbumListSection artistId={firstArtistId} albumId={albumId} />}
-
-      {editing && (
-        <div className="modal-backdrop" onClick={() => setEditing(false)}>
-          <div onClick={(e) => e.stopPropagation()}>
-            <AlbumForm
-              artistId={firstArtistId}
-              initial={album}
-              onClose={() => {
-                setEditing(false);
-                qc.invalidateQueries({ queryKey: gk(guildId, "albums", albumId) });
-              }}
-            />
-          </div>
-        </div>
+      {editing && firstArtist && (
+        <>
+          <AlbumForm artistId={firstArtist.id} initial={album} onClose={() => setEditing(false)} />
+        </>
       )}
-    </section>
+    </div>
   );
 }

@@ -14,6 +14,7 @@ from ..api_models.tmdb_tv_import import (
     TmdbTvSeasonImportOut,
     TmdbTvSeasonLookupIn,
     TmdbTvSeasonLookupOut,
+    TmdbTvSyncOut,
 )
 from ..authz import Capability
 from ..database import get_database
@@ -22,6 +23,7 @@ from ..tmdb_tv_import import (
     tmdb_import_episode,
     tmdb_import_season,
     tmdb_import_show,
+    tmdb_sync_show,
     tv_episode_lookup,
     tv_lookup,
     tv_season_lookup,
@@ -33,7 +35,8 @@ CREATE = guild_ctx(Capability.CATALOG_CREATE)
 
 
 @router.post("/lookup", response_model=TmdbTvLookupOut)
-def lookup(body: TmdbTvLookupIn, ctx: GuildContext = Depends(VIEW), db: Session = Depends(get_database)):
+def lookup(body: TmdbTvLookupIn, ctx: GuildContext = Depends(VIEW), db: Session = Depends(get_database, scope="function")):
+    db.commit()  # hand the pooled connection back while TMDB/IGDB is called (it may queue for a while)
     result = tv_lookup(
         db,
         ctx.guild_id,
@@ -42,6 +45,7 @@ def lookup(body: TmdbTvLookupIn, ctx: GuildContext = Depends(VIEW), db: Session 
         include_episodes=body.include_episodes,
         include_specials=body.include_specials,
         season_numbers=body.season_numbers,
+        tmdb_id=body.tmdb_id,
     )
     if result is None:
         raise HTTPException(404, f"No TMDB TV match found for '{body.title}'")
@@ -49,7 +53,7 @@ def lookup(body: TmdbTvLookupIn, ctx: GuildContext = Depends(VIEW), db: Session 
 
 
 @router.post("", response_model=TmdbTvImportOut, status_code=201)
-def import_show(body: TmdbTvImportIn, ctx: GuildContext = Depends(CREATE), db: Session = Depends(get_database)):
+def import_show(body: TmdbTvImportIn, ctx: GuildContext = Depends(CREATE), db: Session = Depends(get_database, scope="function")):
     if body.add_to_list or any(s.add_to_list for s in body.seasons):
         ctx.require(Capability.RANK)
     try:
@@ -59,7 +63,8 @@ def import_show(body: TmdbTvImportIn, ctx: GuildContext = Depends(CREATE), db: S
 
 
 @router.post("/season-lookup", response_model=TmdbTvSeasonLookupOut)
-def season_lookup(body: TmdbTvSeasonLookupIn, ctx: GuildContext = Depends(VIEW), db: Session = Depends(get_database)):
+def season_lookup(body: TmdbTvSeasonLookupIn, ctx: GuildContext = Depends(VIEW), db: Session = Depends(get_database, scope="function")):
+    db.commit()  # hand the pooled connection back while TMDB/IGDB is called (it may queue for a while)
     try:
         result = tv_season_lookup(db, ctx.guild_id, body)
     except ValueError as e:
@@ -70,7 +75,7 @@ def season_lookup(body: TmdbTvSeasonLookupIn, ctx: GuildContext = Depends(VIEW),
 
 
 @router.post("/season", response_model=TmdbTvSeasonImportOut, status_code=201)
-def import_season(body: TmdbTvSeasonImportIn, ctx: GuildContext = Depends(CREATE), db: Session = Depends(get_database)):
+def import_season(body: TmdbTvSeasonImportIn, ctx: GuildContext = Depends(CREATE), db: Session = Depends(get_database, scope="function")):
     try:
         return tmdb_import_season(db, ctx.guild_id, ctx.user_id, body)
     except ValueError as e:
@@ -78,7 +83,8 @@ def import_season(body: TmdbTvSeasonImportIn, ctx: GuildContext = Depends(CREATE
 
 
 @router.post("/episode-lookup", response_model=TmdbTvEpisodeLookupOut)
-def episode_lookup(body: TmdbTvEpisodeLookupIn, ctx: GuildContext = Depends(VIEW), db: Session = Depends(get_database)):
+def episode_lookup(body: TmdbTvEpisodeLookupIn, ctx: GuildContext = Depends(VIEW), db: Session = Depends(get_database, scope="function")):
+    db.commit()  # hand the pooled connection back while TMDB/IGDB is called (it may queue for a while)
     try:
         result = tv_episode_lookup(db, ctx.guild_id, body)
     except ValueError as e:
@@ -89,8 +95,18 @@ def episode_lookup(body: TmdbTvEpisodeLookupIn, ctx: GuildContext = Depends(VIEW
 
 
 @router.post("/episode", response_model=TmdbTvEpisodeImportOut, status_code=201)
-def import_episode(body: TmdbTvEpisodeImportIn, ctx: GuildContext = Depends(CREATE), db: Session = Depends(get_database)):
+def import_episode(body: TmdbTvEpisodeImportIn, ctx: GuildContext = Depends(CREATE), db: Session = Depends(get_database, scope="function")):
     try:
         return tmdb_import_episode(db, ctx.guild_id, ctx.user_id, body)
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+
+
+@router.post("/sync/{sid}", response_model=TmdbTvSyncOut)
+def sync_show(sid: int, ctx: GuildContext = Depends(CREATE), db: Session = Depends(get_database, scope="function")):
+    try:
+        return tmdb_sync_show(db, ctx.guild_id, ctx.user_id, sid)
+    except LookupError as e:
+        raise HTTPException(404, str(e))
     except ValueError as e:
         raise HTTPException(409, str(e))

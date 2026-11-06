@@ -1,8 +1,11 @@
-fastapi
-uvicorn
-sqlalchemy
-psycopg[binary]
-python-dotenv
-requests
-argon2-cffi
-email-validator
+fastapi==0.135.2
+uvicorn==0.42.0
+sqlalchemy==2.0.48
+psycopg[binary]==3.3.3
+alembic==1.20.1
+python-dotenv==1.2.2
+requests==2.33.1
+argon2-cffi==25.1.0
+email-validator==2.3.0
+# POST /batch replays its operations through the app with it
+httpx==0.28.1

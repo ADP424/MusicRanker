@@ -1,31 +1,40 @@
-"""Shared machinery for the person-link scans that aren't movies: the
-television scan (`tmdb_tv_scan.py`) and the game scan (`igdb_scan.py`).
+"""Shared machinery for the person-link scans: the TMDB scan over movies and
+television (`tmdb_person_scan.py`) and the IGDB game scan (`igdb_scan.py`).
+What lives here:
 
-The movie scan (`tmdb_scan.py`) predates this and keeps its own copies; the
-shapes are the same.  What lives here:
-
-  * the in-memory job registry the routers poll,
   * the shared "is this TMDB/IGDB person one of ours?" matcher,
   * a scoped rejection store both sidecars mix in,
-  * a runner that fans the per-entity fetches out over a thread pool and
-    settles the job however it ends.
+  * the glue that runs a scan as a Postgres-queued job (`jobs.py`) with its
+    results stored on the job row, and a runner that fans the per-entity
+    fetches out over a thread pool.
 """
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
-import uuid
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Callable, Iterable, Iterator, Optional, Protocol, TypeVar
+
+from . import database, jobs
+from .jobs import JobContext
+
+log = logging.getLogger(__name__)
+
+T = TypeVar("T")
+R = TypeVar("R")
 
 # ──────────────────────────────────────────────────────────────
 #  Results
 # ──────────────────────────────────────────────────────────────
 MATCH_VERIFIED = "verified"
 MATCH_NAME_ONLY = "name_only"
+#: The person's links in one medium corroborate them and in another don't —
+#: most likely two different people sharing a name (TMDB scan only).
+VERDICT_CONFLICT = "conflict"
 
 
 @dataclass(slots=True)
@@ -34,7 +43,7 @@ class Candidate:
 
     person_id: int
     person_name: str
-    entity_kind: str  # "show" | "season" | "episode" | "game"
+    entity_kind: str  # "movie" | "show" | "season" | "episode" | "game"
     entity_id: int
     entity_name: str
     entity_year: Optional[int]
@@ -53,6 +62,10 @@ class Candidate:
     source_person_id: int
     source_popularity: float
     suppressed: bool
+    # MATCH_* or VERDICT_CONFLICT; "" where a scan has only one medium.
+    verdict: str = ""
+    # medium -> (linked works that corroborate, linked works checked)
+    evidence: dict[str, tuple[int, int]] = field(default_factory=dict)
 
     @property
     def key(self) -> str:
@@ -68,12 +81,16 @@ class Unresolved:
     reason: str
 
 
+_SCRUTINY = {VERDICT_CONFLICT: 0, MATCH_NAME_ONLY: 1, MATCH_VERIFIED: 2}
+
+
 def sort_candidates(out: list[Candidate]) -> list[Candidate]:
-    """Unsuppressed name-only first (they need scrutiny), suppressed last."""
+    """Unsuppressed conflicts and name-only first (they need scrutiny),
+    suppressed last."""
     out.sort(
         key=lambda c: (
             c.suppressed,
-            c.match != MATCH_NAME_ONLY,
+            _SCRUTINY.get(c.verdict or c.match, 2),
             c.person_name.lower(),
             (c.context or "").lower(),
             c.entity_name.lower(),
@@ -98,14 +115,20 @@ def identify(
     people: Iterable[P],
     by_norm: dict[str, set[int]],
     plinks: dict[int, set[int]],
+    pinned: dict[int, int] | None = None,
 ) -> Iterator[tuple[P, int, str, int]]:
     """-> (external person, local person id, match, overlap) for every external
     person we can pin to exactly one local person.
 
-    Identity evidence is free: if the DB already says "P is on work X" and the
-    provider's credits for X contain someone named like P, that's proof enough.
-    Without any, a name binds only when it's unique on both sides."""
+    A local person whose stored external id is `ep.ext_id` (`pinned`: external
+    id -> local id) is that person, whatever the names say, and is never bound
+    to anyone else. Otherwise identity evidence is free: if the DB already says
+    "P is on work X" and the provider's credits for X contain someone named
+    like P, that's proof enough. Without any, a name binds only when it's
+    unique on both sides."""
     people = list(people)
+    pinned = pinned or {}
+    taken = set(pinned.values())
 
     # How many distinct external people share each normalised name *within our
     # catalogue*?  Guards the name-only binding against Chris Evans problems.
@@ -115,9 +138,14 @@ def identify(
             ext_by_norm[n].add(ep.ext_id)
 
     for ep in people:
+        if ep.ext_id in pinned:
+            pid = pinned[ep.ext_id]
+            yield ep, pid, MATCH_VERIFIED, len(plinks.get(pid, set()) & ep.works)
+            continue
         pids: set[int] = set()
         for n in ep.norms:
             pids |= by_norm.get(n, set())
+        pids -= taken
         if not pids:
             continue
 
@@ -213,7 +241,7 @@ class ScopedRejections:
 
 
 # ──────────────────────────────────────────────────────────────
-#  Job registry (single-process, in-memory — same model as tmdb_scan)
+#  Running as a queued job
 # ──────────────────────────────────────────────────────────────
 @dataclass
 class ScanStats:
@@ -226,91 +254,92 @@ class ScanStats:
 
 
 @dataclass
-class ScanJob:
-    id: str
-    guild_id: int = 0
-    status: str = "pending"  # pending | running | done | cancelled | error
-    phase: str = "queued"  # queued | loading | fetching | matching | finished
-    processed: int = 0
-    total: int = 0
-    last_item: Optional[str] = None
-    error: Optional[str] = None
-    stats: Optional[ScanStats] = None
-    candidates: list[Candidate] = field(default_factory=list)
-    unresolved: list[Unresolved] = field(default_factory=list)
-    created_at: float = field(default_factory=time.time)
-    finished_at: Optional[float] = None
-    cancel: threading.Event = field(default_factory=threading.Event)
-    _lock: threading.Lock = field(default_factory=threading.Lock)
+class ScanResult:
+    candidates: list[Candidate]
+    unresolved: list[Unresolved]
+    stats: ScanStats
 
-    @property
-    def candidate_count(self) -> Optional[int]:
-        return len(self.candidates) if self.status == "done" else None
 
-    def mark(self, **kw) -> None:
+class _CancelFlag:
+    """`is_set()` reads the job row's `cancel_requested`, at most once a second
+    however many fetch threads ask."""
+
+    POLL = 1.0
+
+    def __init__(self, ctx: JobContext):
+        self._ctx = ctx
+        self._set = False
+        self._checked = 0.0
+        self._lock = threading.Lock()
+
+    def is_set(self) -> bool:
         with self._lock:
-            for k, v in kw.items():
-                setattr(self, k, v)
+            if not self._set and time.monotonic() - self._checked >= self.POLL:
+                self._checked = time.monotonic()
+                self._set = self._ctx.cancelled()
+            return self._set
+
+
+class ScanJob:
+    """What a scan body sees while it runs as a job: progress goes to the job
+    row (throttled, since every fetch thread ticks), cancellation comes from it."""
+
+    TICK_EVERY = 0.5
+
+    def __init__(self, ctx: JobContext):
+        self._ctx = ctx
+        self.cancel = _CancelFlag(ctx)
+        self.processed = 0
+        self.total = 0
+        self._reported = 0.0
+        self._lock = threading.Lock()
+
+    def mark(self, *, phase: str, total: Optional[int] = None) -> None:
+        with self._lock:
+            kw: dict = {"phase": phase}
+            if total is not None:
+                self.total = kw["total"] = total
+                self.processed = kw["processed"] = 0
+            self._ctx.progress(**kw)
 
     def tick(self, name: str) -> None:
         with self._lock:
             self.processed += 1
-            self.last_item = name
+            now = time.monotonic()
+            if now - self._reported >= self.TICK_EVERY or self.processed == self.total:
+                self._reported = now
+                self._ctx.progress(processed=self.processed, message=name)
 
 
-class JobRegistry:
-    TTL = 3600.0
-    MAX = 10
-
-    def __init__(self):
-        self._jobs: dict[str, ScanJob] = {}
-        self._lock = threading.Lock()
-
-    def create(self, guild_id: int) -> ScanJob:
-        job = ScanJob(id=uuid.uuid4().hex[:12], guild_id=guild_id)
-        with self._lock:
-            self._jobs[job.id] = job
-        return job
-
-    def get(self, jid: str, guild_id: int) -> Optional[ScanJob]:
-        with self._lock:
-            job = self._jobs.get(jid)
-        return job if job is not None and job.guild_id == guild_id else None
-
-    def list(self, guild_id: int) -> list[ScanJob]:
-        with self._lock:
-            jobs = [j for j in self._jobs.values() if j.guild_id == guild_id]
-        return sorted(jobs, key=lambda j: j.created_at, reverse=True)
-
-    def running(self, guild_id: int) -> Optional[ScanJob]:
-        with self._lock:
-            for j in self._jobs.values():
-                if j.guild_id == guild_id and j.status in ("pending", "running"):
-                    return j
-        return None
-
-    def delete(self, jid: str) -> None:
-        with self._lock:
-            self._jobs.pop(jid, None)
-
-    def evict(self) -> None:
-        now = time.time()
-        with self._lock:
-            for jid, j in list(self._jobs.items()):
-                if j.finished_at and now - j.finished_at > self.TTL:
-                    del self._jobs[jid]
-            if len(self._jobs) > self.MAX:
-                keep = sorted(self._jobs.values(), key=lambda j: j.created_at, reverse=True)
-                for j in keep[self.MAX :]:
-                    if j.status not in ("pending", "running"):
-                        del self._jobs[j.id]
+#: (job handle, guild id, entity ids or None for everything, which kind those
+#: ids are, force refresh) -> the result, or None once cancelled.
+ScanBody = Callable[[ScanJob, int, Optional[list[int]], Optional[str], bool], Optional[ScanResult]]
 
 
-# ──────────────────────────────────────────────────────────────
-#  Runner
-# ──────────────────────────────────────────────────────────────
-T = TypeVar("T")
-R = TypeVar("R")
+def job_kind(name: str) -> str:
+    return f"person_scan:{name}"
+
+
+def register_scan(name: str, body: ScanBody) -> None:
+    """Registers `body` as the job handler for scan `name`. Results are stored
+    on the job row, so they survive restarts and are shared by every worker."""
+
+    @jobs.handler(job_kind(name))
+    def _run(db, job, ctx: JobContext) -> dict:
+        guild_id, payload = job.guild_id, dict(job.payload or {})
+        db.commit()  # don't sit idle-in-transaction for the length of the scan
+        handle = ScanJob(ctx)
+        handle.mark(phase="loading")
+        result = body(
+            handle, guild_id, payload.get("entity_ids"), payload.get("entity_kind"), bool(payload.get("force_refresh"))
+        )
+        if result is None or handle.cancel.is_set():
+            raise jobs.JobCancelled()
+        return {
+            "candidates": [{**asdict(c), "key": c.key} for c in result.candidates],
+            "unresolved": [asdict(u) for u in result.unresolved],
+            "stats": asdict(result.stats),
+        }
 
 
 def fetch_all(
@@ -330,6 +359,7 @@ def fetch_all(
         try:
             return fetch(it)
         except Exception:  # noqa: BLE001
+            log.warning("Scan fetch failed for %s", name(it), exc_info=True)
             return None
 
     job.mark(phase="fetching", total=len(items))
@@ -344,20 +374,23 @@ def fetch_all(
             yield it, fut.result()
 
 
-def run_job(registry: JobRegistry, job_id: str, guild_id: int, body: Callable[[ScanJob], None]) -> None:
-    """Runs in a FastAPI BackgroundTask and must swallow every exception: an
-    escaped error would leave the client polling `running` forever.  `body`
-    does the work and finishes with `job.mark(status="done", ...)`, or just
-    returns early once `job.cancel` is set."""
-    job = registry.get(job_id, guild_id)
-    if job is None:
-        return
-    try:
-        job.mark(status="running", phase="loading")
-        body(job)
-        if job.status == "running":  # body bailed out on cancel without finishing
-            job.mark(status="cancelled", phase="finished", finished_at=time.time())
-    except Exception as exc:  # noqa: BLE001
-        if job.cancel.is_set():
-            return  # cancel already settled the job; a teardown error is noise
-        job.mark(status="error", phase="finished", error=str(exc), finished_at=time.time())
+# ──────────────────────────────────────────────────────────────
+#  Backfilling external ids
+# ──────────────────────────────────────────────────────────────
+def remember_ids(guild_id: int, found: Iterable[tuple[type, str, dict[int, int]]]) -> None:
+    """Stores the external ids a scan worked out, as (model, id column,
+    {row id: external id}), on rows that don't have one yet, so later scans,
+    imports and refreshes go straight to them. An id another row of the guild
+    already holds is left alone: that's a duplicate to merge, not a guess."""
+    with database.SessionLocal() as db:
+        for model, column, mapping in found:
+            if not mapping:
+                continue
+            col = getattr(model, column)
+            taken = {t for (t,) in db.query(col).filter(model.guild_id == guild_id, col.isnot(None))}
+            for row in db.query(model).filter(model.guild_id == guild_id, model.id.in_(mapping), col.is_(None)):
+                ext = mapping[row.id]
+                if ext not in taken:
+                    taken.add(ext)
+                    setattr(row, column, ext)
+        db.commit()

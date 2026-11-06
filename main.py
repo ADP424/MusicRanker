@@ -8,6 +8,7 @@ Both processes share stdout/stderr with the parent.  Ctrl-C (or SIGTERM on
 Unix) shuts both down cleanly.
 """
 
+import os
 import signal
 import subprocess
 import sys
@@ -33,6 +34,7 @@ def main() -> None:
     backend = subprocess.Popen(
         [sys.executable, "-m", "uvicorn", "server.main:app", "--reload"],
         cwd=ROOT,
+        env={**os.environ, "APP_ENV": os.environ.get("APP_ENV", "dev")},
     )
     frontend = subprocess.Popen(
         ["npm", "run", "dev"],

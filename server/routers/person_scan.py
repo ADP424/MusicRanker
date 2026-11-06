@@ -1,42 +1,46 @@
-"""Router factory shared by the television and game person-link scans.
+"""Router factory shared by the person-link scans (TMDB, IGDB).
 
-Same endpoints as `movie_person_scan.py`, generalised over entity kinds: a
-candidate, link or suppression names its target as (entity_kind, entity_id),
+A candidate, link or suppression names its target as (entity_kind, entity_id),
 and each kind maps to the ORM entity, its person-link table and the roles that
-table accepts.
+table accepts.  Scans run as Postgres-queued jobs (`jobs.py`); their results
+live on the job row, so they survive restarts and the page can reopen the
+latest one.
 """
 
 from __future__ import annotations
 
 import enum
-import time
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Callable, Iterable, Optional
+from typing import Callable, Iterable
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from ..api_models.person_scan import (
     PersonScanApplyIn,
     PersonScanApplyOut,
-    PersonScanCandidateOut,
     PersonScanJobOut,
     PersonScanResultsOut,
     PersonScanStartIn,
     PersonScanSuppressionListOut,
     PersonScanSuppressionOut,
-    PersonScanUnresolvedOut,
 )
 from ..authz import Capability
 from ..database import get_database
-from ..database_models import Person
+from .. import jobs
+from ..database_models import Job, JobLane, JobStatus, Person
 from ..deps import GuildContext, guild_ctx
-from ..scan_common import JobRegistry, ScopedRejections
+from ..scan_common import ScopedRejections, job_kind
 
 VIEW = guild_ctx(Capability.VIEW)
 EDIT = guild_ctx(Capability.CATALOG_EDIT)
+
+LIVE = (JobStatus.pending, JobStatus.running)
+PHASES = {"queued", "loading", "fetching", "matching", "finished"}
+#: Finished scans kept per guild and scan, newest first.
+KEEP_FINISHED = 5
 
 
 @dataclass(frozen=True)
@@ -53,19 +57,37 @@ def make_router(
     *,
     prefix: str,
     tag: str,
-    registry: JobRegistry,
-    run_scan: Callable[[str, int, Optional[list[int]], bool], None],
-    root: type,  # what `entity_ids` in a start request refers to
+    scan: str,  # the scan's name, as given to scan_common.register_scan
+    lane: JobLane,
+    roots: dict[str, type],  # kinds a start request may scope to; the first is the default
     kinds: dict[str, EntityKind],
     sidecar: Callable[[], ScopedRejections],
 ) -> APIRouter:
     router = APIRouter(prefix=f"/guilds/{{guild_id}}/{prefix}", tags=[tag])
     by_scope = {k.scope: name for name, k in kinds.items()}
+    kind = job_kind(scan)
 
-    def job_or_404(job_id: str, guild_id: int):
-        job = registry.get(job_id, guild_id)
-        if job is None:
-            raise HTTPException(404, f"No scan job {job_id!r} (it may have expired).")
+    def job_out(job: Job) -> PersonScanJobOut:
+        done = job.status is JobStatus.done and job.result is not None
+        return PersonScanJobOut(
+            id=str(job.id),
+            status=job.status.value,
+            phase=job.phase if job.phase in PHASES else "queued",
+            processed=job.processed,
+            total=job.total,
+            last_item=job.message,
+            error=job.error,
+            candidate_count=len(job.result["candidates"]) if done else None,
+            stats=job.result["stats"] if done else None,
+            scoped=bool((job.payload or {}).get("entity_ids")),
+            created_at=job.created_at,
+            finished_at=job.finished_at,
+        )
+
+    def job_or_404(db: Session, job_id: str, guild_id: int) -> Job:
+        job = db.get(Job, int(job_id)) if job_id.isdigit() else None
+        if job is None or job.guild_id != guild_id or job.kind != kind:
+            raise HTTPException(404, f"No scan job {job_id!r} (it may have been discarded).")
         return job
 
     def in_guild(db: Session, model: type, ids: Iterable[int], guild_id: int) -> set[int]:
@@ -83,62 +105,67 @@ def make_router(
         entities = {k: in_guild(db, kinds[k].model, ids, guild_id) for k, ids in wanted.items()}
         return entities, in_guild(db, Person, {r.person_id for r in refs}, guild_id)
 
+    def guild_jobs(db: Session, guild_id: int):
+        return db.query(Job).filter(Job.guild_id == guild_id, Job.kind == kind)
+
     @router.post("/jobs", response_model=PersonScanJobOut, status_code=202)
     def start_scan(
         body: PersonScanStartIn,
-        background: BackgroundTasks,
         ctx: GuildContext = Depends(EDIT),
-        db: Session = Depends(get_database),
+        db: Session = Depends(get_database, scope="function"),
     ):
-        registry.evict()
-        running = registry.running(ctx.guild_id)
+        running = guild_jobs(db, ctx.guild_id).filter(Job.status.in_(LIVE)).first()
         if running is not None:
             raise HTTPException(409, f"A scan is already running (job {running.id}).")
+        root = body.entity_kind or next(iter(roots))
+        if root not in roots:
+            raise HTTPException(422, f"This scan can't be limited to {root}s.")
         if body.entity_ids:
-            missing = sorted(set(body.entity_ids) - in_guild(db, root, body.entity_ids, ctx.guild_id))
+            missing = sorted(set(body.entity_ids) - in_guild(db, roots[root], body.entity_ids, ctx.guild_id))
             if missing:
                 raise HTTPException(404, f"Unknown ids: {missing}")
-        job = registry.create(ctx.guild_id)
-        # The request session is closed before this runs; run_scan opens its own.
-        background.add_task(run_scan, job.id, ctx.guild_id, body.entity_ids, body.force_refresh)
-        return job
+        # Old results are kept so the page can reopen them, but not forever.
+        finished = guild_jobs(db, ctx.guild_id).filter(Job.status.notin_(LIVE)).order_by(Job.created_at.desc())
+        for old in finished.offset(KEEP_FINISHED - 1).all():
+            db.delete(old)
+        job = jobs.enqueue(
+            db, lane=lane, kind=kind, guild_id=ctx.guild_id, user_id=ctx.user_id,
+            payload={"entity_ids": body.entity_ids, "entity_kind": root, "force_refresh": body.force_refresh},
+        )
+        return job_out(job)
 
     @router.get("/jobs", response_model=list[PersonScanJobOut])
-    def list_jobs(ctx: GuildContext = Depends(VIEW)):
-        registry.evict()
-        return registry.list(ctx.guild_id)
+    def list_jobs(ctx: GuildContext = Depends(VIEW), db: Session = Depends(get_database, scope="function")):
+        return [job_out(j) for j in guild_jobs(db, ctx.guild_id).order_by(Job.created_at.desc()).limit(KEEP_FINISHED)]
 
     @router.get("/jobs/{job_id}", response_model=PersonScanJobOut)
-    def get_job(job_id: str, ctx: GuildContext = Depends(VIEW)):
-        return job_or_404(job_id, ctx.guild_id)
+    def get_job(job_id: str, ctx: GuildContext = Depends(VIEW), db: Session = Depends(get_database, scope="function")):
+        return job_out(job_or_404(db, job_id, ctx.guild_id))
 
     @router.get("/jobs/{job_id}/results", response_model=PersonScanResultsOut)
-    def get_results(job_id: str, ctx: GuildContext = Depends(VIEW)):
-        job = job_or_404(job_id, ctx.guild_id)
-        if job.status != "done":
-            raise HTTPException(409, f"Job {job_id} is {job.status}, not done.")
+    def get_results(job_id: str, ctx: GuildContext = Depends(VIEW), db: Session = Depends(get_database, scope="function")):
+        job = job_or_404(db, job_id, ctx.guild_id)
+        if job.status is not JobStatus.done or job.result is None:
+            raise HTTPException(409, f"Job {job_id} is {job.status.value}, not done.")
         return PersonScanResultsOut(
-            job_id=job.id,
-            candidates=[PersonScanCandidateOut.model_validate(c) for c in job.candidates],
-            unresolved=[PersonScanUnresolvedOut.model_validate(u) for u in job.unresolved],
+            job_id=str(job.id), candidates=job.result["candidates"], unresolved=job.result["unresolved"],
         )
 
     @router.post("/jobs/{job_id}/cancel", status_code=204)
-    def cancel_job(job_id: str, ctx: GuildContext = Depends(EDIT)):
-        job = job_or_404(job_id, ctx.guild_id)
-        job.cancel.set()
-        # Settle now, so the next POST /jobs doesn't 409 while the worker unwinds.
-        if job.status in ("pending", "running"):
-            job.mark(status="cancelled", phase="finished", finished_at=time.time())
+    def cancel_job(job_id: str, ctx: GuildContext = Depends(EDIT), db: Session = Depends(get_database, scope="function")):
+        job = job_or_404(db, job_id, ctx.guild_id)
+        jobs.request_cancel(db, job)
 
     @router.delete("/jobs/{job_id}", status_code=204)
-    def delete_job(job_id: str, ctx: GuildContext = Depends(EDIT)):
-        job = job_or_404(job_id, ctx.guild_id)
-        job.cancel.set()  # stop the worker before we drop our handle on it
-        registry.delete(job_id)
+    def delete_job(job_id: str, ctx: GuildContext = Depends(EDIT), db: Session = Depends(get_database, scope="function")):
+        job = job_or_404(db, job_id, ctx.guild_id)
+        if job.status is JobStatus.running:
+            jobs.request_cancel(db, job)  # the worker still holds it; it settles as cancelled
+        else:
+            db.delete(job)
 
     @router.post("/apply", response_model=PersonScanApplyOut)
-    def apply_scan(body: PersonScanApplyIn, ctx: GuildContext = Depends(EDIT), db: Session = Depends(get_database)):
+    def apply_scan(body: PersonScanApplyIn, ctx: GuildContext = Depends(EDIT), db: Session = Depends(get_database, scope="function")):
         entities, persons = valid_refs(db, ctx.guild_id, body.links)
         invalid = []
         rows: dict[str, list[dict]] = defaultdict(list)
@@ -203,7 +230,7 @@ def make_router(
         return [r for r in raw if r[1] in persons and r[2] in entities.get(by_scope[r[0]], ())]
 
     @router.get("/suppressions", response_model=PersonScanSuppressionListOut)
-    def list_suppressions(ctx: GuildContext = Depends(VIEW), db: Session = Depends(get_database)):
+    def list_suppressions(ctx: GuildContext = Depends(VIEW), db: Session = Depends(get_database, scope="function")):
         raw = guild_rejections(db, ctx.guild_id)
         if not raw:
             return PersonScanSuppressionListOut(count=0, items=[])
@@ -227,7 +254,7 @@ def make_router(
         return PersonScanSuppressionListOut(count=len(items), items=items)
 
     @router.delete("/suppressions", status_code=204)
-    def clear_suppressions(ctx: GuildContext = Depends(EDIT), db: Session = Depends(get_database)):
+    def clear_suppressions(ctx: GuildContext = Depends(EDIT), db: Session = Depends(get_database, scope="function")):
         sidecar().remove_scoped_rejections(guild_rejections(db, ctx.guild_id))
 
     return router

@@ -5,11 +5,11 @@ caller).
 
 Television score formulas
 -------------------------
-Each show scores 1 / show position (in the viewing member's show ranking).
-Each season scores 1 / position within its show (in the viewing member's
-per-show season ranking); a season they haven't ranked scores as if placed just
-below their ranked ones. Each episode scores 1 / position within its season (in
-the viewing member's per-season episode ranking). Combining the three gives a
+Every score is a percentile of a position (stats_common.percentile: 0.95 for
+#1 of 10, 0.05 for #10). Each show scores by its place in the viewing member's
+show ranking; each season by its place within its show (a season they haven't
+ranked scores as if placed just below their ranked ones); each episode by its
+place within its season. Combining the three gives a
 cross-show episode score:
                         episode_global_score = show_score * season_score * episode_score
 
@@ -38,6 +38,7 @@ from ..database_models import (
 from ..database_models.genre_parent import genre_parents
 from ..database_models.junctions import television_episode_genres_junction, television_show_genres_junction
 from ..database_models.movie_cast_member import CastRole
+from ..stats_common import add_all_route, genre_ancestors, percentile, session_cached
 from ..deps import GuildContext, guild_ctx
 
 router = APIRouter(prefix="/guilds/{guild_id}/television-stats", tags=["television-stats"])
@@ -67,7 +68,7 @@ class TvData:
             select(TelevisionShow).where(TelevisionShow.id.in_(show_ids))
         ).all()} if show_ids else {}
         self.shows: list[TelevisionShow] = [show_by_id_all[sid] for sid in show_ids if sid in show_by_id_all]
-        self.show_score: dict[int, float] = {s.id: 1.0 / pos for pos, s in enumerate(self.shows, start=1)}
+        self.show_score: dict[int, float] = {s.id: percentile(pos, len(self.shows)) for pos, s in enumerate(self.shows, start=1)}
         self.show_by_id = {s.id: s for s in self.shows}
 
         season_pos: dict[int, int] = {}
@@ -81,7 +82,9 @@ class TvData:
             season_pos[r.season_id] = seasons_ranked[r.show_id]
 
         def season_score(show_id: int, season_id: int) -> float:
-            return 1.0 / season_pos.get(season_id, seasons_ranked[show_id] + 1)
+            if season_id in season_pos:
+                return percentile(season_pos[season_id], seasons_ranked[show_id])
+            return percentile(seasons_ranked[show_id] + 1, seasons_ranked[show_id] + 1)
 
         ep_rank_rows = list(db.scalars(
             select(UserTelevisionEpisodeRank)
@@ -100,6 +103,11 @@ class TvData:
         self.episode_global_score: dict[int, float] = {}
         self.show_episodes: dict[int, list[TelevisionEpisode]] = defaultdict(list)
         per_season_pos: dict[int, int] = defaultdict(int)
+        season_size: dict[int, int] = defaultdict(int)  # ranked episodes per season, among those scored
+        for r in ep_rank_rows:
+            ep = ep_by_id_all.get(r.episode_id)
+            if ep is not None and ep.show_id in self.show_score:
+                season_size[ep.season_id] += 1
         for r in ep_rank_rows:
             ep = ep_by_id_all.get(r.episode_id)
             if ep is None or ep.show_id not in self.show_score:
@@ -107,9 +115,9 @@ class TvData:
             per_season_pos[ep.season_id] += 1
             pos = per_season_pos[ep.season_id]
             self.episodes.append(ep)
-            self.episode_score[ep.id] = 1.0 / pos
+            self.episode_score[ep.id] = percentile(pos, season_size[ep.season_id])
             self.episode_global_score[ep.id] = (
-                self.show_score[ep.show_id] * season_score(ep.show_id, ep.season_id) * (1.0 / pos)
+                self.show_score[ep.show_id] * season_score(ep.show_id, ep.season_id) * self.episode_score[ep.id]
             )
             self.show_episodes[ep.show_id].append(ep)
 
@@ -177,6 +185,7 @@ class TvData:
         return self.show_director.get(ep.show_id)
 
 
+@session_cached
 def _load(db: DbSession, ctx: GuildContext, uid: int) -> TvData:
     return TvData(db, ctx, uid)
 
@@ -195,28 +204,6 @@ def _best_worst(items: list[Any], key_fn, val_fn, higher_is_better: bool = True)
     scored = {k: val_fn(v) for k, v in groups.items()}
     ordered = sorted(scored.items(), key=lambda kv: kv[1], reverse=higher_is_better)
     return ordered[0][0], ordered[-1][0]
-
-
-def _genre_ancestors(db: DbSession) -> dict[int, set[int]]:
-    rows = db.execute(select(genre_parents.c.genre_id, genre_parents.c.parent_genre_id)).all()
-    parent_of: dict[int, set[int]] = defaultdict(set)
-    for child_id, parent_id in rows:
-        parent_of[child_id].add(parent_id)
-    all_genre_ids = {gid for gid, _ in rows} | {pid for _, pid in rows}
-    ancestors: dict[int, set[int]] = {}
-    for gid in all_genre_ids:
-        result: set[int] = set()
-        queue = list(parent_of.get(gid, []))
-        visited: set[int] = set()
-        while queue:
-            pid = queue.pop()
-            if pid in visited:
-                continue
-            visited.add(pid)
-            result.add(pid)
-            queue.extend(parent_of.get(pid, []))
-        ancestors[gid] = result
-    return ancestors
 
 
 def _root_genre_ids(db: DbSession, ctx: GuildContext) -> set[int]:
@@ -242,7 +229,7 @@ def _decade(y: int) -> int:
 # Endpoints
 # ---------------------------------------------------------------------------
 @router.get("/summary")
-def summary(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+def summary(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database, scope="function")):
     uid = _target_user(db, ctx, user_id)
     d = _load(db, ctx, uid)
     total_shows = len(d.shows)
@@ -347,7 +334,7 @@ def _bucket_rows(d: TvData, bucket_fn) -> list[dict]:
 
 
 @router.get("/by-year")
-def by_year(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+def by_year(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database, scope="function")):
     uid = _target_user(db, ctx, user_id)
     rows = _bucket_rows(_load(db, ctx, uid), lambda y: y)
     for r in rows:
@@ -356,7 +343,7 @@ def by_year(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW)
 
 
 @router.get("/by-decade")
-def by_decade(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+def by_decade(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database, scope="function")):
     uid = _target_user(db, ctx, user_id)
     rows = _bucket_rows(_load(db, ctx, uid), _decade)
     for r in rows:
@@ -366,7 +353,7 @@ def by_decade(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIE
 
 @router.get("/by-nationality")
 def by_nationality(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW),
-                   db: DbSession = Depends(get_database)):
+                   db: DbSession = Depends(get_database, scope="function")):
     uid = _target_user(db, ctx, user_id)
     d = _load(db, ctx, uid)
     result: dict[str, list[dict]] = {}
@@ -399,7 +386,7 @@ def by_nationality(user_id: int | None = Query(None), ctx: GuildContext = Depend
 
 
 @router.get("/by-genre")
-def by_genre(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+def by_genre(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database, scope="function")):
     uid = _target_user(db, ctx, user_id)
     d = _load(db, ctx, uid)
     genre_by_id: dict[int, Genre] = {
@@ -408,7 +395,7 @@ def by_genre(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW
         ).all()
     }
     roots = _root_genre_ids(db, ctx)
-    ancestors = _genre_ancestors(db)
+    ancestors = genre_ancestors(db, ctx.guild_id)
 
     show_ids = list(d.show_by_id.keys())
     ep_ids = list(d.episode_by_id.keys())
@@ -479,7 +466,7 @@ def by_genre(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW
 
 
 @router.get("/by-show")
-def by_show(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+def by_show(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database, scope="function")):
     """TV-specific: one row per show, rolling up its ranked episodes."""
     uid = _target_user(db, ctx, user_id)
     d = _load(db, ctx, uid)
@@ -504,7 +491,7 @@ def by_show(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW)
 
 
 @router.get("/scatter")
-def scatter(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+def scatter(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database, scope="function")):
     uid = _target_user(db, ctx, user_id)
     d = _load(db, ctx, uid)
     show_scatter = [
@@ -544,7 +531,7 @@ def scatter(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW)
 
 @router.get("/cast-member-detail/{pid}")
 def cast_member_detail(pid: int, user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW),
-                       db: DbSession = Depends(get_database)):
+                       db: DbSession = Depends(get_database, scope="function")):
     uid = _target_user(db, ctx, user_id)
     d = _load(db, ctx, uid)
     p = d.person_by_id.get(pid) or db.get(Person, pid)
@@ -606,3 +593,14 @@ def cast_member_detail(pid: int, user_id: int | None = Query(None), ctx: GuildCo
         "avg_show_score": round(mean(score for _, score in show_pairs), 6) if show_pairs else None,
         "avg_episode_score": round(mean(score for _, score in ep_pairs), 6) if ep_pairs else None,
     }
+
+
+add_all_route(router, VIEW, {
+    "summary": summary,
+    "by_year": by_year,
+    "by_decade": by_decade,
+    "by_nationality": by_nationality,
+    "by_genre": by_genre,
+    "by_show": by_show,
+    "scatter": scatter,
+})

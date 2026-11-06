@@ -16,6 +16,8 @@ from sqlalchemy.orm import Session
 from . import tmdb_common as common
 from .api_models.tmdb_import import (
     DbPersonMatchOut,
+    TmdbCreditsIn,
+    TmdbCreditsOut,
     TmdbGenreOut,
     TmdbImportIn,
     TmdbImportOut,
@@ -23,7 +25,9 @@ from .api_models.tmdb_import import (
     TmdbLookupOut,
     TmdbPersonOut,
 )
-from .database_models import CastRole, Genre, Movie, MoviePerson, Person
+from .normalize import norm as db_norm
+from .database_models import CastRole, Genre, Movie, MoviePerson, UserMovieRank
+from .ranking import next_rank
 from .tmdb_client import TmdbClient
 
 MEDIA_FLAG = "is_movie"
@@ -70,24 +74,50 @@ def _person_out(
 
 
 # ── Public: lookup ───────────────────────────────────────────────────
-def tmdb_lookup(db: Session, guild_id: int, title: str, year: int | None) -> TmdbLookupOut | None:
+def _existing_movie(db: Session, guild_id: int, result: dict) -> int | None:
+    """The catalog's copy of a TMDB result, if any: by TMDB id, else by title
+    (English or original) and year."""
+    found = db.scalar(select(Movie.id).where(Movie.guild_id == guild_id, Movie.tmdb_id == result["id"]))
+    if found is not None:
+        return found
+    titles = {db_norm(t) for t in (result.get("title"), result.get("original_title")) if t} - {""}
+    year = (result.get("release_date") or "")[:4]
+    if not titles or not year.isdigit():
+        return None
+    return db.scalar(select(Movie.id).where(
+        Movie.guild_id == guild_id, Movie.release_year == int(year),
+        Movie.name_norm.in_(titles) | Movie.name_en_norm.in_(titles),
+    ).limit(1))
+
+
+def tmdb_lookup(db: Session, guild_id: int, title: str, year: int | None, tmdb_id: int | None = None) -> TmdbLookupOut | None:
     client: TmdbClient = common.client()
 
-    best, ambiguous = common.search_best(
-        client,
-        "/search/movie",
-        title,
-        year=year,
-        year_param="primary_release_year",
-        title_keys=("title",),
-    )
-    if best is None:
-        return None
+    tmdb_id = tmdb_id or common.parse_tmdb_ref(title, "movie")
+    candidates: list[dict] = []
+    ambiguous = False
+    if tmdb_id is None:
+        best, ambiguous = common.search_best(
+            client,
+            "/search/movie",
+            title,
+            year=year,
+            year_param="primary_release_year",
+            title_keys=("title",),
+        )
+        if best is None:
+            return None
+        tmdb_id = best["id"]
+        candidates = common.search_candidates(
+            client, "/search/movie", title, year=year, year_param="primary_release_year",
+            title_key="title", date_key="release_date",
+        )
 
-    details = client.get(f"/movie/{best['id']}")
-    credits_data = client.get(f"/movie/{best['id']}/credits")
+    details = client.get(f"/movie/{tmdb_id}")
+    credits_data = client.get(f"/movie/{tmdb_id}/credits")
     if details is None or credits_data is None:
         return None
+    best = details  # the movie itself: same title / date / overview / poster keys as a search result
 
     # ── Which credits we keep ────────────────────────────────────────
     crew: list[tuple[dict, str]] = []
@@ -105,6 +135,7 @@ def tmdb_lookup(db: Session, guild_id: int, title: str, year: int | None) -> Tmd
     # ── One batched DB query, then all TMDB person calls in parallel ──
     all_names = {m["name"] for m, _ in crew} | {m["name"] for m in cast}
     persons_by_name = common.batch_load_persons(db, guild_id, all_names)
+    db.commit()  # loaded eagerly; release the connection before the next network calls
     person_data = common.fetch_person_data_bulk(client, [m["id"] for m, _ in crew] + [m["id"] for m in cast])
 
     def enrich(member: dict) -> common.PersonEnrichment:
@@ -149,6 +180,9 @@ def tmdb_lookup(db: Session, guild_id: int, title: str, year: int | None) -> Tmd
         release_date=best.get("release_date"),
         runtime=details.get("runtime") or 0,
         overview=best.get("overview"),
+        poster_url=common.image_url(best.get("poster_path") or details.get("poster_path")),
+        existing_movie_id=_existing_movie(db, guild_id, best),
+        candidates=[c for c in candidates if c["tmdb_id"] != tmdb_id],
         people=people,
         genres=genres,
         ambiguous=ambiguous,
@@ -156,31 +190,13 @@ def tmdb_lookup(db: Session, guild_id: int, title: str, year: int | None) -> Tmd
 
 
 # ── Public: import ───────────────────────────────────────────────────
-def tmdb_import_movie(db: Session, guild_id: int, user_id: int, body: TmdbImportIn) -> TmdbImportOut:
-    existing = db.scalar(
-        select(Movie).where(
-            Movie.guild_id == guild_id,
-            (Movie.name == body.title) | (Movie.name_en == body.title),
-            Movie.release_year == body.release_year,
-        )
-    )
-    if existing:
-        raise ValueError(f"Movie '{body.title}' ({body.release_year}) already exists (id={existing.id})")
-
-    name_en = body.title if body.original_title and body.original_title != body.title else None
-    movie = Movie(
-        guild_id=guild_id, created_by_user_id=user_id,
-        name=body.title,
-        name_en=name_en,
-        runtime_minutes=body.runtime_minutes,
-        release_year=body.release_year,
-    )
-    db.add(movie)
-    db.flush()
-
-    resolver = common.PeopleResolver(db, guild_id, user_id)
-    linked: set[tuple[int, CastRole]] = set()
-    for p in body.people:
+def _link_people(db: Session, guild_id: int, movie: Movie, people: list, resolver: common.PeopleResolver) -> int:
+    """Credit `people` on `movie`, skipping any it already has. -> credits added."""
+    linked = set(db.execute(
+        select(MoviePerson.person_id, MoviePerson.role).where(MoviePerson.movie_id == movie.id)
+    ).tuples().all())
+    added = 0
+    for p in people:
         if p.role is CastRole.creator:
             raise ValueError("The creator role only applies to television shows")
         person = resolver.resolve(
@@ -192,16 +208,84 @@ def tmdb_import_movie(db: Session, guild_id: int, user_id: int, body: TmdbImport
         key = (person.id, p.role)
         if key not in linked:
             linked.add(key)
+            added += 1
             db.add(MoviePerson(movie_id=movie.id, person_id=person.id, role=p.role, guild_id=guild_id))
+    return added
+
+
+def tmdb_import_movie(db: Session, guild_id: int, user_id: int, body: TmdbImportIn) -> TmdbImportOut:
+    titles = {db_norm(t) for t in (body.title, body.original_title) if t} - {""}
+    existing = db.scalar(
+        select(Movie).where(
+            Movie.guild_id == guild_id,
+            Movie.name_norm.in_(titles) | Movie.name_en_norm.in_(titles),
+            Movie.release_year == body.release_year,
+        )
+    )
+    if existing is None and body.tmdb_id is not None:
+        existing = db.scalar(select(Movie).where(Movie.guild_id == guild_id, Movie.tmdb_id == body.tmdb_id))
+    if existing:
+        raise ValueError(f"Movie '{body.title}' ({body.release_year}) already exists (id={existing.id})")
+
+    # Same convention as people: `name` is the original, `name_en` the English
+    # title when it differs. (This used to store the English title in both.)
+    foreign = bool(body.original_title) and db_norm(body.original_title) != db_norm(body.title)
+    movie = Movie(
+        guild_id=guild_id, created_by_user_id=user_id,
+        name=body.original_title if foreign else body.title,
+        name_en=body.title if foreign else None,
+        runtime_minutes=body.runtime_minutes,
+        release_year=body.release_year,
+        tmdb_id=body.tmdb_id,
+        overview=body.overview,
+        image_url=body.poster_url,
+    )
+    db.add(movie)
+    db.flush()
+
+    resolver = common.PeopleResolver(db, guild_id, user_id)
+    _link_people(db, guild_id, movie, body.people, resolver)
 
     if body.genre_ids:
         movie.genres = list(db.scalars(
             select(Genre).where(Genre.guild_id == guild_id, Genre.id.in_(body.genre_ids), Genre.is_movie.is_(True))
         ).all())
 
+    if body.add_to_list:
+        db.add(UserMovieRank(user_id=user_id, guild_id=guild_id, movie_id=movie.id,
+                             rank=next_rank(db, UserMovieRank, user_id=user_id, guild_id=guild_id)))
     db.flush()
     return TmdbImportOut(
         movie_id=movie.id,
+        created_people=[TmdbImportPersonResult(**vars(r)) for r in resolver.created],
+        reused_people=[TmdbImportPersonResult(**vars(r)) for r in resolver.reused],
+    )
+
+
+def tmdb_merge_credits(db: Session, guild_id: int, user_id: int, movie_id: int, body: TmdbCreditsIn) -> TmdbCreditsOut:
+    """Add TMDB's credits to a movie already in the catalog. Nothing existing is
+    removed or overwritten: only missing credits and genres and blank metadata."""
+    movie = db.get(Movie, movie_id)
+    if movie is None or movie.guild_id != guild_id:
+        raise LookupError(f"Movie {movie_id} not found")
+    if movie.tmdb_id is None and body.tmdb_id is not None and not db.scalar(
+        select(Movie.id).where(Movie.guild_id == guild_id, Movie.tmdb_id == body.tmdb_id)
+    ):
+        movie.tmdb_id = body.tmdb_id
+    movie.overview = movie.overview or body.overview
+    movie.image_url = movie.image_url or body.poster_url
+
+    resolver = common.PeopleResolver(db, guild_id, user_id)
+    added = _link_people(db, guild_id, movie, body.people, resolver)
+    have = {g.id for g in movie.genres}
+    new = set(body.genre_ids) - have
+    if new:
+        movie.genres = list(movie.genres) + list(db.scalars(
+            select(Genre).where(Genre.guild_id == guild_id, Genre.id.in_(new), Genre.is_movie.is_(True))
+        ).all())
+    db.flush()
+    return TmdbCreditsOut(
+        people_linked=added,
         created_people=[TmdbImportPersonResult(**vars(r)) for r in resolver.created],
         reused_people=[TmdbImportPersonResult(**vars(r)) for r in resolver.reused],
     )

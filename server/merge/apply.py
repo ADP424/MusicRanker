@@ -16,13 +16,12 @@ from ..database_models.ranking import (
     UserAlbumRank, UserArtistRank, UserBookRank, UserGameRank, UserMovieRank,
     UserTelevisionEpisodeRank, UserTelevisionSeasonRank, UserTelevisionShowRank,
 )
+from .. import nationalities
 from ..guild_junction_helpers import link_guild_scoped
-from ..jobs import JobContext, handler
+from ..jobs import JobCancelled, JobContext, handler
 from ..normalize import norm
 from ..television_hierarchy import next_episode_rank, next_season_rank
 from .spec import MergeAction, Decision, SECTIONS
-
-Cancelled = type("Cancelled", (RuntimeError,), {})
 
 
 class _IdMap:
@@ -69,8 +68,14 @@ def run_merge(db: Session, job: Job, ctx: JobContext) -> dict:
 
     def tick(section: str, i: int, n: int) -> None:
         if ctx.cancelled():
-            raise Cancelled()
+            raise JobCancelled()
         ctx.progress(phase=section, processed=i, total=n)
+
+    def copy_value(col: str, value):
+        # The source guild's nationalities may be missing here; bring them along.
+        if col in ("birth_nationality", "core_nationality"):
+            return nationalities.ensure(db, tgt_guild, value)
+        return value
 
     def resolve_simple(section: str, model, copy_cols: tuple[str, ...]):
         decisions = _decisions(job.payload, section)
@@ -85,7 +90,7 @@ def run_merge(db: Session, job: Job, ctx: JobContext) -> dict:
                 merged[section] += 1
             else:
                 new = model(guild_id=tgt_guild, created_by_user_id=user_id,
-                            **{c: getattr(src, c) for c in copy_cols})
+                            **{c: copy_value(c, getattr(src, c)) for c in copy_cols})
                 db.add(new)
                 db.flush()
                 idmap.set(section, src.id, new.id)
@@ -147,7 +152,7 @@ def run_merge(db: Session, job: Job, ctx: JobContext) -> dict:
                 merged[section] += 1
             else:
                 tgt = model(guild_id=tgt_guild, created_by_user_id=user_id,
-                            **{c: getattr(src, c) for c in copy_cols})
+                            **{c: copy_value(c, getattr(src, c)) for c in copy_cols})
                 db.add(tgt)
                 db.flush()
                 created[section] += 1

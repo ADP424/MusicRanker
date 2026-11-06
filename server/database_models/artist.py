@@ -5,18 +5,18 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base
 from .mixins import Audited, GuildScoped, NormalizedNames, guild_unique
-from .nationality import nationality
+from .nationality import HasNationalities, nationality_fks
 
 
-class Artist(GuildScoped, Audited, NormalizedNames, Base):
+class Artist(GuildScoped, Audited, NormalizedNames, HasNationalities, Base):
     __tablename__ = "artists"
-    __table_args__ = (guild_unique("artists"), Index("idx_artists_guild_norm", "guild_id", "name_norm"))
+    __table_args__ = (
+        guild_unique("artists"), Index("idx_artists_guild_norm", "guild_id", "name_norm"), *nationality_fks("artists"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(Text)
     name_en: Mapped[str | None] = mapped_column(Text)
-    birth_nationality: Mapped[str] = mapped_column(nationality)
-    core_nationality: Mapped[str] = mapped_column(nationality)
     # Plain FK, not composite: ON DELETE SET NULL on a composite would try to
     # null `guild_id` too, which is NOT NULL. The router validates the guild.
     primary_genre: Mapped[int | None] = mapped_column(ForeignKey("genres.id", ondelete="SET NULL"))

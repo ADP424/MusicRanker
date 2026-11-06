@@ -4,7 +4,8 @@ member's personal ranking (defaults to the caller).
 
 Movie score formula
 --------------------
-Score = 1 / position (1-based, per the viewing member's own ranking).
+Score = percentile of the position in the viewing member's own ranking,
+(n - position + 0.5) / n: 0.95 for #1 of 10, 0.05 for #10 (see stats_common.percentile).
 Person score = mean of scores of all their (ranked) movies.
 """
 
@@ -24,6 +25,7 @@ from ..database_models import Genre, GuildMember, Movie, MoviePerson, Person, Us
 from ..database_models.genre_parent import genre_parents
 from ..database_models.junctions import movie_genres_junction
 from ..database_models.movie_cast_member import CastRole
+from ..stats_common import add_all_route, genre_ancestors, percentile, session_cached
 from ..deps import GuildContext, guild_ctx
 
 router = APIRouter(prefix="/guilds/{guild_id}/movie-stats", tags=["movie-stats"])
@@ -43,6 +45,7 @@ def _target_user(db: DbSession, ctx: GuildContext, user_id: int | None) -> int:
 # ---------------------------------------------------------------------------
 
 
+@session_cached
 def _load(db: DbSession, ctx: GuildContext, uid: int):
     """
     Returns:
@@ -62,7 +65,7 @@ def _load(db: DbSession, ctx: GuildContext, uid: int):
         select(Movie).where(Movie.id.in_(movie_ids))
     ).all()} if movie_ids else {}
     movies = [movie_by_id[mid] for mid in movie_ids if mid in movie_by_id]
-    movie_score: dict[int, float] = {m.id: 1.0 / pos for m, pos in zip(movies, range(1, len(movies) + 1))}
+    movie_score: dict[int, float] = {m.id: percentile(pos, len(movies)) for pos, m in enumerate(movies, 1)}
     watches_by_movie: dict[int, int] = {r.movie_id: r.watches for r in rank_rows}
 
     links: list[MoviePerson] = list(db.scalars(
@@ -117,35 +120,6 @@ def _group_stats(items: list[Any], key_fn, score_fn=None) -> list[dict]:
     return result
 
 
-def _genre_ancestors(db: DbSession) -> dict[int, set[int]]:
-    rows = db.execute(select(genre_parents.c.genre_id, genre_parents.c.parent_genre_id)).all()
-    parent_of: dict[int, set[int]] = defaultdict(set)
-    for child_id, parent_id in rows:
-        parent_of[child_id].add(parent_id)
-    all_genre_ids = {gid for gid, _ in rows} | {pid for _, pid in rows}
-    ancestors: dict[int, set[int]] = {}
-
-    def get_ancestors(gid: int) -> set[int]:
-        if gid in ancestors:
-            return ancestors[gid]
-        result: set[int] = set()
-        queue = list(parent_of.get(gid, []))
-        visited: set[int] = set()
-        while queue:
-            pid = queue.pop()
-            if pid in visited:
-                continue
-            visited.add(pid)
-            result.add(pid)
-            queue.extend(parent_of.get(pid, []))
-        ancestors[gid] = result
-        return result
-
-    for gid in list(all_genre_ids):
-        get_ancestors(gid)
-    return ancestors
-
-
 def _root_genre_ids(db: DbSession, ctx: GuildContext) -> set[int]:
     has_parent = select(genre_parents.c.genre_id)
     return {
@@ -167,7 +141,7 @@ def _fmt(minutes: float) -> str:
 
 
 @router.get("/summary")
-def summary(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+def summary(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database, scope="function")):
     uid = _target_user(db, ctx, user_id)
     movies, movie_score, watches_by_movie, person_movies, person_by_id = _load(db, ctx, uid)
 
@@ -250,7 +224,7 @@ def summary(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW)
 
 
 @router.get("/by-year")
-def by_year(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+def by_year(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database, scope="function")):
     uid = _target_user(db, ctx, user_id)
     movies, movie_score, *_ = _load(db, ctx, uid)
 
@@ -262,7 +236,7 @@ def by_year(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW)
 
 
 @router.get("/by-decade")
-def by_decade(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+def by_decade(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database, scope="function")):
     uid = _target_user(db, ctx, user_id)
     movies, movie_score, *_ = _load(db, ctx, uid)
 
@@ -278,7 +252,7 @@ def by_decade(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIE
 
 @router.get("/by-nationality")
 def by_nationality(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW),
-                   db: DbSession = Depends(get_database)):
+                   db: DbSession = Depends(get_database, scope="function")):
     uid = _target_user(db, ctx, user_id)
     movies, movie_score, _, person_movies, person_by_id = _load(db, ctx, uid)
 
@@ -307,7 +281,7 @@ def by_nationality(user_id: int | None = Query(None), ctx: GuildContext = Depend
 
 
 @router.get("/by-genre")
-def by_genre(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+def by_genre(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database, scope="function")):
     uid = _target_user(db, ctx, user_id)
     movies, movie_score, *_ = _load(db, ctx, uid)
 
@@ -324,7 +298,7 @@ def by_genre(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW
         g.id: g for g in db.scalars(select(Genre).where(Genre.guild_id == ctx.guild_id, Genre.is_movie.is_(True))).all()
     }
     roots = _root_genre_ids(db, ctx)
-    ancestors = _genre_ancestors(db)
+    ancestors = genre_ancestors(db, ctx.guild_id)
 
     genre_movies: dict[int, list[Movie]] = defaultdict(list)
     root_genre_movies: dict[int, list[Movie]] = defaultdict(list)
@@ -370,7 +344,7 @@ def by_genre(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW
 
 
 @router.get("/scatter")
-def scatter(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+def scatter(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database, scope="function")):
     uid = _target_user(db, ctx, user_id)
     movies, movie_score, _, person_movies, person_by_id = _load(db, ctx, uid)
 
@@ -396,7 +370,7 @@ def scatter(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW)
 
 @router.get("/cast-member-detail/{pid}")
 def cast_member_detail(pid: int, user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW),
-                       db: DbSession = Depends(get_database)):
+                       db: DbSession = Depends(get_database, scope="function")):
     uid = _target_user(db, ctx, user_id)
     movies, movie_score, watches_by_movie, person_movies, person_by_id = _load(db, ctx, uid)
 
@@ -441,3 +415,13 @@ def cast_member_detail(pid: int, user_id: int | None = Query(None), ctx: GuildCo
         "collaborators": collaborator_names,
         "avg_movie_score": (round(mean(score for _, score in pairs), 6) if pairs else None),
     }
+
+
+add_all_route(router, VIEW, {
+    "summary": summary,
+    "by_year": by_year,
+    "by_decade": by_decade,
+    "by_nationality": by_nationality,
+    "by_genre": by_genre,
+    "scatter": scatter,
+})

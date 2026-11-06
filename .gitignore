@@ -37,3 +37,6 @@ tmdb_cache.sqlite3-shm
 igdb_cache.sqlite3
 igdb_cache.sqlite3-wal
 igdb_cache.sqlite3-shm
+
+# Runtime caches (TMDB/IGDB sidecars)
+var/

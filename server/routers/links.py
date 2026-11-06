@@ -24,7 +24,7 @@ def make_links_router(*, owner_model, link_model, owner_fk: str, prefix: str, ta
         return row
 
     @router.get("", response_model=list[LinkOut])
-    def list_links(owner_id: int, ctx: GuildContext = Depends(VIEW), db: Session = Depends(get_database)):
+    def list_links(owner_id: int, ctx: GuildContext = Depends(VIEW), db: Session = Depends(get_database, scope="function")):
         _owner(db, ctx, owner_id)
         return db.scalars(
             select(link_model).where(getattr(link_model, owner_fk) == owner_id).order_by(link_model.position)
@@ -32,7 +32,7 @@ def make_links_router(*, owner_model, link_model, owner_fk: str, prefix: str, ta
 
     @router.post("", response_model=LinkOut, status_code=201)
     def add_link(owner_id: int, body: LinkIn, ctx: GuildContext = Depends(EDIT),
-                 db: Session = Depends(get_database)):
+                 db: Session = Depends(get_database, scope="function")):
         _owner(db, ctx, owner_id)
         link = link_model(guild_id=ctx.guild_id, **{owner_fk: owner_id}, **body.model_dump())
         db.add(link)
@@ -41,7 +41,7 @@ def make_links_router(*, owner_model, link_model, owner_fk: str, prefix: str, ta
 
     @router.patch("/{link_id}", response_model=LinkOut)
     def update_link(owner_id: int, link_id: int, body: LinkIn, ctx: GuildContext = Depends(EDIT),
-                    db: Session = Depends(get_database)):
+                    db: Session = Depends(get_database, scope="function")):
         link = db.get(link_model, link_id)
         if link is None or link.guild_id != ctx.guild_id or getattr(link, owner_fk) != owner_id:
             raise HTTPException(404, "Link not found")
@@ -51,7 +51,7 @@ def make_links_router(*, owner_model, link_model, owner_fk: str, prefix: str, ta
 
     @router.delete("/{link_id}", status_code=204)
     def delete_link(owner_id: int, link_id: int, ctx: GuildContext = Depends(EDIT),
-                    db: Session = Depends(get_database)):
+                    db: Session = Depends(get_database, scope="function")):
         link = db.get(link_model, link_id)
         if link is not None and link.guild_id == ctx.guild_id and getattr(link, owner_fk) == owner_id:
             db.delete(link)

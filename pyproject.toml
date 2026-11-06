@@ -1,14 +1,19 @@
 [project]
 name = "music_ranker"
 version = "0.1.0"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
+# Pinned versions live in requirements.txt / requirements-dev.txt; keep these lists in step.
 dependencies = [
     "fastapi",
     "uvicorn",
     "sqlalchemy",
     "psycopg[binary]",
+    "alembic",
     "python-dotenv",
     "requests",
+    "argon2-cffi",
+    "email-validator",
+    "httpx",
 ]
 
 [project.optional-dependencies]
@@ -16,6 +21,7 @@ dev = [
     "black",
     "flake8",
     "isort",
+    "pytest",
 ]
 
 [tool.setuptools]
@@ -23,11 +29,14 @@ package-dir = {"" = "."}
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["server*", "scripts*"]
+include = ["server*"]
 
 [tool.black]
 line-length = 120
-target-version = ["py310"]
+target-version = ["py312"]
 
 [tool.isort]
 profile = "black"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

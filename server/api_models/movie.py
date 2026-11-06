@@ -39,6 +39,9 @@ class MovieOut(ORMSchema):
     runtime_minutes: int
     release_year: int
     notes: str | None
+    tmdb_id: int | None = None
+    overview: str | None = None
+    image_url: str | None = None
     persons: list[MoviePersonRef] = []
     genre_ids: list[int] = []
     links: list[LinkOut] = []

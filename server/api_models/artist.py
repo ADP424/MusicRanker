@@ -9,8 +9,8 @@ class ArtistIn(BaseModel):
     name: str
     name_en: str | None = None
     discography_link: str
-    birth_nationality: str
-    core_nationality: str
+    birth_nationality: str = "Unknown"  # the other one is copied in when only one is given
+    core_nationality: str = "Unknown"
     primary_genre: int | None = None
     notes: str | None = None
     position: int | None = Field(default=None, ge=1)

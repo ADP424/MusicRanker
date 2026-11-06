@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, ForeignKey, Text, UniqueConstraint
+from sqlalchemy import DateTime, ForeignKey, Index, Text, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, declared_attr, mapped_column
 
 
@@ -19,6 +19,21 @@ def guild_unique(tablename: str) -> UniqueConstraint:
     guilds — it can only return nothing.
     """
     return UniqueConstraint("id", "guild_id", name=f"uq_{tablename}_id_guild")
+
+
+class Described:
+    """What an import from TMDB / IGDB brings besides credits: a synopsis and a
+    poster/cover. `image_url` is the provider's CDN URL, hotlinked, never stored."""
+
+    overview: Mapped[str | None] = mapped_column(Text)
+    image_url: Mapped[str | None] = mapped_column(Text)
+
+
+def external_id_index(table: str, column: str) -> Index:
+    """At most one entry per guild for one TMDB/IGDB id; entered-by-hand rows
+    (no id) are exempt."""
+    return Index(f"uq_{table}_{column}", "guild_id", column, unique=True,
+                 postgresql_where=text(f"{column} IS NOT NULL"))
 
 
 class GuildScoped:

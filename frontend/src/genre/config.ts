@@ -14,6 +14,8 @@ import {
   useTelevisionGenres,
 } from "../api/hooks";
 import type { GamePlatform, Genre, GenreCategory } from "../api/types";
+import { useGuild } from "../guild/GuildProvider";
+import { gk } from "../api/keys";
 
 /** A genre-like entity (music/movie/game `Genre` and `GamePlatform` are structurally identical). */
 export type GenreLike = Genre | GamePlatform;
@@ -31,7 +33,8 @@ export interface GenreDomain {
   useApiBase: () => string;
   /** Guild-prefixed category CRUD base path. */
   useCategoryApiBase: () => string;
-  /** Router base for detail-page links: "/music/genres" | "/movies/genres". */
+  /** Guild-relative router base for detail-page links: "/music/genres" | "/movies/genres".
+   *  Never link to it directly; use `useRouteBase(domain)` for the guild-prefixed path. */
   routeBase: string;
   /** Singular noun for headings: "Genre" | "Movie Genre". */
   heading: string;
@@ -125,3 +128,15 @@ export const GAME_PLATFORMS: GenreDomain = {
   useAll: useGamePlatforms,
   useCategories: useGamePlatformCategories,
 };
+
+/** Cache-key builder for this domain's queries: `gk(guild, domain.key, ...rest)`.
+ *  The domain's list (`useAll`) and categories live at `key()` / `key("categories")`. */
+export function useGenreKey(domain: GenreDomain) {
+  const guildId = useGuild().id;
+  return (...rest: readonly unknown[]) => gk(guildId, domain.key, ...rest);
+}
+
+/** The guild-prefixed route base, e.g. "/g/3/music/genres". */
+export function useRouteBase(domain: GenreDomain): string {
+  return `/g/${useGuild().id}${domain.routeBase}`;
+}

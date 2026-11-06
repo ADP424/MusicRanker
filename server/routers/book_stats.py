@@ -7,7 +7,8 @@ scatter plots) covers only the books that have one.
 
 Book score formula
 ------------------
-Score = 1 / position (1-based, per the viewing member's own ranking).
+Score = percentile of the position in the viewing member's own ranking,
+(n - position + 0.5) / n: 0.95 for #1 of 10, 0.05 for #10 (see stats_common.percentile).
 Author score = mean of scores of all their (ranked) books they're credited as
 author on. A book's nationality is its first-credited author's.
 """
@@ -27,6 +28,7 @@ from ..database import get_database
 from ..database_models import Book, BookPerson, BookRole, Genre, GuildMember, Person, UserBookRank
 from ..database_models.genre_parent import genre_parents
 from ..database_models.junctions import book_genres
+from ..stats_common import add_all_route, genre_ancestors, percentile, session_cached
 from ..deps import GuildContext, guild_ctx
 
 router = APIRouter(prefix="/guilds/{guild_id}/book-stats", tags=["book-stats"])
@@ -46,6 +48,7 @@ def _target_user(db: DbSession, ctx: GuildContext, user_id: int | None) -> int:
 # ---------------------------------------------------------------------------
 
 
+@session_cached
 def _load(db: DbSession, ctx: GuildContext, uid: int):
     """
     Returns:
@@ -66,7 +69,7 @@ def _load(db: DbSession, ctx: GuildContext, uid: int):
         select(Book).where(Book.id.in_(book_ids))
     ).all()} if book_ids else {}
     books = [book_by_id[bid] for bid in book_ids if bid in book_by_id]
-    book_score: dict[int, float] = {b.id: 1.0 / pos for pos, b in enumerate(books, 1)}
+    book_score: dict[int, float] = {b.id: percentile(pos, len(books)) for pos, b in enumerate(books, 1)}
     reads_by_book: dict[int, int] = {r.book_id: r.reads for r in rank_rows}
 
     links: list[BookPerson] = list(db.scalars(
@@ -126,35 +129,6 @@ def _group_stats(items: list[Any], key_fn, score_fn=None) -> list[dict]:
     return result
 
 
-def _genre_ancestors(db: DbSession) -> dict[int, set[int]]:
-    rows = db.execute(select(genre_parents.c.genre_id, genre_parents.c.parent_genre_id)).all()
-    parent_of: dict[int, set[int]] = defaultdict(set)
-    for child_id, parent_id in rows:
-        parent_of[child_id].add(parent_id)
-    all_genre_ids = {gid for gid, _ in rows} | {pid for _, pid in rows}
-    ancestors: dict[int, set[int]] = {}
-
-    def get_ancestors(gid: int) -> set[int]:
-        if gid in ancestors:
-            return ancestors[gid]
-        result: set[int] = set()
-        queue = list(parent_of.get(gid, []))
-        visited: set[int] = set()
-        while queue:
-            pid = queue.pop()
-            if pid in visited:
-                continue
-            visited.add(pid)
-            result.add(pid)
-            queue.extend(parent_of.get(pid, []))
-        ancestors[gid] = result
-        return result
-
-    for gid in list(all_genre_ids):
-        get_ancestors(gid)
-    return ancestors
-
-
 def _root_genre_ids(db: DbSession, ctx: GuildContext) -> set[int]:
     has_parent = select(genre_parents.c.genre_id)
     return {
@@ -174,7 +148,7 @@ def _decade(year: int) -> int:
 
 
 @router.get("/summary")
-def summary(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+def summary(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database, scope="function")):
     uid = _target_user(db, ctx, user_id)
     books, book_score, reads_by_book, author_books, book_author, person_by_id = _load(db, ctx, uid)
 
@@ -234,7 +208,7 @@ def summary(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW)
 
 
 @router.get("/by-year")
-def by_year(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+def by_year(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database, scope="function")):
     uid = _target_user(db, ctx, user_id)
     books, book_score, *_ = _load(db, ctx, uid)
 
@@ -246,7 +220,7 @@ def by_year(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW)
 
 
 @router.get("/by-decade")
-def by_decade(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+def by_decade(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database, scope="function")):
     uid = _target_user(db, ctx, user_id)
     books, book_score, *_ = _load(db, ctx, uid)
 
@@ -259,7 +233,7 @@ def by_decade(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIE
 
 @router.get("/by-nationality")
 def by_nationality(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW),
-                   db: DbSession = Depends(get_database)):
+                   db: DbSession = Depends(get_database, scope="function")):
     uid = _target_user(db, ctx, user_id)
     books, book_score, _, _, book_author, _ = _load(db, ctx, uid)
 
@@ -278,7 +252,7 @@ def by_nationality(user_id: int | None = Query(None), ctx: GuildContext = Depend
 
 
 @router.get("/by-genre")
-def by_genre(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+def by_genre(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database, scope="function")):
     uid = _target_user(db, ctx, user_id)
     books, book_score, *_ = _load(db, ctx, uid)
 
@@ -294,7 +268,7 @@ def by_genre(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW
         g.id: g for g in db.scalars(select(Genre).where(Genre.guild_id == ctx.guild_id, Genre.is_book.is_(True))).all()
     }
     roots = _root_genre_ids(db, ctx)
-    ancestors = _genre_ancestors(db)
+    ancestors = genre_ancestors(db, ctx.guild_id)
 
     genre_books: dict[int, list[Book]] = defaultdict(list)
     root_genre_books: dict[int, list[Book]] = defaultdict(list)
@@ -338,7 +312,7 @@ def by_genre(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW
 
 
 @router.get("/scatter")
-def scatter(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+def scatter(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database, scope="function")):
     """Books without a word count are left out of both plots."""
     uid = _target_user(db, ctx, user_id)
     books, book_score, _, author_books, _, person_by_id = _load(db, ctx, uid)
@@ -360,3 +334,13 @@ def scatter(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW)
         })
 
     return {"book_score_vs_words": book_scatter, "author_score_vs_words": author_scatter}
+
+
+add_all_route(router, VIEW, {
+    "summary": summary,
+    "by_year": by_year,
+    "by_decade": by_decade,
+    "by_nationality": by_nationality,
+    "by_genre": by_genre,
+    "scatter": scatter,
+})

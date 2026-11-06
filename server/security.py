@@ -13,7 +13,11 @@ SESSION_COOKIE = "session"
 CSRF_COOKIE = "csrftoken"
 CSRF_HEADER = "x-csrf-token"
 SESSION_TTL = timedelta(days=int(os.environ.get("SESSION_TTL_DAYS", "30")))
-SECURE_COOKIES = os.environ.get("SECURE_COOKIES", "false").lower() == "true"
+#: "dev" relaxes production defaults (the launcher in the repo root sets it).
+APP_ENV = os.environ.get("APP_ENV", "production").lower()
+#: Secure cookies by default. Browsers treat http://localhost as a secure
+#: context, so this is harmless in dev too, but dev may opt out explicitly.
+SECURE_COOKIES = os.environ.get("SECURE_COOKIES", "false" if APP_ENV == "dev" else "true").lower() == "true"
 
 _ph = PasswordHasher()
 

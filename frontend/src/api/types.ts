@@ -72,6 +72,9 @@ export interface Person {
   birth_nationality: string;
   core_nationality: string;
   notes: string | null;
+  tmdb_id: number | null;
+  igdb_id: number | null;
+  image_url: string | null;
   artist_names: string[];
   book_names: string[];
   movie_names: string[];
@@ -98,6 +101,25 @@ export interface PersonDetail extends Person {
   television_episode_roles: {
     show_id: number; show_name: string; episode_id: number; episode_name: string; role: CastRole;
   }[];
+}
+
+export interface PersonTmdbCredit {
+  media: "movie" | "tv";
+  tmdb_id: number;
+  title: string;
+  year: number | null;
+  poster_url: string | null;
+  popularity: number;
+  roles: { label: string; role: CastRole | null }[];
+  local_id: number | null; // the catalog movie / show, if there is one
+  linked_roles: CastRole[]; // TV: on the show or anything below it
+}
+
+export interface PersonTmdb {
+  tmdb_id: number | null;
+  profile_url: string | null;
+  candidates: { tmdb_id: number; name: string; department: string | null; known_for: string[]; profile_url: string | null }[];
+  credits: PersonTmdbCredit[];
 }
 
 // ── Artists / Albums ─────────────────────────────────────────────────────────
@@ -226,6 +248,9 @@ export interface Movie {
   runtime_minutes: number;
   release_year: number;
   notes: string | null;
+  tmdb_id: number | null;
+  overview: string | null;
+  image_url: string | null; // poster / cover, hotlinked from TMDB / IGDB
   persons: MoviePersonRef[];
   genre_ids: number[];
   links: Link[];
@@ -262,6 +287,9 @@ export interface Game {
   name_en: string | null;
   release_year: number;
   notes: string | null;
+  igdb_id: number | null;
+  overview: string | null;
+  image_url: string | null; // poster / cover, hotlinked from TMDB / IGDB
   persons: GamePersonRef[];
   genre_ids: number[];
   platform_ids: number[];
@@ -312,6 +340,9 @@ export interface TelevisionShow {
   name_en: string | null;
   release_year: number;
   notes: string | null;
+  tmdb_id: number | null;
+  overview: string | null;
+  image_url: string | null; // poster / cover, hotlinked from TMDB / IGDB
   persons: TelevisionPersonRef[];
   genre_ids: number[];
   links: Link[];
@@ -344,6 +375,8 @@ export interface TelevisionSeason {
   season_number: number | null;
   release_year: number;
   notes: string | null;
+  overview: string | null;
+  image_url: string | null; // poster / cover, hotlinked from TMDB / IGDB
   season_rank: string | null;
   persons: TelevisionPersonRef[];
   links: Link[];
@@ -374,6 +407,9 @@ export interface TelevisionEpisode {
   runtime_minutes: number;
   release_year: number;
   notes: string | null;
+  episode_number: number | null;
+  overview: string | null;
+  image_url: string | null; // poster / cover, hotlinked from TMDB / IGDB
   episode_rank: string | null;
   persons: TelevisionPersonRef[];
   genre_ids: number[];
@@ -409,6 +445,17 @@ export interface ComparisonIn {
 
 // ── Nationalities ────────────────────────────────────────────────────────────
 export type Nationality = string;
+
+/** Always available, never in a guild's list, and what an empty nationality is. */
+export const UNKNOWN_NATIONALITY = "Unknown";
+
+/** One entry of a guild's own nationality list. */
+export interface NationalityEntry {
+  id: number;
+  name: string;
+  people_count: number;
+  artist_count: number;
+}
 
 // ── Stats (music) ────────────────────────────────────────────────────────────
 export interface StatsSummary {
@@ -643,9 +690,20 @@ export interface TelevisionShowRow {
 }
 
 // ── TMDB import (movies) ─────────────────────────────────────────────────────
+/** Another search result an import dialog can switch to. */
+export interface LookupCandidate {
+  tmdb_id?: number;
+  igdb_id?: number;
+  title: string;
+  year: number | null;
+  poster_url?: string | null;
+  cover_url?: string | null;
+}
+
 export interface TmdbLookupIn {
   title: string;
   year?: number | null;
+  tmdb_id?: number;
 }
 
 export interface DbPersonMatch {
@@ -688,6 +746,9 @@ export interface TmdbLookup {
   release_date: string | null;
   runtime: number;
   overview: string | null;
+  poster_url: string | null;
+  existing_movie_id: number | null; // already in the catalog
+  candidates: LookupCandidate[];
   people: TmdbPerson[];
   genres: TmdbGenre[];
   ambiguous: boolean;
@@ -703,11 +764,15 @@ export interface TmdbImportPersonIn {
 
 export interface TmdbImportIn {
   title: string;
+  tmdb_id?: number | null;
+  overview?: string | null;
+  poster_url?: string | null;
   original_title?: string | null;
   runtime_minutes: number;
   release_year: number;
   people: TmdbImportPersonIn[];
   genre_ids: number[];
+  add_to_list?: boolean;
 }
 
 export interface TmdbImportPersonResult {
@@ -727,6 +792,7 @@ export interface TmdbImportOut {
 export interface TmdbTvLookupIn {
   title: string;
   year?: number | null;
+  tmdb_id?: number;
   include_episodes?: boolean;
   include_specials?: boolean;
   season_numbers?: number[] | null;
@@ -767,6 +833,7 @@ export interface TmdbTvEpisode {
   release_year: number;
   runtime: number;
   overview: string | null;
+  still_url: string | null;
   people: TmdbTvPerson[];
 }
 
@@ -776,6 +843,8 @@ export interface TmdbTvSeason {
   air_date: string | null;
   release_year: number;
   episode_count: number;
+  overview: string | null;
+  poster_url: string | null;
   episodes: TmdbTvEpisode[];
   /** Season lookup only: everyone credited on every episode of the season. */
   people: TmdbTvPerson[];
@@ -789,6 +858,9 @@ export interface TmdbTvLookup {
   first_air_date: string | null;
   release_year: number;
   overview: string | null;
+  poster_url: string | null;
+  existing_show_id: number | null; // already in the catalog
+  candidates: LookupCandidate[];
   episode_run_time: number;
   number_of_seasons: number;
   number_of_episodes: number;
@@ -809,6 +881,9 @@ export interface TmdbTvImportPersonIn {
 
 export interface TmdbTvImportEpisodeIn {
   name: string;
+  episode_number?: number | null;
+  overview?: string | null;
+  still_url?: string | null;
   name_en: string | null;
   runtime_minutes: number;
   release_year: number;
@@ -820,6 +895,8 @@ export interface TmdbTvImportEpisodeIn {
 
 export interface TmdbTvImportSeasonIn {
   name: string;
+  overview?: string | null;
+  poster_url?: string | null;
   name_en: string | null;
   season_number: number | null;
   release_year: number;
@@ -832,6 +909,10 @@ export interface TmdbTvImportSeasonIn {
 
 export interface TmdbTvImportIn {
   name: string;
+  full_episode_cast?: boolean;
+  tmdb_id?: number | null;
+  overview?: string | null;
+  poster_url?: string | null;
   name_en?: string | null;
   release_year: number;
   notes?: string | null;
@@ -874,6 +955,7 @@ export interface TmdbTvSeasonLookup {
 
 export interface TmdbTvSeasonImportIn {
   show_id: number;
+  full_episode_cast?: boolean;
   season_id?: number | null;
   update_season_fields?: boolean;
   season: TmdbTvImportSeasonIn;
@@ -928,6 +1010,7 @@ export interface TmdbTvEpisodeImportOut {
 export interface IgdbLookupIn {
   title: string;
   year?: number | null;
+  igdb_id?: number;
 }
 
 export interface IgdbDbPersonMatch {
@@ -970,6 +1053,9 @@ export interface IgdbLookup {
   title: string;
   release_date: string | null;
   summary: string | null;
+  cover_url: string | null;
+  existing_game_id: number | null; // already in the catalog
+  candidates: LookupCandidate[];
   people: IgdbPerson[];
   genres: IgdbGenre[];
   platforms: IgdbPlatform[];
@@ -987,10 +1073,14 @@ export interface IgdbImportPersonIn {
 
 export interface IgdbImportIn {
   title: string;
+  igdb_id?: number | null;
+  summary?: string | null;
+  cover_url?: string | null;
   release_year: number;
   people: IgdbImportPersonIn[];
   genre_ids: number[];
   platform_ids: number[];
+  add_to_list?: boolean;
 }
 
 export interface IgdbImportPersonResult {
@@ -1006,105 +1096,10 @@ export interface IgdbImportOut {
   reused_people: IgdbImportPersonResult[];
 }
 
-// ── Movie person scan ──────────────────────────────────────────────────────────
-export type ScanSlot = "cast" | "director" | "composer";
-
-export interface ScanStats {
-  movies_total: number;
-  movies_in_scope: number;
-  movies_resolved: number;
-  movies_unresolved: number;
-  network_calls: number;
-  cache_hits: number;
-  revalidated: number;
-}
-
-export interface ScanJob {
-  id: string;
-  status: "pending" | "running" | "done" | "cancelled" | "error";
-  phase: "queued" | "loading" | "fetching" | "matching" | "finished";
-  processed: number;
-  total: number;
-  last_movie: string | null;
-  error: string | null;
-  candidate_count: number | null;
-  stats: ScanStats | null;
-}
-
-export interface ScanCandidate {
-  key: string;
-  person_id: number;
-  person_name: string;
-  movie_id: number;
-  movie_name: string;
-  movie_year: number | null;
-  credit_type: "cast" | "crew";
-  slot: ScanSlot;
-  character: string | null;
-  billing_order: number | null;
-  job: string | null;
-  suggested_role: CastRole;
-  suggestion_reason: string;
-  match: "verified" | "name_only";
-  overlap: number;
-  tmdb_person_id: number;
-  tmdb_popularity: number;
-  suppressed: boolean;
-}
-
-export interface UnresolvedMovie {
-  id: number;
-  name: string;
-  release_year: number | null;
-}
-
-export interface ScanResults {
-  job_id: string;
-  candidates: ScanCandidate[];
-  unresolved_movies: UnresolvedMovie[];
-}
-
-export interface ScanLinkIn {
-  movie_id: number;
-  person_id: number;
-  role: CastRole;
-}
-
-export interface ScanSlotIn {
-  movie_id: number;
-  person_id: number;
-  slot: ScanSlot;
-}
-
-export interface ScanApplyIn {
-  links: ScanLinkIn[];
-  suppress: ScanSlotIn[];
-  unsuppress: ScanSlotIn[];
-}
-
-export interface ScanApplyResult {
-  created: number;
-  skipped: number;
-  invalid: ScanLinkIn[];
-  suppressed: number;
-  unsuppressed: number;
-}
-
-export interface Suppression {
-  person_id: number;
-  person_name: string | null;
-  movie_id: number;
-  movie_name: string | null;
-  slot: ScanSlot;
-}
-
-export interface SuppressionList {
-  count: number;
-  items: Suppression[];
-}
-
-// ── Television / game person scans (generic shape) ─────────────────────────────
-export type PersonScanEntityKind = "show" | "season" | "episode" | "game";
+// ── Person scans: TMDB (movies + television) and IGDB (games) ──────────────────
+export type PersonScanEntityKind = "movie" | "show" | "season" | "episode" | "game";
+// "conflict": corroborated in one medium, contradicted in another (TMDB scan only).
+export type PersonScanVerdict = "verified" | "name_only" | "conflict" | "";
 
 export interface PersonScanStats {
   items_total: number;
@@ -1125,6 +1120,9 @@ export interface PersonScanJob {
   error: string | null;
   candidate_count: number | null;
   stats: PersonScanStats | null;
+  scoped: boolean; // limited to some entities, not a full scan
+  created_at: string | null;
+  finished_at: string | null;
 }
 
 export interface PersonScanCandidate {
@@ -1150,6 +1148,9 @@ export interface PersonScanCandidate {
   source_person_id: number;
   source_popularity: number;
   suppressed: boolean;
+  verdict: PersonScanVerdict;
+  // medium -> [linked works that corroborate, linked works checked]
+  evidence: Partial<Record<"movie" | "show", [number, number]>>;
 }
 
 export interface PersonScanUnresolved {
@@ -1209,7 +1210,8 @@ export interface PersonScanSuppressionList {
 }
 
 // ── People graph ─────────────────────────────────────────────────────────────
-export type GraphHubKind = "artist" | "album" | "book" | "movie" | "game" | "show" | "episode";
+export type GraphHubKind = "artist" | "album" | "book" | "movie" | "game" | "show" | "season" | "episode";
+export type GraphHubRelation = "album_artist" | "season_show" | "episode_season" | "adaptation" | "soundtrack";
 
 export interface GraphPerson {
   id: number;
@@ -1222,8 +1224,9 @@ export interface GraphHub {
   kind: GraphHubKind;
   id: number;
   name: string;
-  show_id: number | null; // episodes only
-  show_name: string | null; // episodes only
+  show_id: number | null; // seasons and episodes
+  show_name: string | null; // seasons and episodes
+  season_number: number | null; // seasons and episodes
 }
 
 export interface GraphEdge {
@@ -1231,17 +1234,44 @@ export interface GraphEdge {
   kind: GraphHubKind;
   target_id: number;
   roles: string[];
+  inherited: string[]; // roles already held on the season's show / episode's season or show
 }
 
-// Hub-to-hub link: albums attach to artists, not people.
-export interface GraphAlbumArtist {
-  album_id: number;
-  artist_id: number;
+// Hub-to-hub link: album→artist, episode→season→show, adaptations, soundtracks.
+export interface GraphHubLink {
+  relation: GraphHubRelation;
+  from_kind: GraphHubKind;
+  from_id: number;
+  to_kind: GraphHubKind;
+  to_id: number;
 }
 
 export interface PersonGraph {
+  mine: { kind: GraphHubKind; id: number }[];
   persons: GraphPerson[];
   hubs: GraphHub[];
   edges: GraphEdge[]; // person → hub (never album)
-  album_artists: GraphAlbumArtist[];
+  hub_links: GraphHubLink[];
+}
+
+export interface GuildOverview {
+  sections: Record<"music" | "books" | "movies" | "television" | "games", { catalog: number; mine: number }>;
+  people: number;
+  members: number;
+}
+
+export interface ActivityItem {
+  kind: "catalog" | "list"; // added to the catalog / added to someone's list
+  section: string;
+  path: string;
+  id: number;
+  name: string;
+  at: string;
+  user_id: number | null;
+  username: string | null;
+}
+
+export interface ActivityPage {
+  items: ActivityItem[];
+  next_before: string | null;
 }

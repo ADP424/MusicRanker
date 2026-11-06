@@ -6,7 +6,9 @@ member's stats the same way the ranking pages let you view their list).
 Album score formula
 -------------------
 For each (album, artist) link, using the viewing member's own ranks:
-    contribution = 1 / (artist_position × album_position_within_artist)
+    contribution = artist_percentile × album_percentile_within_artist
+(stats_common.percentile: 0.95 for #1 of 10, 0.05 for #10), so lists of any
+length score on the same 0..1 scale. An artist's own score is its percentile.
 
 For albums with multiple artists the contributions are averaged:
     album_score = mean(contributions)
@@ -34,6 +36,7 @@ from ..database import get_database
 from ..database_models import Album, AlbumArtist, Artist, Genre, GuildMember, UserAlbumRank, UserArtistRank
 from ..database_models.album_genre import album_genres
 from ..database_models.genre_parent import genre_parents
+from ..stats_common import add_all_route, genre_ancestors, percentile, session_cached
 from ..deps import GuildContext, guild_ctx
 
 router = APIRouter(prefix="/guilds/{guild_id}/stats", tags=["stats"])
@@ -73,6 +76,7 @@ class ArtistDetail:
 # ---------------------------------------------------------------------------
 
 
+@session_cached
 def _load(db: DbSession, ctx: GuildContext, uid: int) -> tuple[list[ArtistDetail], list[ScoredAlbum]]:
     """Returns (artist_details, scored_albums) for `uid`'s personal ranking
     within this guild. All positions are 1-based; only ranked items appear."""
@@ -123,7 +127,10 @@ def _load(db: DbSession, ctx: GuildContext, uid: int) -> tuple[list[ArtistDetail
         links_for_album = album_links.get(album_id, [])
         if not links_for_album:
             continue
-        contributions = [1.0 / (a_pos * al_pos) for (_, a_pos, al_pos) in links_for_album]
+        contributions = [
+            percentile(a_pos, len(artist_pos)) * percentile(al_pos, _counter[artist.id])
+            for (artist, a_pos, al_pos) in links_for_album
+        ]
         score = mean(contributions)
         scored_albums.append(ScoredAlbum(
             album=album, score=score, listens=listens_by_album.get(album_id, 1),
@@ -186,36 +193,6 @@ def _group_stats(items: list[Any], key_fn, score_fn=None, rank_fn=None) -> list[
     return result
 
 
-def _genre_ancestors(db: DbSession) -> dict[int, set[int]]:
-    rows = db.execute(select(genre_parents.c.genre_id, genre_parents.c.parent_genre_id)).all()
-    parent_of: dict[int, set[int]] = defaultdict(set)
-    for child_id, parent_id in rows:
-        parent_of[child_id].add(parent_id)
-    all_genre_ids = {gid for gid, _ in rows} | {pid for _, pid in rows}
-
-    ancestors: dict[int, set[int]] = {}
-
-    def get_ancestors(gid: int) -> set[int]:
-        if gid in ancestors:
-            return ancestors[gid]
-        result: set[int] = set()
-        queue = list(parent_of.get(gid, []))
-        visited: set[int] = set()
-        while queue:
-            pid = queue.pop()
-            if pid in visited:
-                continue
-            visited.add(pid)
-            result.add(pid)
-            queue.extend(parent_of.get(pid, []))
-        ancestors[gid] = result
-        return result
-
-    for gid in list(all_genre_ids):
-        get_ancestors(gid)
-    return ancestors
-
-
 def _root_genre_ids(db: DbSession, ctx: GuildContext) -> set[int]:
     has_parent = select(genre_parents.c.genre_id)
     return {
@@ -231,7 +208,7 @@ def _root_genre_ids(db: DbSession, ctx: GuildContext) -> set[int]:
 
 
 @router.get("/summary")
-def summary(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+def summary(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database, scope="function")):
     uid = _target_user(db, ctx, user_id)
     artist_details, scored_albums = _load(db, ctx, uid)
 
@@ -256,7 +233,7 @@ def summary(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW)
     best_artist_year, worst_artist_year = _best_worst(
         artist_details_with_year,
         lambda ad: ad.albums[0][0].release_year,
-        lambda group: mean(1.0 / ad.position for ad in group),
+        lambda group: mean(percentile(ad.position, len(artist_details)) for ad in group),
     )
 
     def _decade(year):
@@ -268,7 +245,7 @@ def summary(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW)
     best_artist_decade, worst_artist_decade = _best_worst(
         artist_details_with_year,
         lambda ad: _decade(ad.albums[0][0].release_year),
-        lambda group: mean(1.0 / ad.position for ad in group),
+        lambda group: mean(percentile(ad.position, len(artist_details)) for ad in group),
     )
 
     best_core_nat_albums, worst_core_nat_albums = _best_worst(
@@ -277,7 +254,7 @@ def summary(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW)
         lambda group: mean(sa.score for sa in group),
     )
     best_core_nat_artists, worst_core_nat_artists = _best_worst(
-        artist_details, lambda ad: ad.artist.core_nationality, lambda group: mean(1.0 / ad.position for ad in group),
+        artist_details, lambda ad: ad.artist.core_nationality, lambda group: mean(percentile(ad.position, len(artist_details)) for ad in group),
     )
     best_birth_nat_albums, worst_birth_nat_albums = _best_worst(
         scored_albums,
@@ -285,7 +262,7 @@ def summary(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW)
         lambda group: mean(sa.score for sa in group),
     )
     best_birth_nat_artists, worst_birth_nat_artists = _best_worst(
-        artist_details, lambda ad: ad.artist.birth_nationality, lambda group: mean(1.0 / ad.position for ad in group),
+        artist_details, lambda ad: ad.artist.birth_nationality, lambda group: mean(percentile(ad.position, len(artist_details)) for ad in group),
     )
 
     return {
@@ -318,7 +295,7 @@ def summary(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW)
 
 
 @router.get("/by-year")
-def by_year(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+def by_year(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database, scope="function")):
     uid = _target_user(db, ctx, user_id)
     artist_details, scored_albums = _load(db, ctx, uid)
 
@@ -338,7 +315,7 @@ def by_year(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW)
 
 
 @router.get("/by-decade")
-def by_decade(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+def by_decade(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database, scope="function")):
     uid = _target_user(db, ctx, user_id)
     artist_details, scored_albums = _load(db, ctx, uid)
 
@@ -364,7 +341,7 @@ def by_decade(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIE
 
 @router.get("/by-nationality")
 def by_nationality(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW),
-                   db: DbSession = Depends(get_database)):
+                   db: DbSession = Depends(get_database, scope="function")):
     uid = _target_user(db, ctx, user_id)
     artist_details, scored_albums = _load(db, ctx, uid)
 
@@ -397,7 +374,7 @@ def by_nationality(user_id: int | None = Query(None), ctx: GuildContext = Depend
 
 
 @router.get("/by-genre")
-def by_genre(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+def by_genre(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database, scope="function")):
     uid = _target_user(db, ctx, user_id)
     artist_details, scored_albums = _load(db, ctx, uid)
 
@@ -413,7 +390,7 @@ def by_genre(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW
         g.id: g for g in db.scalars(select(Genre).where(Genre.guild_id == ctx.guild_id, Genre.is_music.is_(True))).all()
     }
     roots = _root_genre_ids(db, ctx)
-    ancestors = _genre_ancestors(db)
+    ancestors = genre_ancestors(db, ctx.guild_id)
 
     genre_albums: dict[int, list[ScoredAlbum]] = defaultdict(list)
     root_genre_albums: dict[int, list[ScoredAlbum]] = defaultdict(list)
@@ -475,7 +452,7 @@ def by_genre(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW
 
 
 @router.get("/scatter")
-def scatter(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database)):
+def scatter(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW), db: DbSession = Depends(get_database, scope="function")):
     """
     Data for three scatter plots:
       1. Artist rank vs average artist album runtime (minutes)
@@ -523,3 +500,13 @@ def scatter(user_id: int | None = Query(None), ctx: GuildContext = Depends(VIEW)
         "album_score_vs_runtime": album_score_scatter,
         "album_rank_vs_runtime": album_rank_scatter,
     }
+
+
+add_all_route(router, VIEW, {
+    "summary": summary,
+    "by_year": by_year,
+    "by_decade": by_decade,
+    "by_nationality": by_nationality,
+    "by_genre": by_genre,
+    "scatter": scatter,
+})

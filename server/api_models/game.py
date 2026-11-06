@@ -37,6 +37,9 @@ class GameOut(ORMSchema):
     name_en: str | None
     release_year: int
     notes: str | None
+    igdb_id: int | None = None
+    overview: str | None = None
+    image_url: str | None = None
     persons: list[GamePersonRef] = []
     genre_ids: list[int] = []
     platform_ids: list[int] = []
